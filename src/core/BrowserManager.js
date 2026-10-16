@@ -13,6 +13,7 @@ const os = require("os");
 
 const { parseProxyFromEnv } = require("../utils/ProxyUtils");
 const StickyProxyManager = require("../utils/StickyProxyManager");
+const { MakerSuiteBridge } = require("./MakerSuiteBridge");
 const {
     AuthExpiredError,
     isAuthExpiredError,
@@ -463,6 +464,7 @@ class BrowserManager {
     async _closeAttemptContext(attempt) {
         if (!attempt?.context) return { closed: false, skipped: true };
         if (attempt.cleanupTask) return attempt.cleanupTask;
+        attempt.makerSuiteBridge?.dispose();
         const startedAt = Date.now();
         const cleanupTimeoutMs = this.contextCleanupTimeoutMs || 5000;
         attempt.cleanupTask = (async () => {
@@ -3492,6 +3494,17 @@ class BrowserManager {
             page = await this._runInitOperation(attempt, "context.newPage", () => context.newPage());
             page.accountSessionVersion = storageStateObject._accountSessionVersion || 0;
             attempt.page = page;
+            const bridge = new MakerSuiteBridge({
+                authIndex,
+                context,
+                logger: this.logger,
+                page,
+                streamTimeoutMs: Math.max(1, Math.min(this.config.streamTimeoutMs || 60000, 300000) - 5000),
+                // Finish before the outer request/browser deadlines can retry the execution.
+                timeoutMs: Math.max(1, Math.min(this.config.fakeStreamTimeoutMs || 300000, 300000) - 5000),
+            });
+            attempt.makerSuiteBridge = bridge;
+            await this._runInitOperation(attempt, "makersuite.install", () => bridge.install());
 
             // Pure JS Wakeup (Focus & Mouse Movement)
             // Skip focus operations for background tasks to avoid window focus conflicts
@@ -3638,6 +3651,7 @@ class BrowserManager {
                     createdAt: Date.now(),
                     healthMonitorInterval: null,
                     lastRequestAt: 0,
+                    makerSuiteBridge: attempt.makerSuiteBridge,
                     mouseReady: attempt.mouseReady,
                     page,
                     proxyInfo,
@@ -4082,6 +4096,7 @@ class BrowserManager {
         }
 
         const contextData = this.contexts.get(authIndex);
+        contextData.makerSuiteBridge?.dispose();
         this._closingContextOwners ??= new Map();
         this._closingContextOwners.set(authIndex, contextData);
         this.closingContexts.add(authIndex);

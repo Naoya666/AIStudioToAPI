@@ -1,5 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 const BrowserManager = require("../src/core/BrowserManager");
 const ConnectionRegistry = require("../src/core/ConnectionRegistry");
 const { ModelScheduler } = require("../src/core/ModelScheduler");
@@ -578,19 +579,23 @@ test("an account-level observability overwrite cannot replace an attempt's succe
 test("a failed old attempt closes only its local context and preserves a newer map entry", async () => {
     const manager = singleFlightFixture();
     let localClosed = false;
-    const localContext = {
+    const localContext = Object.assign(new EventEmitter(), {
         addInitScript: async () => {},
         close: async () => {
             localClosed = true;
         },
-        newPage: async () => ({
-            bringToFront: async () => {},
-            evaluate: async () => {},
-            isClosed: () => true,
-            on: () => {},
-            viewportSize: () => ({ height: 10, width: 10 }),
-        }),
-    };
+        newPage: async () =>
+            Object.assign(new EventEmitter(), {
+                addInitScript: async () => {},
+                bringToFront: async () => {},
+                evaluate: async () => {},
+                isClosed: () => true,
+                on: () => {},
+                viewportSize: () => ({ height: 10, width: 10 }),
+            }),
+        route: async () => {},
+        unroute: async () => {},
+    });
     Object.assign(manager, {
         _backgroundPreloadAbort: false,
         _createBrowserContext: async () => localContext,
@@ -601,6 +606,7 @@ test("a failed old attempt closes only its local context and preserves a newer m
         _saveDebugArtifacts: async () => {},
         _simulateHumanMovement: async () => {},
         authSource: { getAuth: () => ({}) },
+        config: {},
         contexts: new Map([[0, { attemptId: "0:2", context: {}, page: {} }]]),
         stickyProxyManager: { getProxyForAuth: () => null },
     });

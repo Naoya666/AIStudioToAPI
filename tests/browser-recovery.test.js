@@ -204,7 +204,7 @@ test("queue limits reject before expensive scans and scheduling yields to I/O", 
     await rejection;
 });
 
-test("an already open WebSocket still requires mouse completion before publishing READY", async () => {
+test("an already open WebSocket still requires mouse completion before publishing READY", async t => {
     const pool = manager();
     pool.config.enableAuthUpdate = false;
     pool.authSource.getAuth = () => ({});
@@ -214,7 +214,9 @@ test("an already open WebSocket still requires mouse completion before publishin
     };
     let releaseMouse;
     let closed = false;
-    const page = {
+    const page = Object.assign(new EventEmitter(), {
+        addInitScript: async () => {},
+        evaluate: async () => {},
         isClosed: () => false,
         mouse: {
             move: () =>
@@ -222,15 +224,18 @@ test("an already open WebSocket still requires mouse completion before publishin
                     releaseMouse = resolve;
                 }),
         },
-        on() {},
-    };
-    pool._createBrowserContext = async () => ({
+    });
+    const context = Object.assign(new EventEmitter(), {
         addInitScript: async () => {},
         close: async () => {
             closed = true;
         },
         newPage: async () => page,
+        route: async () => {},
+        unroute: async () => {},
     });
+    pool._createBrowserContext = async () => context;
+    t.after(() => pool.contexts.get(0)?.makerSuiteBridge?.dispose());
     const initialization = pool._getOrStartContextInit(0, { isBackgroundTask: true });
     await tick();
     assert.equal(pool.contexts.has(0), false);
@@ -244,6 +249,7 @@ test("an already open WebSocket still requires mouse completion before publishin
     assert.equal(pool.contexts.get(0).mouseReady, true);
     assert.equal(pool.contexts.get(0).state, "READY");
     assert.equal(closed, false);
+    pool.contexts.get(0).makerSuiteBridge.dispose();
     pool.contexts.clear();
 });
 

@@ -6,6 +6,8 @@ A browser automation service that exposes Google AI Studio Build App through Ope
 
 This repository is independently maintained and derived from [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI), which is itself based on [Ellinav/ais2api](https://github.com/Ellinav/ais2api). It is not an official upstream release. Existing attribution is retained, and this version uses **CC BY-NC 4.0** for noncommercial use under the license terms.
 
+Protocol update (2026-10-16): generation now uses a MakerSuite `GenerateContent` bridge, adapted with permission from [yunx738/ais2api](https://github.com/yunx738/ais2api/commit/79807728179482509cf1f8a4f5e3e175d9dd6702). Existing Build app scripts need no manual update. Responses, including `real` mode, are currently buffered; `early` provides keepalives while waiting. Search, URL context, code execution, file references, structured schemas, image/audio output options, non-AUTO tool choice and thinking levels other than LOW/HIGH are explicitly unsupported. Disable forced built-in tools to use basic generation. See the [implementation and verification record](docs/zh/makersuite-generate-content-protocol-repair-plan-20261016.md#9-实施记录).
+
 ## Features and changes
 
 Upstream features include browser automation, multiple accounts, compatible APIs, tool calls, image and speech models. Availability depends on account permissions and upstream model support.

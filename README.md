@@ -8,6 +8,8 @@
 
 抗截断文本传输：支持 `anti-` 模型前缀、请求级覆盖及独立全局策略，兼容非流式和 fake/early/real。默认 off，范围及限制见 [使用说明](docs/zh/anti-truncation.md) 和 [实施验证记录](docs/zh/anti-truncation-implementation.md)。
 
+2026-10-16 协议修复：生成请求现通过 MakerSuite `GenerateContent` 桥接，参考 [yunx738/ais2api](https://github.com/yunx738/ais2api/commit/79807728179482509cf1f8a4f5e3e175d9dd6702) 并获作者授权。无需手动更新 Build App 脚本。当前 `real` 响应也会等待上游完成后返回，需持续保活可使用 `early`；尚未实现实时增量传输。文本、系统提示、内联媒体、函数调用和 LOW/HIGH 思考配置已编码；搜索、URL context、代码执行、文件引用、结构化 schema、图片/语音输出配置、非 AUTO 工具选择及其他思考级别会明确返回不支持，不再静默忽略。若启用了全局强制内置工具，需要关闭相应选项后使用基本生成能力。详细支持范围与验证状态见[协议修复记录](docs/zh/makersuite-generate-content-protocol-repair-plan-20261016.md#9-实施记录)。
+
 ## 功能与本版本改动
 
 继承上游的多协议 API、浏览器自动化、多账号会话、工具调用、图片及语音模型支持，具体可用能力取决于账号权限和上游模型。

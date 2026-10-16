@@ -1,6 +1,6 @@
 # AI Studio Build 生成请求统一 400：新版 GenerateContent 协议修复方案
 
-日期：2026-10-16（Asia/Shanghai）。状态：待实施；本次仅完成源码核对与修复设计，没有修改运行代码、部署服务或执行真实上游请求。
+日期：2026-10-16（Asia/Shanghai）。状态：已实现本地代码修复；未部署，未执行真实 Google 请求。第 1–8 节保留原始核对与设计依据，实际实现及验证边界见第 9 节。
 
 ## 1. 问题与修复依据
 
@@ -130,16 +130,16 @@ POST {tb.mb.F}/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuite
 
 ### 3.4 生成配置、安全与工具
 
-| Gemini 配置        | 新 `generationConfig` 位置 | 参考实现行为        |
-| ------------------ | -------------------------- | ------------------- |
-| `stopSequences`    | `[1]`                      | 有数组时写入        |
-| `maxOutputTokens`  | `[3]`                      | `gc.maxOutputTokens |     | 65536` |
-| `temperature`      | `[4]`                      | 缺省为 1            |
-| `topP`             | `[5]`                      | 缺省为 0.95         |
-| `topK`             | `[6]`                      | 缺省为 64           |
-| `responseMimeType` | `[7]`                      | 有值时写入          |
-| 未明确字段         | `[13]`                     | 固定为 1            |
-| `thinkingConfig`   | `[16]`                     | 进一步编码为数组    |
+| Gemini 配置        | 新 `generationConfig` 位置 | 参考实现行为                   |
+| ------------------ | -------------------------- | ------------------------------ |
+| `stopSequences`    | `[1]`                      | 有数组时写入                   |
+| `maxOutputTokens`  | `[3]`                      | 缺省 65536（参考代码用逻辑或） |
+| `temperature`      | `[4]`                      | 缺省为 1                       |
+| `topP`             | `[5]`                      | 缺省为 0.95                    |
+| `topK`             | `[6]`                      | 缺省为 64                      |
+| `responseMimeType` | `[7]`                      | 有值时写入                     |
+| 未明确字段         | `[13]`                     | 固定为 1                       |
+| `thinkingConfig`   | `[16]`                     | 进一步编码为数组               |
 
 思考配置：`includeThoughts` 在思考数组 `[0]`，false 编码为 0，其余缺省编码为 1；`thinkingBudget` 在 `[1]`；`thinkingLevel` 在 `[3]`，low 为 1、high 为 2，未指定 budget 和 level 时参考实现设为 high。此处的缺省行为属于移植时必须明确核对的差异，不能无意覆盖当前项目策略。
 
@@ -269,10 +269,42 @@ POST {tb.mb.F}/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuite
 
 出现串号、取消失效、重复生成、假成功或额度结算异常时，停止扩大流量并回退代码。回退旧版本只恢复原有代码行为，不能保证已失效的旧上游协议恢复可用；必要时暂停生成派发并返回明确的暂不可用错误，避免用反复重试消耗账号与资源。
 
-## 9. 后续实施记录
+## 9. 实施记录
 
-- 运行代码改动：尚未开始。
-- 新增测试与执行结果：尚未开始。
-- 真实请求验收：尚未执行。
-- 实时流方案与未支持字段：待实施时确认并记录。
-- 部署状态：未部署。
+### 9.1 实际改动
+
+- 新增 `MakerSuiteCodec.js`：独立实现请求位置数组、函数 schema / Struct / Value 编码、响应转换和旧 RPC 包装，保留参考来源及许可证说明。
+- 新增 `MakerSuiteBridge.js`：每个账号绑定自己的 context/page，通过 `page.addInitScript` 在导航前注入 hook，并拦截两个旧生成 RPC。无需修改已保存的 Build App。
+- 接入 `BrowserManager` 的账号初始化、初始化失败清理及 context 关闭。页面重载自动重装；过期导航结果不会写回。
+- 原始 RPC 的 fetch / XHR 与新请求共用取消控制器。用仅存在于被拦截旧 URL 上的临时 query 标识关联调用，避免添加自定义请求头而改变 CORS 预检要求；新上游地址不会携带该标识。
+- 每次请求设置 AbortController 和 deadline；浏览器 deadline 失败前取消新 fetch，Node 侧额外限制挂起的 evaluate。计时器、事件监听器及 route 按实例清理。
+- 新 RPC 的错误保留实际 HTTP 状态和 protobuf Status 数组，包括消息和 details；HTTP 200 内的 Status 错误也转为失败。等待令牌有界，返回 503；取消返回 499，deadline 返回 504。
+- usage 中缺失字段保持未知，不填 0；保留多个候选。未确认 finishReason 或无法识别的响应返回 502，避免伪造 STOP。
+- 新增两个默认离线测试文件和一个可选 Firefox 测试文件；旧浏览器生命周期测试桩补齐新接入需要的接口。
+
+### 9.2 当前能力和限制
+
+已经实现并用固定样本验证：文本、系统提示、inlineData、函数声明、嵌套函数参数与返回、thought / thoughtSignature、thinkingBudget、LOW/HIGH thinkingLevel、安全设置，以及普通 AUTO 工具选择。默认不强制 HIGH 或 includeThoughts，保留客户端配置意图。
+
+`real` 仍走与参考补丁相同的缓冲桥接：上游结束后才包装返回全部 chunk。安装日志及中英文 README 已明确说明，不能将此结果描述为恢复实时增量流。桥接的默认非流式 deadline 为 295 秒、streamed RPC 为 55 秒；按配置中的对应外层 timeout 减 5 秒，最大不超过浏览器 5 分钟上限。`early` 保活不算实际模型内容。
+
+尚未确认协议映射的字段明确返回 400：内置搜索、URL context、代码执行、fileData、responseSchema / responseJsonSchema、responseModalities 等图片/语音输出配置、非 AUTO toolConfig，以及 MINIMAL/MEDIUM 思考级别和其他未支持字段。不会静默删除。全局强制工具或模型工具后缀同样受此限制；如需基本生成，应关闭对应选项或移除后缀。
+
+反截断的 AUTO 路径已通过真实 FormatConverter 到 bridge codec 的离线测试；`tool_choice=required/none` 以及指定函数会产生非 AUTO 配置，目前明确拒绝，不能记为所有反截断组合均可用。
+
+这些限制是当前参考协议映射的边界，README 已提示；后续应根据实际页面样本补齐，不猜测新字段位置。
+
+### 9.3 验证记录
+
+执行环境：Node 22.23.2。真实 Firefox 测试使用 Playwright Firefox 148.0.2（firefox-1511）。
+
+- 定向离线测试：`node --test tests/makersuite-codec.test.js tests/makersuite-bridge.test.js tests/browser-recovery.test.js`，最终 35 项通过，0 失败；其中新增协议 codec / bridge 测试 21 项。
+- 完整回归：`npm test` 已通过，0 失败；原有 32 项依赖外部环境的用例按自身条件跳过。最终 codec 的错误尾块及独立签名修正另由上述定向测试验证。
+- 改动 JS 的 ESLint 检查及改动文件的 Prettier 检查均通过；`git diff --check` 通过。
+- 可选真实浏览器测试：`npm run test:protocol:browser`，1 项通过，0 失败；首次运行先 `npx playwright install firefox`。测试只访问本机 HTTP fixture，不连接 Google，不使用账号额度。覆盖跨域凭据与预检场景、旧请求不出网、新 RPC 认证与 token 字段、fetch / XHR 取消、重载后重新捕获服务对象及兼容响应。
+
+当前工作区 `data` 目录没有账号凭据，未执行真实 Google 模型调用、生产 429 / 冷却验证或生产部署。上述浏览器测试只证明实际浏览器中的桥接与取消机制，不能证明 Google 当前所有模型及字段都可用。上线前仍需完成第 7.2 节适用范围内的真实验收。
+
+### 9.4 部署状态
+
+仅修改本地项目代码与文档；未发布镜像、未重启生产服务、未变更账号或额度数据。
