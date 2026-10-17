@@ -17,7 +17,7 @@
 
 1. 登录 Google AI Studio，进入 Build 创建自己的 Web App。
 2. 上传上述 `build.js` 和 `index.html`，将[提示词全文](build-app-prompt.md)复制到 Build 对话中发送。
-3. 保存 App，设置share权限为向所有人开放，取得其 **AI Studio App 页面URL**，用于服务端打开宿主页。不要使用临时预览 iframe 地址代替。确认参与运行的 Google 账号能访问该 App。
+3. 保存 App，点击右上角 Share，设置权限为向所有人开放，复制浏览器地址的 **AI Studio App 页面URL**，用于服务端打开宿主页。
 
 编辑器预览通常没有自动化服务注入的身份，也没有 `127.0.0.1:9998` 服务。身份等待或连接失败可以发生在编译成功的 App 中；不代表实际错误，应接入服务后再验证连接。
 
