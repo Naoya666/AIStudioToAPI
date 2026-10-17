@@ -96,6 +96,12 @@ The setup script checks dependencies, downloads Camoufox and guides you through 
 
 `npm start` builds both frontends. Use `npm run quick-start` only when the frontends are already built and unchanged. Source installs store runtime data in the repository's `data/` directory.
 
+## Create your own Build App
+
+Attach [build.js](scripts/client/build.js) and [index.html](scripts/client/index.html) from the same version as your deployment in Google AI Studio Build, then send the [complete copyable prompt](docs/zh/build-app-prompt.md) (Chinese). It requires the original protocol and author information to be preserved, with actual project files and compilation checks.
+
+After creating the App, set `this.targetUrl` in `src/core/BrowserManager.js` to its AI Studio App page URL, then rebuild and restart the service. Follow the [Build App guide](docs/en/build-app-guide.md) for the full steps. Preview identity or connection failures do not imply compilation failure: the editor lacks service-injected identity and the local WebSocket. Validate identity, a real connection and API processing separately after integration.
+
 ## Account management
 
 Open `/accounts` to save email/password credentials and optional TOTP secrets, import CSV accounts, upload authentication JSON, or manage the login queue. Docker deployments also provide the `/auth` VNC entry for manual login. You can bind a proxy node before logging in.
@@ -177,13 +183,13 @@ This version adopts the upstream **CC BY-NC 4.0** license. All usage, distributi
 
 Third-party components, including Node.js, Camoufox and Mihomo, retain their own licenses. The image stores Mihomo's license and source link in `/usr/share/licenses/mihomo/`.
 
-### Gemini 4 Argon with legacy Build RPC
+### Gemini 4 Argon account eligibility
 
-`gemini-4-argon` uses the host page's existing `ProxyUnaryCall`. Verify the exact model with each account in your existing Build App, then set `ARGON_VERIFIED_ACCOUNTS=[0,2]` in `.env` using your internal auth indices and restart. The default `[]` disables dispatch. This allowlist grants no entitlement; a live paid benefit is also required. Recheck it after replacing or renumbering accounts.
+`gemini-4-argon` defaults to the host page’s MakerSuite GenerateContent bridge; see “Model transport compatibility” below. Verify the exact model with each account in your existing Build App, then set `ARGON_VERIFIED_ACCOUNTS=[0,2]` in `.env` using your internal auth indices and restart. The default `[]` disables dispatch. This allowlist grants no entitlement; a live paid benefit is also required. Recheck it after replacing or renumbering accounts.
 
 Entitlement observation and read-only queries are isolated per account and document. Unknown accounts may preflight but cannot generate. Failed queries remain distinct from free accounts and can retry after 30 seconds or after reload. Missing entitlement does not expire the whole account pool.
 
-Chat Completions, Responses, Anthropic and native Gemini retain JSON/SSE compatibility. Streaming for this exact model is buffered unary output, including global `real`, the `-real` suffix and native `alt=sse`. Other models keep their streaming behavior. Only final native RPC entitlement headers are supplemented; body, WAA and authentication remain intact, with no direct GenerateContent fallback. Local daily quota stays unknown; upstream 429 handling remains active.
+Chat Completions, Responses, Anthropic and native Gemini retain JSON/SSE compatibility. Streaming for this exact model is buffered unary output, including global `real`, the `-real` suffix and native `alt=sse`. Other models keep their streaming behavior. The bridge uses the current host page’s real benefit and authentication context and generates a new WAA for the converted payload. There is no automatic cross-channel fallback. Local daily quota stays unknown; upstream 429 handling remains active.
 
 `node --test tests/build-benefit.test.js` runs real Firefox against a local TLS/CONNECT fixture without contacting Google (requires Playwright Firefox and OpenSSL). Offline success does not establish live account or Build model availability; live acceptance remains separate.
 
