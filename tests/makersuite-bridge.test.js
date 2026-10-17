@@ -5,6 +5,9 @@ const vm = require("node:vm");
 const { MakerSuiteBridge } = require("../src/core/MakerSuiteBridge");
 const RPC =
     "https://alkali.example/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/ProxyUnaryCall";
+const PAGE_KEY = "AIza" + "A".repeat(35);
+const TOKEN_KEY = "AIza" + "T".repeat(35);
+const OTHER_KEY = "AIza" + "B".repeat(35);
 const content = [[[null, "answer"]], "model"];
 const success = JSON.stringify([[[[content, 1]], null, [1, 2, 3]]]);
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -89,8 +92,13 @@ function fixture(t, authIndex = 0, options = {}) {
         vm.runInContext(page.init, realm);
         if (capture)
             await sandbox.default_MakerSuite.Cn({
-                getMetadata: () => ({ Authorization: "private" }),
-                mb: { F: "https://upstream.example", jK: "key", Ml: authIndex },
+                getMetadata: () =>
+                    options.metadata || {
+                        Authorization: "private",
+                        "X-Goog-Api-Key": TOKEN_KEY,
+                        "X-Goog-AuthUser": String(authIndex),
+                    },
+                mb: options.mb || { F: "https://wrong.example", jK: TOKEN_KEY, Ml: 99, renamed: PAGE_KEY },
             });
     }
     function route({
@@ -132,7 +140,11 @@ test("installs before navigation, bridges the full dotted RPC name and leaves no
     await f.context.handler(route);
     assert.equal(route.outcomes[0].status, 200);
     assert.equal(f.calls.length, 1);
-    assert.match(f.calls[0].url, /MakerSuiteService\/GenerateContent$/);
+    assert.match(
+        f.calls[0].url,
+        /^https:\/\/alkalimakersuite-pa\.clients6\.google\.com\/\$rpc\/.*MakerSuiteService\/GenerateContent$/
+    );
+    assert.equal(f.calls[0].init.headers["x-goog-api-key"], PAGE_KEY);
     const config = f.calls[0].init;
     assert.equal(config.credentials, "include");
     assert.equal(config.headers.authorization, "private");
@@ -178,7 +190,7 @@ test("unsupported requests fail before network; missing token is bounded and dis
     const unready = f.route();
     await f.bridge.handle(unready);
     assert.equal(unready.outcomes[0].status, 503);
-    assert.match(unready.outcomes[0].body, /token service not ready/);
+    assert.match(unready.outcomes[0].body, /page authentication not ready/);
 });
 
 test("upstream HTTP and application errors preserve Status detail instead of fake success", async t => {
@@ -324,8 +336,8 @@ test("init script is idempotent and can capture a fresh page token service after
     f.sandbox.default_MakerSuite = { Cn: async () => "fresh-token", GB: async () => "hash" };
     vm.runInContext(f.page.init, f.realm);
     await f.sandbox.default_MakerSuite.Cn({
-        getMetadata: () => ({ Authorization: "new-auth" }),
-        mb: { F: "https://fresh.example", jK: "new-key", Ml: 3 },
+        getMetadata: () => ({ Authorization: "new-auth", "X-Goog-AuthUser": "3" }),
+        mb: { renamed: OTHER_KEY },
     });
     assert.equal(f.sandbox.__makerSuiteBridge.tb.getMetadata().Authorization, "new-auth");
     const route = f.route();
@@ -364,4 +376,170 @@ test("a hung Playwright evaluation is bounded by the Node deadline", async t => 
     assert.equal(route.outcomes[0].status, 504);
     assert.equal(f.bridge.active.size, 0);
     assert.equal(f.calls.length, 0);
+});
+
+const SERVICE =
+    "https://alkalimakersuite-pa.clients6.google.com/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/";
+
+test("native page observations override wrong mixed-up properties and never learn from bridge calls", async t => {
+    const f = fixture(t, 0, { mb: { jK: TOKEN_KEY, renamed: OTHER_KEY } });
+    await f.init();
+    await f.sandbox.fetch(SERVICE + "ListModels", { headers: { "x-goog-api-key": PAGE_KEY }, method: "POST" });
+    const nativeCalls = f.calls.length;
+    const route = f.route();
+    await f.bridge.handle(route);
+    assert.equal(route.outcomes[0].status, 200);
+    assert.equal(f.calls[nativeCalls].init.headers["x-goog-api-key"], PAGE_KEY);
+    assert.equal(f.sandbox.__makerSuiteBridge.confirmNative(PAGE_KEY), true);
+    const scan = fixture(t, 1);
+    await scan.init();
+    await scan.bridge.handle(scan.route());
+    assert.equal(
+        scan.sandbox.__makerSuiteBridge.confirmNative(PAGE_KEY),
+        false,
+        "generated traffic cannot validate a scanned key"
+    );
+    assert.equal(
+        f.logs.some(v => v.includes(PAGE_KEY) || v.includes(TOKEN_KEY) || v.includes(OTHER_KEY)),
+        false
+    );
+});
+
+test("metadata exclusions are applied after observations and ambiguous scans cannot generate", async t => {
+    const f = fixture(t, 0, { mb: {} });
+    await f.init();
+    const md = { Authorization: "private", "X-Goog-Api-Key": TOKEN_KEY };
+    f.sandbox.__makerSuiteBridge.tb.getMetadata = () => md;
+    await f.sandbox.fetch(SERVICE + "ListModels", { headers: { "x-goog-api-key": TOKEN_KEY } });
+    const route = f.route();
+    await f.bridge.handle(route);
+    assert.equal(route.outcomes[0].status, 503);
+    assert.match(route.outcomes[0].body, /MakerSuiteAuth:key_unavailable/);
+    assert.equal(f.calls.filter(c => c.url.endsWith("/GenerateContent")).length, 0);
+    md["X-Goog-Api-Key"] = OTHER_KEY;
+    const stillRejected = f.route();
+    await f.bridge.handle(stillRejected);
+    assert.equal(
+        stillRejected.outcomes[0].status,
+        503,
+        "an identified token-service key stays excluded for the document lifetime"
+    );
+    await f.sandbox.fetch(SERVICE + "ListModels", { headers: { "x-goog-api-key": PAGE_KEY } });
+    const next = f.route();
+    await f.bridge.handle(next);
+    assert.equal(next.outcomes[0].status, 200);
+    const ambiguous = fixture(t, 1, { mb: { one: PAGE_KEY, two: OTHER_KEY } });
+    await ambiguous.init();
+    const rejected = ambiguous.route();
+    await ambiguous.bridge.handle(rejected);
+    assert.equal(rejected.outcomes[0].status, 503);
+    assert.equal(ambiguous.calls.length, 0);
+});
+
+test("wrong origins and paths cannot teach a page key; absent Authorization prevents upstream", async t => {
+    const f = fixture(t, 0, { mb: {} });
+    await f.init();
+    for (const url of [
+        SERVICE.replace("https:", "http:"),
+        SERVICE.replace(".com/", ".com.evil/"),
+        SERVICE.replace(".com/", ".com:8443/"),
+        "https://alkalimakersuite-pa.clients6.google.com/other",
+    ]) {
+        await f.sandbox.fetch(url, { headers: { "x-goog-api-key": PAGE_KEY } });
+    }
+    assert.equal(f.sandbox.__makerSuiteBridge.confirmNative(PAGE_KEY), false);
+    const missing = fixture(t, 1, { metadata: { "X-Goog-AuthUser": "8" } });
+    await missing.init();
+    const route = missing.route();
+    await missing.bridge.handle(route);
+    assert.equal(route.outcomes[0].status, 503);
+    assert.equal(missing.calls.length, 0);
+    const defaultUser = fixture(t, 1, { mb: { renamed: PAGE_KEY }, metadata: { Authorization: "private" } });
+    await defaultUser.init();
+    await defaultUser.bridge.handle(defaultUser.route());
+    assert.equal(defaultUser.calls[0].init.headers["x-goog-authuser"], "0");
+});
+
+test("401 is preserved with bounded diagnosis, rejected key invalidation and zero implicit replay", async t => {
+    for (const diagnosis of ["unverified", "expired", "throw", "hang"]) {
+        const f = fixture(t, 0, {
+            bridge: {
+                diagnosticTimeoutMs: 5,
+                validateSession: async () => {
+                    if (diagnosis === "throw") throw new Error("secret diagnostic details");
+                    if (diagnosis === "hang") return new Promise(() => {});
+                    return diagnosis;
+                },
+            },
+            fetch: async () => ({ status: 401, text: async () => '[16,"UNAUTHENTICATED",[{"detail":"preserved"}]]' }),
+        });
+        await f.init();
+        const route = f.route();
+        await f.bridge.handle(route);
+        assert.equal(route.outcomes[0].status, 401);
+        const status = JSON.parse(route.outcomes[0].body);
+        assert.match(
+            status[1],
+            diagnosis === "expired" ? /MakerSuiteAuth:session_expired/ : /MakerSuiteAuth:unverified/
+        );
+        assert.equal(status[2][0].detail, "preserved");
+        assert.equal(f.calls.length, 1);
+        const next = f.route();
+        await f.bridge.handle(next);
+        assert.equal(next.outcomes[0].status, 503, "a rejected scan cannot be reused without new page evidence");
+        assert.equal(f.calls.length, 1);
+    }
+});
+
+test("authentication errors in a stream tail cannot bypass auth diagnosis", async t => {
+    const response = JSON.parse(success);
+    response.push([16, "UNAUTHENTICATED"]);
+    const f = fixture(t, 0, { fetch: async () => ({ status: 200, text: async () => JSON.stringify(response) }) });
+    await f.init();
+    const route = f.route();
+    await f.bridge.handle(route);
+    assert.equal(route.outcomes[0].status, 401);
+    assert.match(route.outcomes[0].body, /MakerSuiteAuth:unverified/);
+    assert.equal(f.sandbox.__makerSuiteBridge.auth().state, "key_missing");
+});
+
+test("request observers are scoped to their page and removed on disposal", async t => {
+    const f = fixture(t);
+    await f.init();
+    assert.equal(f.context.listenerCount("request"), 1);
+    const native = {
+        frame: () => f.frame,
+        headers: () => ({ "x-goog-api-key": OTHER_KEY }),
+        url: () => SERVICE + "ListModels",
+    };
+    f.context.emit("request", native);
+    await tick();
+    assert.equal(
+        f.sandbox.__makerSuiteBridge.confirmNative(OTHER_KEY),
+        false,
+        "Node observation cannot inject a key into a new page realm"
+    );
+    await f.sandbox.fetch(native.url(), { headers: native.headers() });
+    f.context.emit("request", native);
+    await tick();
+    assert.match(f.logs.at(-1), /page API key observed/);
+    f.bridge.dispose();
+    assert.equal(f.context.listenerCount("request"), 0);
+});
+
+test("XHR native headers teach the key before a GenerateContent request", async t => {
+    const f = fixture(t, 0, { mb: {} });
+    vm.runInContext(
+        "window.XMLHttpRequest = class { open() {} send() {} abort() {} setRequestHeader() {} addEventListener() {} };",
+        f.realm
+    );
+    await f.init();
+    vm.runInContext(
+        `var xhr = new XMLHttpRequest(); xhr.open("POST", ${JSON.stringify(SERVICE + "ListModels")}); xhr.setRequestHeader("X-Goog-Api-Key", ${JSON.stringify(PAGE_KEY)}); xhr.send();`,
+        f.realm
+    );
+    const route = f.route();
+    await f.bridge.handle(route);
+    assert.equal(route.outcomes[0].status, 200);
+    assert.equal(f.calls[0].init.headers["x-goog-api-key"], PAGE_KEY);
 });

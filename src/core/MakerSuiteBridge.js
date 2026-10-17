@@ -1,9 +1,10 @@
 /**
  * Browser transport adapted with permission from yunx738/ais2api, commit
- * 79807728179482509cf1f8a4f5e3e175d9dd6702 (CC BY-NC 4.0).
+ * 79807728179482509cf1f8a4f5e3e175d9dd6702 and e134063 (CC BY-NC 4.0).
  * The old RPC envelope is kept so existing Build apps need no manual update.
  */
 const { randomUUID } = require("node:crypto");
+const { tagStatus } = require("../utils/MakerSuiteAuth");
 const { buildBody, errorEnvelope, wrapResponse } = require("./MakerSuiteCodec");
 const RPC = /MakerSuiteService\/Proxy(Unary|Streamed)Call(?:\?|$)/;
 const MARKER = "__aistudio_bridge_id";
@@ -15,19 +16,79 @@ function installPageBridge() {
     if (window.__makerSuiteBridge) return;
     const records = new Map();
     const nativeFetch = window.fetch.bind(window);
+    const endpoint = "https://alkalimakersuite-pa.clients6.google.com";
+    const keyPattern = /^AIza[0-9A-Za-z_-]{30,}$/;
+    const observed = new Map(),
+        rejected = new Set();
+    const tokenServiceKey = "AIzaSyBGb5fGAyC-pRcRU6MUHb__b_vKha71HRE";
+    const excluded = new Set([tokenServiceKey]);
+    const validUrl = value => {
+        try {
+            const url = new URL(String(value), window.location.href);
+            return (
+                url.protocol === "https:" &&
+                url.origin === endpoint &&
+                /^\/\$rpc\/google\.internal\.alkali\.applications\.makersuite\.v1\.MakerSuiteService\/[^/]+$/.test(
+                    url.pathname
+                )
+            );
+        } catch {
+            return false;
+        }
+    };
     const rpc = /MakerSuiteService\/Proxy(Unary|Streamed)Call(?:\?|$)/;
     let sequence = 0;
     const prefix = Math.random().toString(36).slice(2);
     const service = {
+        auth() {
+            let metadata;
+            try {
+                metadata = new Headers(service.tb?.getMetadata() || {});
+            } catch {
+                return { state: "metadata_missing" };
+            }
+            const exclude = metadata.get("x-goog-api-key");
+            if (exclude) excluded.add(exclude);
+            const permitted = key => keyPattern.test(key || "") && !excluded.has(key) && !rejected.has(key);
+            // A later metadata exclusion invalidates any earlier preliminary observation.
+            const known = [...observed.keys()].filter(permitted);
+            let key = known.at(-1),
+                source = "observed";
+            if (!key) {
+                let values = [];
+                try {
+                    values = Object.values(service.tb?.mb || {});
+                } catch {
+                    /* No trustworthy fallback. */
+                }
+                const candidates = [...new Set(values.filter(v => typeof v === "string" && permitted(v)))];
+                if (candidates.length !== 1) return { state: candidates.length ? "key_ambiguous" : "key_missing" };
+                key = candidates[0];
+                source = "scan";
+            }
+            const authorization = metadata.get("authorization");
+            if (!authorization) return { state: "authorization_missing" };
+            return { authorization, authuser: metadata.get("x-goog-authuser") ?? "0", key, source, state: "ready" };
+        },
+
         cancel(id) {
             records.get(id)?.controller.abort();
         },
+
+        confirmNative(key) {
+            return !service.closed && !excluded.has(key) && observed.has(key);
+        },
+
         dispose() {
             service.closed = true;
             clearInterval(service.timer);
             for (const r of records.values()) r.controller.abort();
             records.clear();
+            observed.clear();
+            rejected.clear();
+            excluded.clear();
         },
+
         hook() {
             const M = window.default_MakerSuite;
             if (!M?.Cn || !M.GB) return "module_missing";
@@ -41,6 +102,16 @@ function installPageBridge() {
                 M.Cn = wrapped;
             }
             return service.tb ? "ready" : "token_pending";
+        },
+        // Observations belong to this page realm; they cannot survive navigation.
+        observe(url, headers) {
+            if (!validUrl(url) || service.closed) return false;
+            const key = new Headers(headers || {}).get("x-goog-api-key");
+            if (!keyPattern.test(key || "") || excluded.has(key)) return false;
+            rejected.delete(key);
+            observed.delete(key);
+            observed.set(key, true);
+            return true;
         },
         async run({ id, body, ht, timeoutMs, readyTimeoutMs }) {
             if (service.closed) return { status: 499, text: '[1,"MakerSuite bridge disposed"]' };
@@ -57,10 +128,15 @@ function installPageBridge() {
             };
             try {
                 const readyDeadline = Date.now() + Math.min(readyTimeoutMs, timeoutMs);
-                while (service.hook() !== "ready") {
+                let auth;
+                while (service.hook() !== "ready" || (auth = service.auth()).state !== "ready") {
                     check();
                     if (Date.now() >= readyDeadline)
-                        return { status: 503, text: '[14,"MakerSuite token service not ready"]' };
+                        return {
+                            authState: auth?.state || "token_pending",
+                            status: 503,
+                            text: '[14,"MakerSuite page authentication not ready"]',
+                        };
                     await new Promise(resolve => setTimeout(resolve, 25));
                 }
                 check();
@@ -68,18 +144,25 @@ function installPageBridge() {
                     tb = service.tb;
                 body[4] = await M.Cn(tb, await M.GB(ht));
                 check();
-                const metadata = tb.getMetadata(),
-                    mb = tb.mb;
+                // Refresh metadata after token generation; never reuse Authorization across calls.
+                auth = service.auth();
+                if (auth.state !== "ready")
+                    return {
+                        authState: auth.state,
+                        status: 503,
+                        text: '[14,"MakerSuite page authentication not ready"]',
+                    };
                 const response = await nativeFetch(
-                    mb.F + "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/GenerateContent",
+                    endpoint +
+                        "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/GenerateContent",
                     {
                         body: JSON.stringify(body),
                         credentials: "include",
                         headers: {
-                            authorization: metadata.Authorization,
+                            authorization: auth.authorization,
                             "content-type": "application/json+protobuf",
-                            "x-goog-api-key": mb.jK,
-                            "x-goog-authuser": String(mb.Ml),
+                            "x-goog-api-key": auth.key,
+                            "x-goog-authuser": auth.authuser,
                             "x-user-agent": "grpc-web-javascript/0.1",
                         },
                         method: "POST",
@@ -88,7 +171,22 @@ function installPageBridge() {
                 );
                 const text = await response.text();
                 check();
-                return { status: response.status, text };
+                // Do not learn from this nativeFetch: it deliberately bypasses observe().
+                let rpcCode;
+                try {
+                    const value = JSON.parse(text);
+                    const records = Array.isArray(value)
+                        ? [value, ...value, ...(Array.isArray(value[0]) ? value[0] : [])]
+                        : [];
+                    if (records.some(v => Array.isArray(v) && v[0] === 16 && typeof v[1] === "string")) rpcCode = 16;
+                } catch {
+                    /* codec validates */
+                }
+                if (response.status === 401 || rpcCode === 16) {
+                    rejected.add(auth.key);
+                    observed.delete(auth.key);
+                }
+                return { authSource: auth.source, status: response.status, text };
             } catch (e) {
                 // Do not return raw evaluation/transport errors which can include credentials or URLs.
                 return {
@@ -115,7 +213,11 @@ function installPageBridge() {
     // cross-origin preflight requirements.
     window.fetch = function (input, init) {
         const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
-        if (!rpc.test(url)) return nativeFetch(input, init);
+        if (!rpc.test(url)) {
+            service.observe(url, init?.headers || input?.headers);
+            return nativeFetch(input, init);
+        }
+        service.observe(url, init?.headers || input?.headers);
         const id = `${prefix}:${++sequence}`,
             controller = new AbortController();
         const signal = init?.signal || input?.signal;
@@ -136,13 +238,14 @@ function installPageBridge() {
     if (proto) {
         const open = proto.open,
             send = proto.send,
-            abort = proto.abort;
+            abort = proto.abort,
+            setRequestHeader = proto.setRequestHeader;
         const state = new WeakMap();
         proto.open = function (method, url) {
             const previous = state.get(this);
             if (previous?.id) service.cancel(previous.id);
             const matches = rpc.test(String(url));
-            const entry = { matches };
+            const entry = { headers: {}, matches, url: String(url) };
             if (matches) {
                 entry.id = `${prefix}:${++sequence}`;
                 const marked = new URL(String(url), window.location.href);
@@ -152,8 +255,14 @@ function installPageBridge() {
             state.set(this, entry);
             return open.apply(this, arguments);
         };
+        proto.setRequestHeader = function (name, value) {
+            const entry = state.get(this);
+            if (entry) entry.headers[String(name).toLowerCase()] = String(value);
+            return setRequestHeader.apply(this, arguments);
+        };
         proto.send = function () {
             const entry = state.get(this);
+            if (entry) service.observe(entry.url, entry.headers);
             if (entry?.matches) {
                 const id = entry.id;
                 records.set(id, { controller: new AbortController() });
@@ -199,8 +308,20 @@ class MakerSuiteBridge {
         timeoutMs = 295000,
         streamTimeoutMs = 55000,
         readyTimeoutMs = 10000,
+        validateSession = async () => "unverified",
+        diagnosticTimeoutMs = 2000,
     }) {
-        Object.assign(this, { authIndex, context, logger, page, readyTimeoutMs, streamTimeoutMs, timeoutMs });
+        Object.assign(this, {
+            authIndex,
+            context,
+            diagnosticTimeoutMs,
+            logger,
+            page,
+            readyTimeoutMs,
+            streamTimeoutMs,
+            timeoutMs,
+            validateSession,
+        });
         this.active = new Map();
         this.closed = false;
         this.epoch = 0;
@@ -212,6 +333,36 @@ class MakerSuiteBridge {
             if (frame === page.mainFrame()) {
                 this.epoch++;
                 for (const entry of this.active.values()) entry.invalidate();
+            }
+        };
+        this.onRequest = request => {
+            // Confirm an observation made in the CURRENT page realm; never inject a
+            // key from an old document or our own GenerateContent call into it.
+            try {
+                const url = new URL(request.url());
+                if (
+                    this.closed ||
+                    request.frame() !== page.mainFrame() ||
+                    url.protocol !== "https:" ||
+                    url.origin !== "https://alkalimakersuite-pa.clients6.google.com" ||
+                    !/^\/\$rpc\/google\.internal\.alkali\.applications\.makersuite\.v1\.MakerSuiteService\//.test(
+                        url.pathname
+                    ) ||
+                    url.pathname.endsWith("/GenerateContent")
+                )
+                    return;
+                const key = request.headers()["x-goog-api-key"];
+                if (!/^AIza[0-9A-Za-z_-]{30,}$/.test(key || "")) return;
+                const epoch = this.epoch;
+                this.page
+                    .evaluate(pageEval, `window.__makerSuiteBridge?.confirmNative(${JSON.stringify(key)})`)
+                    .then(confirmed => {
+                        if (confirmed && !this.closed && this.epoch === epoch)
+                            this.logger.debug(`[MakerSuite] account #${this.authIndex}: page API key observed`);
+                    })
+                    .catch(() => {});
+            } catch {
+                /* Detached frames and disposed contexts cannot update auth state. */
             }
         };
         this.onFailed = request => {
@@ -228,6 +379,7 @@ class MakerSuiteBridge {
         this.context.once("close", this.onClose);
         this.page.on("framenavigated", this.onNavigation);
         this.context.on("requestfailed", this.onFailed);
+        this.context.on("request", this.onRequest);
         await this.page.addInitScript({ content: INIT });
         if (this.closed) return this;
         await this.context.route(RPC, this.route);
@@ -269,7 +421,8 @@ class MakerSuiteBridge {
         const streamed = /ProxyStreamedCall/.test(request.url());
         const id = new URL(request.url()).searchParams.get(MARKER) || randomUUID();
         let invalid = false,
-            deadline;
+            deadline,
+            keySource = "unknown";
         let invalidate;
         const invalidated = new Promise(resolve => {
             invalidate = () => {
@@ -302,6 +455,7 @@ class MakerSuiteBridge {
             });
             const result = await Promise.race([pending, invalidated, expired]);
             if (invalid || this.closed || epoch !== this.epoch || !result) return;
+            keySource = result.authSource || "unknown";
             let error;
             try {
                 const v = JSON.parse(result.text);
@@ -311,6 +465,15 @@ class MakerSuiteBridge {
             }
             if (result.status !== 200 || error) {
                 const normalized = errorEnvelope(result.text, result.status);
+                if (result.authState) normalized.body = tagStatus(normalized.body, "key_unavailable");
+                if (normalized.status === 401) {
+                    const state = await this.diagnoseAuth(invalidated);
+                    if (invalid || this.closed || epoch !== this.epoch) return;
+                    normalized.body = tagStatus(normalized.body, state);
+                    this.logger.warn(
+                        `[MakerSuite] account #${this.authIndex}: authentication state=${state}, key_source=${result.authSource || "unknown"}, page_epoch=${epoch}`
+                    );
+                }
                 this.logger.warn(
                     `[MakerSuite] account #${this.authIndex}: generation failed status=${normalized.status}`
                 );
@@ -325,15 +488,38 @@ class MakerSuiteBridge {
                 const status = error.status || 502;
                 const message = error.status ? error.message : "MakerSuite bridge request failed";
                 // Keep the protobuf RPC Status shape expected by the Studio client.
-                await fulfill({
-                    body: JSON.stringify(error.rpcStatus || [status === 400 ? 3 : 13, message]),
-                    status,
-                }).catch(() => {});
+                let body = JSON.stringify(error.rpcStatus || [status === 400 ? 3 : 13, message]);
+                if (status === 401) {
+                    const state = await this.diagnoseAuth(invalidated);
+                    if (invalid || this.closed || epoch !== this.epoch) return;
+                    body = tagStatus(body, state);
+                    this.logger.warn(
+                        `[MakerSuite] account #${this.authIndex}: authentication state=${state}, key_source=${keySource}, page_epoch=${epoch}`
+                    );
+                }
+                await fulfill({ body, status }).catch(() => {});
             }
         } finally {
             clearTimeout(deadline);
             this.active.delete(request);
             if (invalid) await route.abort("aborted").catch(() => {});
+        }
+    }
+    async diagnoseAuth(invalidated) {
+        let timer;
+        try {
+            const state = await Promise.race([
+                Promise.resolve().then(() => this.validateSession()),
+                invalidated,
+                new Promise(resolve => {
+                    timer = setTimeout(() => resolve("unverified"), this.diagnosticTimeoutMs);
+                }),
+            ]);
+            return state === "expired" ? "session_expired" : "unverified";
+        } catch {
+            return "unverified";
+        } finally {
+            clearTimeout(timer);
         }
     }
     dispose() {
@@ -349,6 +535,7 @@ class MakerSuiteBridge {
         this.context.removeListener("close", this.onClose);
         this.page.removeListener("framenavigated", this.onNavigation);
         this.context.removeListener("requestfailed", this.onFailed);
+        this.context.removeListener("request", this.onRequest);
         this.context.unroute(RPC, this.route).catch(() => {});
     }
 }

@@ -1,3 +1,4 @@
+const { authState, isBridgeAuthFailure } = require("../utils/MakerSuiteAuth");
 const fs = require("fs");
 const path = require("path");
 const FormatConverter = require("./FormatConverter");
@@ -125,6 +126,8 @@ function classifyError(error = {}) {
         /^\s*\[(\d{3})\]/.exec(message)?.[1] || /Google API returned error:\s*(\d{3})/i.exec(message)?.[1]
     );
     const status = Number.isFinite(explicitStatus) ? explicitStatus : messageStatus;
+    if (isBridgeAuthFailure(error)) return "bridge_auth";
+    if (authState(error) === "session_expired") return "account";
     if (status === 403) return "risk_controlled";
     if (error.accountUnhealthy) return "account";
     if (/^unsupported$/i.test(message.trim())) return "unsupported";
@@ -789,7 +792,8 @@ class ModelScheduler {
         }
         const upstreamAuthExpired =
             kind === "account" &&
-            ((Number(error.status) === 401 && error.upstreamError?.status === "UNAUTHENTICATED") ||
+            (authState(error) === "session_expired" ||
+                (Number(error.status) === 401 && error.upstreamError?.status === "UNAUTHENTICATED") ||
                 /Google API returned error:\s*401\s+UNAUTHENTICATED\b/i.test(String(error.message || "")));
         const currentSession = this.authSource.accountLoginService?.state?.accounts.find(
             account => account.authIndex === lease.account.index

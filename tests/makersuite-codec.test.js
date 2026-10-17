@@ -105,7 +105,7 @@ test("Part supports inline media, signed function calls and tool responses", () 
     assert.deepEqual(body[1][0][0][1][10], ["f", [[["ok", [null, null, null, false]]]], "call-1"]);
     assert.equal(body[1][0][0][1][14], "sig");
     assert.deepEqual(body[1][1][0][0][11], ["f", [[["value", [null, 0]]]], "call-1"]);
-    assert.equal(ht, "aGVsbG8=");
+    assert.equal(ht, "aGVsbG8=  ");
 });
 
 test("unsupported features are visible errors, safety enums never silently fall back", () => {
@@ -226,4 +226,39 @@ test("a separate empty-text signature attaches to its function call for continua
     assert.deepEqual(result.candidates[0].content.parts, [
         { functionCall: { args: {}, name: "f" }, thoughtSignature: "sig" },
     ]);
+});
+
+test("replayed functions receive the new marker without overwriting genuine signatures", () => {
+    const parts = [
+        { functionCall: { name: "a" } },
+        { functionCall: { name: "b" }, thoughtSignature: "context_engineering_is_the_way_to_go" },
+        { functionCall: { name: "c" }, thought_signature: "genuine-signature" },
+        { functionResponse: { name: "a", response: {} } },
+    ];
+    const { body } = buildBody("m", { contents: [{ parts, role: "model" }] });
+    assert.equal(body[1][0][0][0][14], "skip_thought_signature_validator");
+    assert.equal(body[1][0][0][1][14], "skip_thought_signature_validator");
+    assert.equal(body[1][0][0][2][14], "genuine-signature");
+    assert.equal(body[1][0][0][3][14], undefined);
+    assert.equal(parts[0].thoughtSignature, undefined, "do not mutate source parts");
+});
+
+test("token hash input preserves empty parts and leading, trailing and adjacent spaces", () => {
+    const { ht } = buildBody("m", {
+        contents: [
+            {
+                parts: [
+                    { text: "" },
+                    { text: "A" },
+                    { functionCall: { name: "a" } },
+                    { functionResponse: { name: "a", response: {} } },
+                    { text: "B" },
+                    { inlineData: { data: "base64", mimeType: "image/png" } },
+                    { text: "" },
+                ],
+                role: "user",
+            },
+        ],
+    });
+    assert.equal(ht, " A   B base64 ");
 });

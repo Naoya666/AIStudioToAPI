@@ -10,6 +10,7 @@
  * Main request handler that coordinates between other modules
  */
 const AntiTruncation = require("./AntiTruncation");
+const { isBridgeAuthFailure } = require("../utils/MakerSuiteAuth");
 const { normalizeError } = require("../utils/UpstreamError");
 const AuthSwitcher = require("../auth/AuthSwitcher");
 const FormatConverter = require("./FormatConverter");
@@ -668,7 +669,7 @@ class RequestHandler {
     }
 
     _shouldRetryError(error) {
-        return this.config.immediateSwitchStatusCodes.includes(Number(error?.status));
+        return !isBridgeAuthFailure(error) && this.config.immediateSwitchStatusCodes.includes(Number(error?.status));
     }
 
     async _readInitialMessage(queue) {
@@ -3772,6 +3773,10 @@ class RequestHandler {
                 lastError = errorPayload;
                 this._cancelCurrentAttemptBeforeRetry(proxyRequest, currentQueueAuthIndex);
 
+                if (isBridgeAuthFailure(errorPayload)) {
+                    lastError = { ...errorPayload, skipAccountSwitch: true };
+                    break;
+                }
                 const errorStatus = Number(errorPayload?.status);
                 const isNonRetryableEmbeddingClientError =
                     (errorStatus === 400 || errorStatus === 404) &&

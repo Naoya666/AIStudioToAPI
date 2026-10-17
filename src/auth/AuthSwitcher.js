@@ -9,6 +9,7 @@
  * Authentication Switcher Module
  * Handles account switching logic including single/multi-account modes and fallback mechanisms
  */
+const { isBridgeAuthFailure } = require("../utils/MakerSuiteAuth");
 class AuthSwitcher {
     constructor(logger, config, authSource, browserManager) {
         this.logger = logger;
@@ -244,6 +245,7 @@ class AuthSwitcher {
     }
 
     async handleRequestFailureAndSwitch(errorDetails, sendErrorCallback) {
+        if (isBridgeAuthFailure(errorDetails)) return;
         this.failureCount++;
         if (this.config.failureThreshold > 0) {
             this.logger.warn(

@@ -8,6 +8,10 @@ const { firefox } = require("playwright");
 const { MakerSuiteBridge } = require("../src/core/MakerSuiteBridge");
 const logger = { debug() {}, info() {}, warn() {} };
 const content = [[[null, "browser answer"]], "model"];
+const PAGE_KEY = "AIza" + "A".repeat(35);
+const TOKEN_KEY = "AIza" + "T".repeat(35);
+const SERVICE =
+    "https://alkalimakersuite-pa.clients6.google.com/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/";
 const response = JSON.stringify([[[[content, 1]], null, [1, 2, 3]]]);
 
 test(
@@ -17,7 +21,9 @@ test(
         let oldCalls = 0,
             newCalls = 0,
             cancelled = 0;
-        let hold = false;
+        let hold = false,
+            deny = false;
+        const blocked = new Map();
         const server = http.createServer((req, res) => {
             if (req.method === "OPTIONS") {
                 res.writeHead(204, {
@@ -34,31 +40,13 @@ test(
                 res.end(`<script>
                 window.default_MakerSuite = { Cn: async () => 'token', GB: async () => 'hash' };
                 setTimeout(() => window.default_MakerSuite.Cn({
-                    mb: { F: ${JSON.stringify(base)}, Ml: 0, jK: 'test-key' },
-                    getMetadata: () => ({ Authorization: 'fixture-auth' })
+                    mb: { F: 'https://wrong.example', Ml: 99, jK: ${JSON.stringify(TOKEN_KEY)} },
+                    getMetadata: () => ({ Authorization: 'fixture-auth', 'X-Goog-AuthUser': '7', 'X-Goog-Api-Key': ${JSON.stringify(TOKEN_KEY)} })
+                }).then(async () => {
+                    await fetch(${JSON.stringify(SERVICE + "ListModels")}, { method: 'POST', headers: { 'x-goog-api-key': ${JSON.stringify(PAGE_KEY)} } });
+                    window.pageReady = true;
                 }), 100);
                 </script>`);
-                return;
-            }
-            if (req.url.includes("/GenerateContent")) {
-                newCalls++;
-                assert.equal(req.headers.authorization, "fixture-auth");
-                let raw = "";
-                req.on("data", data => {
-                    raw += data;
-                });
-                req.on("end", () => {
-                    assert.equal(JSON.parse(raw)[4], "token");
-                    assert.equal(req.url.includes("__aistudio_bridge_id"), false);
-                    if (hold) {
-                        res.on("close", () => {
-                            cancelled++;
-                        });
-                        return;
-                    }
-                    res.setHeader("content-type", "application/json+protobuf");
-                    res.end(response);
-                });
                 return;
             }
             oldCalls++;
@@ -73,20 +61,52 @@ test(
         });
         const browser = await firefox.launch({ headless: true });
         t.after(() => browser.close());
-        const context = await browser.newContext();
+        const createContext = async () => {
+            const context = await browser.newContext();
+            context.on("requestfailed", request => {
+                const route = blocked.get(request);
+                if (route) {
+                    blocked.delete(request);
+                    cancelled++;
+                    route.abort().catch(() => {});
+                }
+            });
+            await context.route(SERVICE + "**", async route => {
+                const request = route.request();
+                if (!request.url().endsWith("/GenerateContent")) return route.fulfill({ body: "{}", status: 200 });
+                newCalls++;
+                const headers = request.headers();
+                assert.equal(headers.authorization, "fixture-auth");
+                assert.equal(headers["x-goog-api-key"], PAGE_KEY);
+                assert.equal(headers["x-goog-authuser"], "7");
+                assert.equal(JSON.parse(request.postData())[4], "token");
+                assert.equal(request.url().includes("__aistudio_bridge_id"), false);
+                if (hold) {
+                    blocked.set(request, route);
+                    return;
+                }
+                return route.fulfill({
+                    body: deny ? '[16,"UNAUTHENTICATED"]' : response,
+                    contentType: "application/json+protobuf",
+                    status: deny ? 401 : 200,
+                });
+            });
+            return context;
+        };
+        const context = await createContext();
         const page = await context.newPage();
         const bridge = new MakerSuiteBridge({
             authIndex: 0,
             context,
             logger,
             page,
-            readyTimeoutMs: 2000,
+            readyTimeoutMs: 100,
             timeoutMs: 5000,
         });
         await bridge.install();
         t.after(() => bridge.dispose());
         await page.goto(base);
-        await page.waitForFunction(() => window.__makerSuiteBridge?.hook() === "ready");
+        await page.waitForFunction(() => window.pageReady && window.__makerSuiteBridge?.auth().state === "ready");
         const rpc =
             base.replace("127.0.0.1", "localhost") +
             "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/ProxyUnaryCall";
@@ -112,7 +132,7 @@ test(
         assert.equal(oldCalls, 0);
         // Reload re-runs the installer in a fresh page realm and captures fresh service metadata.
         await page.reload();
-        await page.waitForFunction(() => window.__makerSuiteBridge?.hook() === "ready");
+        await page.waitForFunction(() => window.pageReady && window.__makerSuiteBridge?.auth().state === "ready");
         const xhrResult = await page.evaluate(
             ({ rpc, body }) =>
                 new Promise(resolve => {
@@ -153,6 +173,45 @@ test(
             await waitFor(() => bridge.active.size === 0);
         }
         assert.equal(oldCalls, 0);
+        hold = false;
+        deny = true;
+        const before = newCalls;
+        const rejected = await page.evaluate(
+            async ({ rpc, body }) => {
+                const r = await fetch(rpc, { body, method: "POST" });
+                return { body: await r.text(), status: r.status };
+            },
+            { body, rpc }
+        );
+        assert.equal(rejected.status, 401);
+        assert.match(rejected.body, /MakerSuiteAuth:unverified/);
+        assert.equal(newCalls, before + 1, "no implicit generation retry");
+        const notReady = await page.evaluate(
+            async ({ rpc, body }) => (await fetch(rpc, { body, method: "POST" })).status,
+            { body, rpc }
+        );
+        assert.equal(notReady, 503);
+        assert.equal(newCalls, before + 1);
+        deny = false;
+        // A new context has no process-wide key cache; its first native request must teach it again.
+        const freshContext = await createContext();
+        const freshPage = await freshContext.newPage();
+        const freshBridge = new MakerSuiteBridge({
+            authIndex: 1,
+            context: freshContext,
+            logger,
+            page: freshPage,
+            readyTimeoutMs: 2000,
+        });
+        await freshBridge.install();
+        t.after(() => freshBridge.dispose());
+        await freshPage.goto(base);
+        await freshPage.waitForFunction(() => window.pageReady && window.__makerSuiteBridge?.auth().state === "ready");
+        const freshStatus = await freshPage.evaluate(
+            async ({ rpc, body }) => (await fetch(rpc, { body, method: "POST" })).status,
+            { body, rpc }
+        );
+        assert.equal(freshStatus, 200);
     }
 );
 async function waitFor(check) {

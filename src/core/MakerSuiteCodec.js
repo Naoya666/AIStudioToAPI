@@ -1,6 +1,6 @@
 /**
  * MakerSuite position-array bridge, adapted with permission from yunx738/ais2api
- * commit 79807728179482509cf1f8a4f5e3e175d9dd6702 (CC BY-NC 4.0).
+ * commits 79807728179482509cf1f8a4f5e3e175d9dd6702 and e134063 (CC BY-NC 4.0).
  * See docs/zh/makersuite-generate-content-protocol-repair-plan-20261016.md.
  * Positions below are observed protocol fields, not a public Google API contract.
  */
@@ -117,7 +117,10 @@ function toPart(p) {
         a[11] = [fr.name, encStruct(fr.response || {}), fr.id || null];
     } else if (!(p.thoughtSignature || p.thought_signature)) return fail("Unsupported or empty MakerSuite part");
     if (p.thought != null) a[12] = !!p.thought;
-    if (p.thoughtSignature || p.thought_signature) a[14] = p.thoughtSignature || p.thought_signature;
+    const signature = p.thoughtSignature || p.thought_signature;
+    if (fc && (!signature || signature === "context_engineering_is_the_way_to_go"))
+        a[14] = "skip_thought_signature_validator";
+    else if (signature) a[14] = signature;
     return fill(a);
 }
 function toContent(c) {
@@ -225,7 +228,6 @@ function buildBody(model, g) {
     const ht = contents
         .flatMap(c => c[0])
         .map(p => (p[1] != null ? p[1] : p[2] ? p[2][1] : ""))
-        .filter(Boolean)
         .join(" ");
     return { body, ht };
 }

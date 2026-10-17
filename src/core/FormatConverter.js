@@ -233,7 +233,7 @@ class FormatConverter {
             let signatureAdded = false;
             for (const part of content.parts) {
                 // Check for functionCall without thoughtSignature
-                if (part.functionCall && !part.thoughtSignature) {
+                if (part.functionCall && !(part.thoughtSignature || part.thought_signature)) {
                     if (!signatureAdded) {
                         part.thoughtSignature = DUMMY_SIGNATURE;
                         signatureAdded = true;
@@ -609,6 +609,12 @@ class FormatConverter {
 
         // Convert conversation messages
         const conversationMessages = openaiBody.messages.filter(msg => msg.role !== "system");
+        const toolNames = new Map();
+        for (const message of conversationMessages) {
+            for (const call of message.tool_calls || []) {
+                if (call?.id && call.function?.name) toolNames.set(call.id, call.function.name);
+            }
+        }
 
         // Buffer for accumulating consecutive tool message parts
         // Gemini requires alternating roles, so consecutive tool messages must be merged
@@ -631,7 +637,7 @@ class FormatConverter {
             const googleParts = [];
 
             // Handle tool role (function execution result)
-            if (message.role === "tool") {
+            if (message.role === "tool" || message.role === "function") {
                 // Convert OpenAI tool response to Gemini functionResponse
                 let responseContent;
                 try {
@@ -690,14 +696,17 @@ class FormatConverter {
                     responseContent = { result: message.content };
                 }
 
-                // Use function name from tool message (OpenAI format always includes name)
-                const functionName = message.name || "unknown_function";
+                // Modern OpenAI tool results identify their call by id and may omit name.
+                const functionName = message.name || toolNames.get(message.tool_call_id) || "unknown_function";
+                if (responseContent === null || typeof responseContent !== "object")
+                    responseContent = { result: responseContent ?? null };
 
                 // Add to buffer instead of pushing directly
                 // This allows merging consecutive tool messages into one user message
                 // Note: functionResponse does NOT need thoughtSignature per official docs
                 const functionResponsePart = {
                     functionResponse: {
+                        ...(message.tool_call_id ? { id: message.tool_call_id } : {}),
                         name: functionName,
                         response: responseContent,
                     },
@@ -737,7 +746,8 @@ class FormatConverter {
 
                         const functionCallPart = {
                             functionCall: {
-                                args,
+                                args: args ?? {},
+                                ...(toolCall.id ? { id: toolCall.id } : {}),
                                 name: toolCall.function.name,
                             },
                         };

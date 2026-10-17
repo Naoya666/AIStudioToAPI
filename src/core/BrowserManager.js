@@ -1403,6 +1403,19 @@ class BrowserManager {
     //     }
     // }
 
+    async _diagnoseMakerSuiteSession(page) {
+        // Reuse the login-page checks used by _checkPageStatusAndErrors, without
+        // marking credentials here. The request's sessionVersion owns that change.
+        const title = await withHardTimeout(() => page.title(), 1500);
+        const url = new URL(page.url());
+        return url.hostname === "accounts.google.com" ||
+            /ServiceLogin/.test(url.pathname) ||
+            title.includes("Sign in") ||
+            title.includes("登录")
+            ? "expired"
+            : "unverified";
+    }
+
     /**
      * Helper: Check page status and detect various error conditions
      * Detects: cookie expiration, region restrictions, 403 errors, page load failures
@@ -3502,6 +3515,7 @@ class BrowserManager {
                 streamTimeoutMs: Math.max(1, Math.min(this.config.streamTimeoutMs || 60000, 300000) - 5000),
                 // Finish before the outer request/browser deadlines can retry the execution.
                 timeoutMs: Math.max(1, Math.min(this.config.fakeStreamTimeoutMs || 300000, 300000) - 5000),
+                validateSession: () => this._diagnoseMakerSuiteSession(page),
             });
             attempt.makerSuiteBridge = bridge;
             await this._runInitOperation(attempt, "makersuite.install", () => bridge.install());
