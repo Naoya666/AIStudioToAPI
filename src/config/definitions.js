@@ -1,3 +1,5 @@
+const { MAX_GENERATION_TIMEOUT_MS } = require("./TransportConfig");
+
 module.exports = [
     {
         application: "restart",
@@ -293,10 +295,11 @@ module.exports = [
     },
     {
         application: "hot",
-        description: "假流式或非流式等待结果的超时，毫秒",
+        description:
+            "仅用于 legacy 通道的非流式或假流式请求。gemini-4-argon 默认走 MakerSuite 桥接，不受本项限制，请设置下方的桥接生成超时。",
         group: "请求处理与模型功能",
-        label: "缓冲响应超时",
-        maximum: 300000,
+        label: "普通通道缓冲响应超时",
+        maximum: MAX_GENERATION_TIMEOUT_MS,
         minimum: 1,
         mode: "all",
         name: "FAKE_STREAM_TIMEOUT_MS",
@@ -307,10 +310,10 @@ module.exports = [
     {
         application: "hot",
         description:
-            "MakerSuite 桥接单次生成的最大时长，含认证、WAA 和正文读取。默认 295000 毫秒；实际还受缓冲响应总预算的剩余时间约束，并预留结算时间。保存后用于新请求，已有请求不变。",
+            "gemini-4-argon 等 MakerSuite 桥接请求的生成总预算，含认证、WAA 和正文读取。需要等待超过五分钟时，可设为 600000 毫秒（十分钟）或更大。不受普通通道缓冲响应超时限制；默认仍为 295000 毫秒，响应结算另预留最多 5000 毫秒。保存后用于新请求，已有请求不变。",
         group: "请求处理与模型功能",
         label: "桥接生成超时",
-        maximum: 300000,
+        maximum: MAX_GENERATION_TIMEOUT_MS,
         minimum: 1,
         mode: "all",
         name: "MAKERSUITE_TIMEOUT_MS",

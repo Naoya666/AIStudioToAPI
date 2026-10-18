@@ -237,16 +237,19 @@ class RequestProcessor {
             this.cancelledAttempts.delete(attemptKey);
         }
 
-        // Browser-side safety cap. Server-side timeouts can be configured with env vars.
-        const bufferedBridge = requestSpec.transport_policy?.transport === "makersuite";
+        // Buffered generation follows the server's captured panel configuration.
+        // Only requests without a buffered policy retain the legacy idle safeguard.
+        const bufferedGeneration =
+            requestSpec.transport_policy?.transport === "makersuite" ||
+            requestSpec.transport_policy?.timeoutCategory === "buffered";
         const budget = requestSpec.remaining_budget_ms;
-        if (bufferedBridge && (!Number.isFinite(budget) || budget <= 0 || budget > 300000))
+        if (bufferedGeneration && (!Number.isFinite(budget) || budget <= 0 || budget > 2147483647))
             throw new Error("Invalid buffered generation budget");
-        const IDLE_TIMEOUT_DURATION = bufferedBridge ? budget : 300000;
+        const IDLE_TIMEOUT_DURATION = bufferedGeneration ? budget : 300000;
         const abortController = new AbortController();
         const activeOperation = {
             abortController,
-            deadline: bufferedBridge ? performance.now() + budget : null,
+            deadline: bufferedGeneration ? performance.now() + budget : null,
             requestAttemptId,
             startedAt: performance.now(),
             ttfbMs: null,
@@ -261,7 +264,7 @@ class RequestProcessor {
                     const error = new Error(
                         `Timeout: ${IDLE_TIMEOUT_DURATION / 1000} seconds without receiving any data`
                     );
-                    if (bufferedBridge) {
+                    if (bufferedGeneration) {
                         error.status = 504;
                         activeOperation.deadlineExceeded = true;
                     }
@@ -318,7 +321,7 @@ class RequestProcessor {
                     throw error;
                 }
                 // Buffered generation keeps its hard deadline through body reading.
-                if (!bufferedBridge) cancelTimeout();
+                if (!bufferedGeneration) cancelTimeout();
                 return response;
             } catch (error) {
                 cancelTimeout();

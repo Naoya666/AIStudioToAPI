@@ -61,6 +61,7 @@ function setup(reply, overrides = {}) {
     const config = {
         fakeStreamTimeoutMs: 100,
         immediateSwitchStatusCodes: [429, 503],
+        makerSuiteTimeoutMs: 100,
         maxRetries: 3,
         retryDelay: 1,
         streamingMode: "real",
@@ -1668,7 +1669,7 @@ test("OpenAI tool results normalize parsed JSON scalars without changing object 
     }
 });
 
-test("all adapters keep buffered generation through 59/61/90 seconds within one deadline", async t => {
+test("all adapters honor bridge panel budgets beyond five minutes independently of the buffered setting", async t => {
     for (const method of [
         "processOpenAIRequest",
         "processOpenAIResponseRequest",
@@ -1681,7 +1682,8 @@ test("all adapters keep buffered generation through 59/61/90 seconds within one 
                 t.mock.method(performance, "now", () => elapsed);
                 t.mock.timers.enable({ apis: ["setTimeout"] });
                 const fixture = setup(() => [], {
-                    fakeStreamTimeoutMs: 120000,
+                    fakeStreamTimeoutMs: 300000,
+                    makerSuiteTimeoutMs: 600000,
                     paidAccounts: [0],
                     streamTimeoutMs: 60000,
                 });
@@ -1713,7 +1715,7 @@ test("all adapters keep buffered generation through 59/61/90 seconds within one 
                 assert.equal(entry.request.transport_policy.transport, "makersuite");
                 assert.equal(entry.request.transport_policy.requestedMode, "real");
                 assert.equal(entry.request.transport_policy.effectiveMode, "fake");
-                for (const time of [59000, 61000, 90000]) {
+                for (const time of [59000, 61000, 300001, 590000]) {
                     t.mock.timers.tick(time - elapsed);
                     elapsed = time;
                     for (let n = 0; n < 3; n++) await new Promise(resolve => setImmediate(resolve));

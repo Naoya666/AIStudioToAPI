@@ -33,7 +33,7 @@ const request = {
     transport_policy: { transport: "makersuite" },
 };
 
-test("client validates buffered budgets and keeps old-client five minute protection", async t => {
+test("client validates timer ranges and keeps the legacy incremental idle safeguard", async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     let signal;
     let calls = 0;
@@ -42,7 +42,7 @@ test("client validates buffered budgets and keeps old-client five minute protect
         calls++;
         return new Promise(() => {});
     });
-    for (const budget of [undefined, 0, -1, 300001, NaN])
+    for (const budget of [undefined, 0, -1, 2147483648, Infinity, NaN])
         assert.throws(() => processor.execute({ ...request, remaining_budget_ms: budget }, "request"), /budget/);
     assert.equal(calls, 0);
     const execution = processor.execute({}, "legacy");
@@ -82,16 +82,16 @@ test("body chunks cannot renew the buffered client's generation deadline", async
     system.requestProcessor = processor;
     system.connectionManager = { isConnected: true, transmit: value => events.push(value) };
     system._transmitHeaders = () => {};
-    const running = system._processProxyRequest(request);
+    const running = system._processProxyRequest({ ...request, remaining_budget_ms: 600000 });
     await tick();
-    for (const at of [59000, 61000, 90000]) {
+    for (const at of [59000, 61000, 90000, 300001, 590000]) {
         t.mock.timers.tick(at - elapsed);
         elapsed = at;
         read({ done: false, value: Buffer.from("chunk") });
         await tick();
         assert.equal(signal.aborted, false);
     }
-    elapsed = 100000;
+    elapsed = 600000;
     t.mock.timers.tick(10000);
     await running;
     assert.equal(signal.aborted, true);
@@ -103,4 +103,30 @@ test("body chunks cannot renew the buffered client's generation deadline", async
         false
     );
     assert.equal(processor.activeOperations.size, 0);
+});
+
+test("bridge and ordinary buffered clients wait past five minutes and cancel at the configured deadline", async t => {
+    for (const policy of [{ transport: "makersuite" }, { timeoutCategory: "buffered", transport: "legacy" }]) {
+        await t.test(policy.transport, async t => {
+            t.mock.timers.enable({ apis: ["setTimeout"] });
+            let signal;
+            const { processor } = client((url, init) => {
+                signal = init.signal;
+                return new Promise(() => {});
+            });
+            const execution = processor.execute(
+                { ...request, remaining_budget_ms: 600000, transport_policy: policy },
+                "request"
+            );
+            const rejected = assert.rejects(execution.responsePromise, /Timeout/);
+            t.mock.timers.tick(300001);
+            assert.equal(signal.aborted, false);
+            t.mock.timers.tick(299998);
+            assert.equal(signal.aborted, false);
+            t.mock.timers.tick(1);
+            await rejected;
+            assert.equal(signal.aborted, true);
+            execution.cancelTimeout();
+        });
+    }
 });

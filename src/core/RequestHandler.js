@@ -1,3 +1,4 @@
+const { BRIDGE_SETTLEMENT_MS, DEFAULT_MAKERSUITE_TIMEOUT_MS } = require("../config/TransportConfig");
 const { accountForIndex, resolveTier } = require("../accounts/AccountTierPolicy");
 const TransportPolicy = require("./ModelTransportPolicy");
 const { isArgon, benefitError } = require("./BuildBenefitContext");
@@ -4902,11 +4903,20 @@ class RequestHandler {
         if (policy?.transport === "makersuite") {
             const bridge = this.browserManager.contexts?.get(authIndex)?.page?.makerSuiteBridge;
             if (!bridge) throw benefitError("MakerSuite bridge unavailable");
-            // One monotonic generation budget survives retries and continuation rounds.
-            if (!proxyRequest.__generationDeadline)
-                Object.defineProperty(proxyRequest, "__generationDeadline", {
-                    value: performance.now() + this.timeouts.FAKE_STREAM,
-                });
+        }
+        if (policy?.timeoutCategory === "buffered" || policy?.transport === "makersuite") {
+            // Capture the panel's budget once; retries, chunks and keepalives do not renew it.
+            if (!proxyRequest.__generationDeadline) {
+                const startedAt = performance.now();
+                const bridge = policy.transport === "makersuite";
+                const budget = bridge
+                    ? this.config.makerSuiteTimeoutMs || DEFAULT_MAKERSUITE_TIMEOUT_MS
+                    : this.timeouts.FAKE_STREAM;
+                const reserve = bridge ? Math.min(BRIDGE_SETTLEMENT_MS, budget * 0.05) : 0;
+                Object.defineProperty(proxyRequest, "__generationDeadline", { value: startedAt + budget + reserve });
+                if (bridge)
+                    Object.defineProperty(proxyRequest, "__bridgeGenerationDeadline", { value: startedAt + budget });
+            }
             const remaining = Math.floor(proxyRequest.__generationDeadline - performance.now());
             if (remaining <= 0) throw Object.assign(new Error("Generation deadline exceeded"), { status: 504 });
             proxyRequest.remaining_budget_ms = remaining;

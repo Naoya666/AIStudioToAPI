@@ -271,8 +271,8 @@ MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"legacy","gemini-4-argon":"makersuite
 
 只接受无指令后缀的精确模型 ID 和 `legacy` / `makersuite`，不支持通配符、自动跨通道重试或模型改名。每个请求固定策略，重试和后续轮次不切换路径。Argon 使用统一账号层级准入，同时保留当前页面的真实认证及权益头；手动层级不授予真实上游权限。
 
-桥接先等待完整结果，再输出 JSON 或 SSE；`-real` 和全局 real 在桥接时转为缓冲，Chat 可选择 early 提前开始并发送心跳，其他入口保留原有缓冲 SSE 行为。`FAKE_STREAM_TIMEOUT_MS` 是固定生成总预算（默认 300000，最大 300000 毫秒），“桥接生成超时”（`MAKERSUITE_TIMEOUT_MS`，默认 295000，范围 1–300000 毫秒）可在前端修改，保存后对新请求生效，已有请求保留原预算。实际桥接等待取该时限与缓冲总预算剩余时间减去结算余量的较小值，包括认证、WAA、fetch 和正文读取。心跳不会延长预算。`STREAM_TIMEOUT_MS` 仍用于 legacy real 的增量空闲等待。排队期限独立；网关及调用方需要覆盖排队与生成时间。
+桥接先等待完整结果，再输出 JSON 或 SSE；`-real` 和全局 real 在桥接时转为缓冲，Chat 可选择 early 提前开始并发送心跳，其他入口保留原有缓冲 SSE 行为。桥接生成总预算以面板“桥接生成超时”（`MAKERSUITE_TIMEOUT_MS`，默认 295000 毫秒）为准，覆盖认证、WAA、fetch 和正文读取；不再受默认 300 秒的普通缓冲响应设置限制。响应结算另预留最多 5000 毫秒。`FAKE_STREAM_TIMEOUT_MS`（默认 300000 毫秒）独立控制普通通道的缓冲生成预算。两项均支持 1–2147478647 毫秒，保存后用于新请求，已有请求保留快照；重试、后续轮次、正文块和心跳均不延长固定预算。`STREAM_TIMEOUT_MS` 仍用于 legacy real 的增量空闲等待。排队期限独立；网关及调用方需要覆盖排队、生成与结算时间。
 
-桥接及取消安装在当前账号宿主页，无需创建或修改已保存 Build App。旧客户端可以保留五分钟上限；新版 `scripts/client/build.js` 另支持剩余预算及能力版本握手。本版本不支持十分钟预算。内部关联标记仅用于已拦截的桥接请求，不发送给 Google；旧通道出站移除本地标记。日志记录传输与请求/有效模式，不记录认证、权益不透明值、WAA 或载荷。
+例如，将“桥接生成超时”设置为 `600000` 即可获得十分钟桥接生成预算，无须同时修改“缓冲响应超时”。浏览器端必须使用本版本的 [build.js](scripts/client/build.js)，以接收服务端下发的剩余预算；已保存的自建 Build App 需要同步客户端代码，旧版客户端仍可能在 300 秒时中止。项目不会自动修改已保存的 Build App。内部关联标记仅用于已拦截的桥接请求，不发送给 Google；旧通道出站移除本地标记。日志记录传输与请求/有效模式，不记录认证、权益不透明值、WAA 或载荷。
 
 离线回归使用 `npm test`；浏览器验证使用 `npm run test:transport:browser`；真实超过 60 秒的本地 TLS 验证使用 `npm run test:transport:long`。可用 `BUILD_BENEFIT_BROWSER_EXECUTABLE_PATH` 指向生产 Camoufox 执行同一 TLS fixture；fixture 限制 CONNECT 目的地，不访问 Google 或生产 9998。离线通过不代表真实账号生成验收通过，部署与单账号切换须另行授权。实施记录见 [双通道修复记录](docs/zh/model-transport-compatibility-implementation-20261017.md)。

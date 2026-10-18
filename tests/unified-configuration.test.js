@@ -311,8 +311,8 @@ test("bridge timeout saves hot, persists, validates and preserves accepted reque
     assert.equal(service.running.makerSuiteTimeoutMs, 295000);
     const handler = new RequestHandler({}, {}, logger, {}, system.config, {});
     handler.withConfigurationSnapshot(() => {
-        const result = save({ MAKERSUITE_TIMEOUT_MS: 180000 });
-        assert.equal(service.running.makerSuiteTimeoutMs, 180000);
+        const result = save({ MAKERSUITE_TIMEOUT_MS: 600000 });
+        assert.equal(service.running.makerSuiteTimeoutMs, 600000);
         assert.equal(handler.config.makerSuiteTimeoutMs, 295000);
         assert.ok(result.applied.includes("MAKERSUITE_TIMEOUT_MS"));
         assert.equal(
@@ -321,9 +321,17 @@ test("bridge timeout saves hot, persists, validates and preserves accepted reque
         );
     });
     const loaded = new ConfigurationService({ logger }, { env: {}, file: service.file });
-    assert.equal(loaded.running.makerSuiteTimeoutMs, 180000);
-    for (const value of [0, -1, 300001, 1.5, "1000", null])
+    assert.equal(loaded.running.makerSuiteTimeoutMs, 600000);
+    for (const value of [0, -1, 2147478648, 1.5, "1000", null])
         assert.throws(() => save({ MAKERSUITE_TIMEOUT_MS: value }), { status: 400 });
     service.save({ reset: ["MAKERSUITE_TIMEOUT_MS"], version: service.document.version });
     assert.equal(service.running.makerSuiteTimeoutMs, 295000);
+});
+
+test("buffered response budget saves and persists above five minutes", t => {
+    const { service, save } = setup(t);
+    save({ FAKE_STREAM_TIMEOUT_MS: 900000 });
+    assert.equal(service.running.fakeStreamTimeoutMs, 900000);
+    const loaded = new ConfigurationService({ logger }, { env: {}, file: service.file });
+    assert.equal(loaded.running.fakeStreamTimeoutMs, 900000);
 });

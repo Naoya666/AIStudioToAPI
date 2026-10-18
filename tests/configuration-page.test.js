@@ -129,14 +129,25 @@ test(
         await panel.getByRole("alert").getByText("模型传输策略：模型名不能为空或重复").waitFor();
         assert.equal(writes.length, beforeDuplicate);
         await transport.getByRole("button", { exact: true, name: "删除" }).nth(1).click();
-        await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").fill("180000");
+        await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").fill("600000");
         await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").blur();
         assert.equal(service.running.makerSuiteTimeoutMs, 295000);
         await panel.getByRole("button", { exact: true, name: "保存" }).click();
         await page.waitForFunction(() =>
             document.querySelector(".configuration-panel")?.textContent.includes("立即生效：桥接生成超时")
         );
-        assert.equal(service.running.makerSuiteTimeoutMs, 180000);
+        assert.equal(service.running.makerSuiteTimeoutMs, 600000);
+        const ordinaryTimeout = panel.locator("#config-FAKE_STREAM_TIMEOUT_MS");
+        assert.ok(Number(await ordinaryTimeout.getAttribute("max")) > 300000);
+        assert.ok(Number(await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").getAttribute("max")) > 300000);
+        await ordinaryTimeout.fill("900000");
+        await ordinaryTimeout.blur();
+        await panel.getByRole("button", { exact: true, name: "保存" }).click();
+        await page.waitForFunction(() =>
+            document.querySelector(".configuration-panel")?.textContent.includes("立即生效：普通通道缓冲响应超时")
+        );
+        assert.equal(service.running.fakeStreamTimeoutMs, 900000);
+        assert.equal(service.running.makerSuiteTimeoutMs, 600000);
         await panel.locator("#config-FORCE_WEB_SEARCH").locator("..").click();
         service.save({ changes: { FORCE_CODE_EXECUTION: true }, version: service.document.version });
         await panel.getByRole("button", { exact: true, name: "保存" }).click();

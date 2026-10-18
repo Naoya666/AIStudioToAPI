@@ -79,11 +79,19 @@ test("fixed buffered budget overrides incremental idle waits at 59/61/90 seconds
     queue.close();
 });
 
-test("buffered budget cannot silently exceed the supported browser cap", () => {
-    assert.throws(
-        () => new ConfigLoader(logger).loadConfiguration({ FAKE_STREAM_TIMEOUT_MS: "600000" }),
-        /not supported/
-    );
+test("buffered and bridge configuration accept long budgets and reject timer overflow", () => {
+    const { MAX_GENERATION_TIMEOUT_MS } = require("../src/config/TransportConfig");
+    for (const key of ["FAKE_STREAM_TIMEOUT_MS", "MAKERSUITE_TIMEOUT_MS"]) {
+        for (const value of [300001, 600000, 3600000, MAX_GENERATION_TIMEOUT_MS]) {
+            const config = new ConfigLoader(logger).loadConfiguration({ [key]: String(value) });
+            assert.equal(
+                config[key === "FAKE_STREAM_TIMEOUT_MS" ? "fakeStreamTimeoutMs" : "makerSuiteTimeoutMs"],
+                value
+            );
+        }
+        for (const value of [0, -1, 1.5, MAX_GENERATION_TIMEOUT_MS + 1, Infinity, "", "bad"])
+            assert.throws(() => new ConfigLoader(logger).loadConfiguration({ [key]: String(value) }), /Invalid/);
+    }
 });
 
 test("attempt initialization keeps the chosen transport when configuration changes", () => {
@@ -146,4 +154,47 @@ test("downstream OpenAI and Gemini model catalogues include the accepted Argon m
     const native = await fetch(base + "/v1beta/models", { headers: { authorization: "Bearer catalogue-fixture-key" } });
     assert.equal(native.status, 200);
     assert.equal((await native.json()).models.filter(model => model.name === "models/gemini-4-argon").length, 1);
+});
+
+test("bridge panel budget owns the fixed generation deadline and preserves settlement time across attempts", t => {
+    const { MakerSuiteBridge } = require("../src/core/MakerSuiteBridge");
+    let elapsed = 0;
+    t.mock.method(performance, "now", () => elapsed);
+    const bridge = Object.create(MakerSuiteBridge.prototype);
+    Object.assign(bridge, { attempts: new Map(), epoch: 0 });
+    const queue = new MessageQueue();
+    t.after(() => queue.close());
+    const sent = [];
+    const handler = new RequestHandler(
+        {},
+        {
+            getConnectionByAuth: () => ({ send: raw => sent.push(JSON.parse(raw)) }),
+            messageQueues: new Map([["budget", { queue }]]),
+        },
+        logger,
+        { contexts: new Map([[0, { page: { makerSuiteBridge: bridge } }]]) },
+        { fakeStreamTimeoutMs: 300000, makerSuiteTimeoutMs: 600000 },
+        {}
+    );
+    const request = {
+        body: "{}",
+        is_generative: true,
+        path: "/v1beta/models/gemini-3.7-flash:generateContent",
+        request_attempt_id: "first",
+        request_id: "budget",
+        transport_policy: resolve("gemini-3.7-flash", "fake", { "gemini-3.7-flash": "makersuite" }),
+    };
+    handler._forwardRequest(request, 0);
+    assert.equal(request.__generationDeadline, 605000);
+    assert.equal(queue.generationDeadline, 605000);
+    assert.equal(bridge.attempts.get("first").bridgeDeadline, 600000);
+    assert.equal(sent[0].remaining_budget_ms, 605000);
+    elapsed = 300001;
+    request.request_attempt_id = "second";
+    handler._forwardRequest(request, 0);
+    assert.equal(request.__generationDeadline, 605000);
+    assert.equal(bridge.attempts.get("second").bridgeDeadline, 600000);
+    assert.equal(sent[1].remaining_budget_ms, 304999);
+    elapsed = 605000;
+    assert.throws(() => handler._forwardRequest(request, 0), /deadline/);
 });

@@ -1,1 +1,4 @@
-module.exports = { DEFAULT_MAKERSUITE_TIMEOUT_MS: 295000 };
+// Keep every browser/Node setTimeout delay within the signed 32-bit timer range.
+const BRIDGE_SETTLEMENT_MS = 5000;
+const MAX_GENERATION_TIMEOUT_MS = 2147483647 - BRIDGE_SETTLEMENT_MS;
+module.exports = { BRIDGE_SETTLEMENT_MS, DEFAULT_MAKERSUITE_TIMEOUT_MS: 295000, MAX_GENERATION_TIMEOUT_MS };

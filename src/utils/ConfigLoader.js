@@ -7,7 +7,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { DEFAULT_MAKERSUITE_TIMEOUT_MS } = require("../config/TransportConfig");
+const { DEFAULT_MAKERSUITE_TIMEOUT_MS, MAX_GENERATION_TIMEOUT_MS } = require("../config/TransportConfig");
 const { getProxySummaryFromEnv } = require("./ProxyUtils");
 
 /**
@@ -135,24 +135,20 @@ class ConfigLoader {
                 ? Math.min(300000, Math.max(1, parsed))
                 : config.streamTimeoutMs;
         }
-        if (Number(env.FAKE_STREAM_TIMEOUT_MS) > 300000)
-            throw new Error("FAKE_STREAM_TIMEOUT_MS above 300000 is not supported by the Build client");
-        if (env.MAKERSUITE_TIMEOUT_MS !== undefined) {
-            const parsed = Number(env.MAKERSUITE_TIMEOUT_MS);
+        for (const [name, key] of [
+            ["MAKERSUITE_TIMEOUT_MS", "makerSuiteTimeoutMs"],
+            ["FAKE_STREAM_TIMEOUT_MS", "fakeStreamTimeoutMs"],
+        ]) {
+            if (env[name] === undefined) continue;
+            const parsed = Number(env[name]);
             if (
-                !String(env.MAKERSUITE_TIMEOUT_MS).trim() ||
+                !String(env[name]).trim() ||
                 !Number.isSafeInteger(parsed) ||
                 parsed < 1 ||
-                parsed > 300000
+                parsed > MAX_GENERATION_TIMEOUT_MS
             )
-                throw new Error("Invalid MAKERSUITE_TIMEOUT_MS: expected an integer between 1 and 300000");
-            config.makerSuiteTimeoutMs = parsed;
-        }
-        if (env.FAKE_STREAM_TIMEOUT_MS) {
-            const parsed = parseInt(env.FAKE_STREAM_TIMEOUT_MS, 10);
-            config.fakeStreamTimeoutMs = Number.isFinite(parsed)
-                ? Math.min(300000, Math.max(1, parsed))
-                : config.fakeStreamTimeoutMs;
+                throw new Error(`Invalid ${name}: expected an integer between 1 and ${MAX_GENERATION_TIMEOUT_MS}`);
+            config[key] = parsed;
         }
         if (env.WS_PORT) {
             // WS_PORT environment variable is no longer supported

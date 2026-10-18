@@ -2,8 +2,8 @@
 
 请根据以下两个源码文件，创建一个与现有 AIStudioToAPI 项目兼容的 Google AI Studio Build Web App：
 
-- `build.js`：[上游源码](https://github.com/iBUHub/AIStudioToAPI/blob/main/scripts/client/build.js)
-- `index.html`：[上游源码](https://github.com/iBUHub/AIStudioToAPI/blob/main/scripts/client/index.html)
+- `build.js`：[上游源码](https://github.com/Naoya666/AIStudioToAPI/blob/main/scripts/client/build.js)
+- `index.html`：[上游源码](https://github.com/Naoya666/AIStudioToAPI/blob/main/scripts/client/index.html)
 
 这是已有系统的浏览器客户端移植任务。
 

@@ -1,9 +1,9 @@
 /**
  * Browser transport adapted with permission from yunx738/ais2api, commit
  * 79807728179482509cf1f8a4f5e3e175d9dd6702 and e134063 (CC BY-NC 4.0).
- * The old RPC envelope is kept so existing Build apps need no manual update.
+ * The old RPC envelope is retained; budgets over five minutes require the updated Build client.
  */
-const { DEFAULT_MAKERSUITE_TIMEOUT_MS } = require("../config/TransportConfig");
+const { BRIDGE_SETTLEMENT_MS, DEFAULT_MAKERSUITE_TIMEOUT_MS } = require("../config/TransportConfig");
 const { randomUUID } = require("node:crypto");
 const { tagStatus } = require("../utils/MakerSuiteAuth");
 const { buildBody, errorEnvelope, wrapResponse } = require("./MakerSuiteCodec");
@@ -463,7 +463,7 @@ class MakerSuiteBridge {
         if (!body || typeof body !== "object" || Array.isArray(body) || Object.hasOwn(body, ATTEMPT_FIELD))
             throw Object.assign(new Error("Invalid or reserved MakerSuite request metadata"), { status: 400 });
         this.attempts.set(id, {
-            bridgeDeadline: startedAt + timeoutMs,
+            bridgeDeadline: Math.min(startedAt + timeoutMs, proxyRequest.__bridgeGenerationDeadline ?? Infinity),
             deadline,
             epoch: this.epoch,
             excludedKeys: [
@@ -473,7 +473,7 @@ class MakerSuiteBridge {
                 proxyRequest.query_params?.key,
             ].filter(value => typeof value === "string"),
             policy: proxyRequest.transport_policy,
-            reserveMs: Math.min(5000, remaining * 0.05),
+            reserveMs: Math.min(BRIDGE_SETTLEMENT_MS, timeoutMs * 0.05, remaining * 0.05),
         });
         proxyRequest.query_params = { ...proxyRequest.query_params, [ATTEMPT_FIELD]: id };
         // Studio may remove arbitrary URL query parameters from ProxyUnaryCall.
