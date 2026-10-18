@@ -17,6 +17,7 @@ class TargetValidationTransport {
         this.sockets.add(socket);
         socket.on("error", () => {});
         socket.once("close", () => this.sockets.delete(socket));
+        if (this.closed) socket.destroy(new Error("Validation transport closed"));
         return socket;
     }
 
@@ -105,6 +106,7 @@ class TargetValidationTransport {
     }
 
     async connect(host, port) {
+        if (this.closed) throw new Error("Validation transport closed");
         if (["localhost", "127.0.0.1", "[::1]", "::1"].includes(host.toLowerCase()) && port === 9998) {
             return this.direct("127.0.0.1", this.wsServer.address().port);
         }
@@ -168,6 +170,7 @@ class TargetValidationTransport {
     }
 
     async close() {
+        this.closed = true;
         for (const socket of this.wsServer?.clients || []) socket.terminate();
         for (const socket of this.sockets) socket.destroy();
         await Promise.all(

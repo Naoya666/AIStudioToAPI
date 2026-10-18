@@ -335,3 +335,33 @@ test("buffered response budget saves and persists above five minutes", t => {
     const loaded = new ConfigurationService({ logger }, { env: {}, file: service.file });
     assert.equal(loaded.running.fakeStreamTimeoutMs, 900000);
 });
+
+test("login browser reuse defaults off, validates limits and hot-applies through managed configuration", t => {
+    const { service, system, save } = setup(t);
+    assert.equal(service.running.login.browserReuse, false);
+    assert.equal(service.running.login.browserIdleTimeout, 60000);
+    assert.equal(service.running.login.browserMaxAttempts, 20);
+    assert.equal(service.running.login.browserMaxAge, 1800000);
+    system.accountLoginService = { state: { config: {} } };
+    save({
+        ACCOUNT_LOGIN_BROWSER_IDLE_TIMEOUT_MS: 90000,
+        ACCOUNT_LOGIN_BROWSER_MAX_AGE_MS: 600000,
+        ACCOUNT_LOGIN_BROWSER_MAX_ATTEMPTS: 10,
+        ACCOUNT_LOGIN_BROWSER_REUSE: true,
+    });
+    assert.equal(system.accountLoginService.state.config.browserReuse, true);
+    assert.equal(system.accountLoginService.state.config.browserIdleTimeout, 90000);
+    assert.equal(service.running.login.browserMaxAttempts, 10);
+    assert.equal(service.running.login.browserMaxAge, 600000);
+    assert.equal(service.snapshot().pending.length, 0);
+    for (const changes of [
+        { ACCOUNT_LOGIN_BROWSER_REUSE: "true" },
+        { ACCOUNT_LOGIN_BROWSER_IDLE_TIMEOUT_MS: 0 },
+        { ACCOUNT_LOGIN_BROWSER_MAX_ATTEMPTS: 1001 },
+        { ACCOUNT_LOGIN_BROWSER_MAX_AGE_MS: -1 },
+    ])
+        assert.throws(() => save(changes));
+    const { config } = require("../src/accounts/AccountConfig");
+    assert.throws(() => config({ ACCOUNT_LOGIN_BROWSER_REUSE: "yes" }));
+    assert.throws(() => config({ ACCOUNT_LOGIN_BROWSER_IDLE_TIMEOUT_MS: "0" }));
+});

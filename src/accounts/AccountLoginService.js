@@ -72,7 +72,23 @@ class AccountLoginService {
                 Object.assign(task, { finishedAt: Date.now(), reason: "interrupted", status: "failed" });
         await this.artifacts.initialize();
         await fs.mkdir(this.authDir, { mode: 0o700, recursive: true });
-        for (const task of this.state.tasks) await this.queue.recover(task);
+        this.state.executors ||= [];
+        // Idle reusable workers have no active task but still own browser processes.
+        const recoveredExecutors = new Set();
+        for (const record of this.state.executors) {
+            const owner = { executor: record, taskId: `executor:${record.executorId}` };
+            await this.queue.recover(owner);
+            if (!owner.executor) recoveredExecutors.add(record.executorId);
+        }
+        this.state.executors = this.state.executors.filter(record => !recoveredExecutors.has(record.executorId));
+        for (const task of this.state.tasks) {
+            if (task.executor?.executorId && recoveredExecutors.has(task.executor.executorId)) delete task.executor;
+            else if (
+                !task.executor?.executorId ||
+                !this.state.executors.some(record => record.executorId === task.executor.executorId)
+            )
+                await this.queue.recover(task);
+        }
         // Roll forward only commits that reached the atomic file boundary.
         for (const commit of this.state.commits) {
             const account = this.state.accounts.find(item => item.accountId === commit.accountId);

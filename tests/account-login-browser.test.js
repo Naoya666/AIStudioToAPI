@@ -18,12 +18,17 @@ async function run(options = {}) {
         contextsCreated = 0;
     const processMock = new EventEmitter();
     processMock.connected = true;
-    let resolveResult;
+    let resolveResult, pendingResult;
+    const results = [];
     const result = new Promise(resolve => {
         resolveResult = resolve;
     });
     processMock.send = message => {
-        if (message.result) resolveResult(message.result);
+        if (message.result) pendingResult = message.result;
+        if (message.cleaned || message.cleanupFailed) {
+            results.push(pendingResult);
+            resolveResult(pendingResult);
+        }
     };
     const mockPlaywright = {
         firefox: {
@@ -31,8 +36,20 @@ async function run(options = {}) {
                 browser = await firefox.launch({ ...launchOptions, executablePath });
                 const original = browser.newContext.bind(browser);
                 browser.newContext = async contextOptions => {
+                    assert.equal(browser.contexts().length, 0, "previous context must close before creating the next");
+                    const validationContext = contextsCreated++ % 2 === 1;
                     const context = await original(contextOptions);
-                    const validationContext = contextsCreated++ > 0;
+                    if (!validationContext) {
+                        assert.equal((await context.cookies()).length, 0, "each login starts without previous cookies");
+                        await context.addCookies([
+                            {
+                                domain: "accounts.google.com",
+                                name: "previous-attempt",
+                                path: "/",
+                                value: String(contextsCreated),
+                            },
+                        ]);
+                    }
                     const htmlFor = address => {
                         const url = new URL(address);
                         let html;
@@ -174,7 +191,7 @@ async function run(options = {}) {
         },
         { filename: workerPath }
     );
-    processMock.emit("message", {
+    const input = {
         config: {
             attemptTimeout: options.attemptTimeout || 90000,
             humanize: options.fast !== true,
@@ -188,11 +205,30 @@ async function run(options = {}) {
             totp: Totp.normalize("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"),
         },
         executablePath,
+        executorId: "browser-fixture",
         targetUrl: "https://ai.studio/apps/synthetic",
+        taskId: "browser-task",
         token: "synthetic",
-    });
+    };
+    processMock.emit("message", input);
     try {
-        return await result;
+        let last = await result;
+        for (let index = 1; index < (options.repetitions || 1); index++) {
+            const next = new Promise(resolve => {
+                resolveResult = resolve;
+            });
+            processMock.emit("message", { ...input, taskId: `browser-task-${index}`, token: `browser-token-${index}` });
+            last = await next;
+        }
+        assert.equal(browser.contexts().length, 0, "cleanup acknowledgement leaves no browser contexts");
+        if (options.repetitions) {
+            assert.equal(contextsCreated, options.repetitions * 2);
+            assert.ok(
+                results.every(result => result.storageState && result.targetInitialized),
+                JSON.stringify(results)
+            );
+        }
+        return last;
     } finally {
         await browser?.close();
     }
@@ -810,5 +846,14 @@ test(
         page.locator = original;
         await page.close();
         assert.equal((await handler.observeStudioDialogs()).dialogState, "incomplete");
+    }
+);
+
+test(
+    "real browser: sequential attempts share a browser and leave no cookies or contexts",
+    { skip: !executablePath },
+    async () => {
+        const result = await run({ fast: true, noTotp: true, repetitions: 2 });
+        assert.ok(result.storageState, JSON.stringify(result));
     }
 );

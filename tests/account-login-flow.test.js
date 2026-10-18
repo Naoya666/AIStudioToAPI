@@ -179,7 +179,30 @@ async function simulate(options = {}) {
         setDefaultTimeout() {},
         storageState: async () => ({ cookies: [], origins: [] }),
     };
-    const browser = { close: async () => {}, newContext: async () => context };
+    let launches = 0,
+        closed = 0,
+        browserCloses = 0,
+        exitCode;
+    const createdContexts = [],
+        results = [];
+    const browser = {
+        close: async () => {
+            browserCloses++;
+        },
+        newContext: async options => {
+            const owned = {
+                ...context,
+                close: async () => {
+                    owned.closed = true;
+                    closed++;
+                },
+                closed: false,
+                options,
+            };
+            createdContexts.push(owned);
+            return owned;
+        },
+    };
     const processMock = new EventEmitter();
     processMock.connected = true;
     let resolveResult;
@@ -188,7 +211,8 @@ async function simulate(options = {}) {
     });
     processMock.send = message => {
         if (message.phase) phases.push(message.phase);
-        if (message.result) resolveResult(message.result);
+        if (message.result) results.push(message.result);
+        if (message.cleaned || message.cleanupFailed) resolveResult(results.at(-1));
     };
     class FakeDate extends Date {
         static now() {
@@ -202,9 +226,19 @@ async function simulate(options = {}) {
             process: processMock,
             require: name =>
                 name === "playwright"
-                    ? { firefox: { launch: async () => browser } }
+                    ? {
+                          firefox: {
+                              launch: async () => {
+                                  launches++;
+                                  return browser;
+                              },
+                          },
+                      }
                     : name === "./TargetSessionValidator"
                       ? class {
+                            constructor(input) {
+                                this.input = input;
+                            }
                             async validate() {
                                 if (options.initializationFailed)
                                     throw Object.assign(new Error("service_initialization_failed"), {
@@ -216,7 +250,15 @@ async function simulate(options = {}) {
                                         reason: "service_initialization_unverified",
                                         retryable: true,
                                     });
-                                return { context, page };
+                                assert.ok(
+                                    createdContexts.at(-1).closed,
+                                    "login context closes before validation context creation"
+                                );
+                                const validationContext = await browser.newContext({
+                                    storageState: this.input.storageState,
+                                });
+                                this.input.onContext(validationContext);
+                                return { context: validationContext, page };
                             }
                             async close() {}
                         }
@@ -252,7 +294,7 @@ async function simulate(options = {}) {
         },
         { filename: workerPath }
     );
-    processMock.emit("message", {
+    const input = {
         config: {
             attemptTimeout: options.attemptTimeout || 180000,
             humanize: false,
@@ -264,10 +306,43 @@ async function simulate(options = {}) {
             password: "synthetic-password",
             totp: options.missingSecret ? null : options.totp ? Totp.normalize(secret) : null,
         },
+        executorId: "flow-executor",
         targetUrl: options.missingTarget ? null : "https://ai.studio/apps/synthetic",
+        taskId: "flow-task",
         token: "synthetic-token",
-    });
-    return { dialogObservations, phases, pins, result: await result, screenshots };
+    };
+    processMock.emit("message", input);
+    let last = await result;
+    for (let index = 1; index < (options.repetitions || 1); index++) {
+        const next = new Promise(resolve => {
+            resolveResult = resolve;
+        });
+        state = "email";
+        processMock.emit("message", { ...input, taskId: `flow-task-${index}`, token: `flow-token-${index}` });
+        last = await next;
+    }
+    if (options.shutdown) {
+        await new Promise(resolve => {
+            processMock.exit = code => {
+                exitCode = code;
+                resolve();
+            };
+            processMock.emit("message", { executorId: input.executorId, shutdown: true });
+        });
+    }
+    return {
+        browserCloses,
+        closed,
+        createdContexts,
+        dialogObservations,
+        exitCode,
+        launches,
+        phases,
+        pins,
+        result: last,
+        results,
+        screenshots,
+    };
 }
 test("no two-step login verifies account and target app before saving complete storageState", async () => {
     const { result, phases } = await simulate();
@@ -395,4 +470,21 @@ test("Studio rechecks preserve step and attempt timeout precedence", async () =>
     const attempt = await simulate({ attemptTimeout: 400, dialogStates: ["unknown_present"] });
     assert.equal(attempt.result.error, "attempt_timeout");
     assert.ok(!attempt.result.storageState);
+});
+
+test("worker reuses one browser across ten attempts, cleans all contexts and resets diagnostics", async () => {
+    const success = await simulate({ repetitions: 10, shutdown: true });
+    assert.equal(success.launches, 1);
+    assert.equal(success.createdContexts.length, 20);
+    assert.equal(new Set(success.createdContexts).size, 20);
+    assert.ok(success.createdContexts.every(context => context.closed));
+    assert.ok(success.results.every(result => result.storageState));
+    assert.equal(success.browserCloses, 1, "normal retirement closes the browser before exiting");
+    assert.equal(success.exitCode, 0);
+    const failed = await simulate({ repetitions: 3, wrongPassword: true });
+    assert.equal(failed.launches, 1);
+    assert.equal(failed.screenshots.length, 3, "screenshot guard must reset between failures");
+    assert.equal(failed.results.length, 3);
+    assert.ok(failed.results.every(result => result.error === "wrong_password"));
+    assert.ok(failed.createdContexts.every(context => context.closed));
 });

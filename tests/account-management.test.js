@@ -220,6 +220,9 @@ test("per-attempt hard timeout kills hanging executor descendants and next accou
     const next = await service.create({ email: "success@example.com", password: "synthetic" });
     await service.queue.tick();
     assert.equal(service.queue.running.size, 1);
+    // The hanging attempt keeps its 300ms snapshot; a subsequent cold start
+    // gets a realistic budget even on a busy CI host.
+    service.state.config.attemptTimeout = 2000;
     await until(() => service.state.tasks.every(task => ["failed", "succeeded"].includes(task.status)));
     assert.equal(service.state.tasks[0].error, "attempt_timeout");
     assert.equal(service.state.tasks[1].status, "succeeded");
@@ -1352,4 +1355,251 @@ test("deduplication requires review for different manual tiers and preserves the
     const versions = Object.fromEntries([first, second].map(account => [account.accountId, account.credentialVersion]));
     await f.service.prepareDeduplicate(groups, { "same@example.com": { accountId: second.accountId, versions } });
     assert.equal(first.manualTier, "ultra");
+});
+
+test("reusable login executor handles ten isolated attempts and closes after idle timeout", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, { browserIdleTimeout: 1000, browserReuse: true, cleanupTimeout: 100 });
+    for (let index = 0; index < 10; index++)
+        await service.create({ email: `reuse${index}@example.com`, password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.state.tasks.every(task => task.status === "succeeded") && !service.queue.running.size);
+    assert.equal(service.queue.metrics.browserStarts, 1);
+    assert.equal(service.queue.metrics.reusedAttempts, 9);
+    assert.equal(service.queue.executors.size, 1);
+    const saved = await service.exclusive(() => service.store.call("load"));
+    assert.equal(saved.executors.length, 1, "idle process ownership must survive a service crash");
+    assert.ok(!saved.executors[0].taskId);
+    assert.ok(saved.tasks.every(task => !task.executor));
+    await until(() => !service.queue.executors.size);
+    assert.equal(service.state.executors.length, 0);
+    assert.equal(service.queue.metrics.retirements.idle_timeout, 1);
+});
+
+test("business failure and retry release the reusable slot for another account", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, { browserReuse: true, cleanupTimeout: 100 });
+    await service.create({ email: "network-reuse@example.com", password: "synthetic" });
+    await service.create({ email: "wrong-reuse@example.com", password: "synthetic" });
+    await service.create({ email: "reuse-success@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.state.tasks[2].status === "succeeded" && !service.queue.running.size);
+    assert.equal(service.state.tasks[0].status, "retry_wait");
+    assert.equal(service.state.tasks[1].error, "wrong_password");
+    assert.equal(service.queue.metrics.browserStarts, 1);
+    service.state.tasks[0].nextAttemptAt = Date.now();
+    await service.queue.tick();
+    await until(() => service.state.tasks[0].attempts === 2 && !service.queue.running.size);
+    assert.equal(service.queue.metrics.browserStarts, 1);
+});
+
+test("pending cleanup cannot commit success or hand the browser to the next attempt", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, { browserReuse: true, cleanupTimeout: 500 });
+    await service.create({ email: "cleaning@example.com", password: "synthetic" });
+    await service.create({ email: "after-cleaning@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => [...service.queue.executors.values()][0]?.state === "CLEANING");
+    assert.equal(service.state.tasks[0].status, "running");
+    assert.equal(service.state.tasks[1].attempts, 0);
+    assert.equal(service.state.accounts[0].authIndex, null);
+    await until(() => service.state.tasks.every(task => task.status === "succeeded") && !service.queue.running.size);
+    assert.equal(service.queue.metrics.browserStarts, 1);
+});
+
+test("cleanup timeout and attempt timeout discard the reusable browser before the next account", async t => {
+    for (const email of ["dirty@example.com", "hang-reuse@example.com"]) {
+        const { service } = await fixture(t);
+        Object.assign(service.state.config, {
+            attemptTimeout: 400,
+            browserReuse: true,
+            cleanupTimeout: 50,
+            maxAttempts: 1,
+            screenshotTimeout: 20,
+            stepTimeout: 20,
+        });
+        await service.create({ email, password: "synthetic" });
+        await service.create({ email: "next-reuse@example.com", password: "synthetic" });
+        await service.queue.tick();
+        await until(() => service.state.tasks[1].status === "succeeded" && !service.queue.running.size);
+        assert.equal(
+            service.state.tasks[0].error,
+            email.startsWith("dirty") ? "executor_cleanup_failed" : "attempt_timeout"
+        );
+        assert.equal(service.queue.metrics.browserStarts, 2);
+        assert.equal(service.queue.snapshot().faultSlots, 0);
+    }
+});
+
+test("old executor messages and idle timers cannot complete or close a subsequent attempt", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, { browserIdleTimeout: 200, browserReuse: true, cleanupTimeout: 100 });
+    await service.create({ email: "stale@example.com", password: "synthetic" });
+    await service.queue.tick();
+    const previous = [...service.queue.running.values()][0];
+    const executor = previous.executor;
+    await until(() => service.state.tasks[0].status === "succeeded" && !service.queue.running.size);
+    await service.create({ email: "late-reuse@example.com", password: "synthetic" });
+    await service.queue.tick();
+    const current = [...service.queue.running.values()][0];
+    assert.equal(current.executor, executor);
+    service.queue.onMessage(executor, {
+        browserDisconnected: true,
+        cleaned: true,
+        executorId: executor.id,
+        result: { error: "wrong_password" },
+        taskId: previous.taskId,
+        token: previous.token,
+    });
+    await wait(300);
+    assert.equal(service.state.tasks[1].status, "running");
+    assert.equal(executor.state, "BUSY");
+    await until(() => service.state.tasks[1].status === "succeeded" && !service.queue.running.size);
+    assert.equal(service.queue.metrics.browserStarts, 1);
+    assert.equal(service.queue.executors.get(executor.id), executor, "busy time must not count as idle time");
+});
+
+test("reuse configuration rotates browsers at attempt and age boundaries", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, { browserMaxAttempts: 2, browserReuse: true, cleanupTimeout: 100 });
+    for (let index = 0; index < 3; index++)
+        await service.create({ email: `rotation${index}@example.com`, password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.state.tasks.every(task => task.status === "succeeded") && !service.queue.running.size);
+    assert.equal(service.queue.metrics.browserStarts, 2);
+    assert.equal(service.queue.metrics.retirements.max_attempts, 1);
+    const executor = [...service.queue.executors.values()][0];
+    executor.createdAt -= service.state.config.browserMaxAge;
+    await service.create({ email: "rotation-age@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.state.tasks[3].status === "succeeded" && !service.queue.running.size);
+    assert.equal(service.queue.metrics.browserStarts, 3);
+    assert.equal(service.queue.metrics.retirements.max_age, 1);
+    service.state.config.browserReuse = false;
+    await service.queue.tick();
+    assert.equal(service.queue.executors.size, 0);
+});
+
+test("idle workers are reclaimed when paused, concurrency shrinks, or the service shuts down", async t => {
+    const { service, close } = await fixture(t);
+    Object.assign(service.state.config, { browserReuse: true, cleanupTimeout: 100, concurrency: 2 });
+    await service.create({ email: "idle-a@example.com", password: "synthetic" });
+    await service.create({ email: "idle-b@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.state.tasks.every(task => task.status === "succeeded") && !service.queue.running.size);
+    assert.equal(service.queue.executors.size, 2);
+    service.state.config.paused = true;
+    service.state.config.concurrency = 1;
+    await service.queue.tick();
+    assert.equal(service.queue.executors.size, 1);
+    const pid = [...service.queue.executors.values()][0].child.pid;
+    await close();
+    assert.equal(service.queue.executors.size, 0);
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+});
+
+test("restart reclaims persisted idle executor ownership even without an active task", async t => {
+    const { fork } = require("node:child_process");
+    const { randomUUID } = require("node:crypto");
+    const { close, options, service, system } = await fixture(t);
+    const child = fork(options.workerPath, [], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    t.after(() => {
+        try {
+            process.kill(-child.pid, "SIGKILL");
+        } catch {
+            /* Already reaped. */
+        }
+    });
+    const stat = await fs.readFile(`/proc/${child.pid}/stat`, "utf8");
+    service.state.executors = [
+        { executorId: randomUUID(), pid: child.pid, startTime: stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] },
+    ];
+    await service.save();
+    await close();
+    const resumed = new Service(system, options);
+    t.after(() => resumed.close());
+    await resumed.initialize({ startQueue: false });
+    assert.deepEqual(resumed.state.executors, []);
+    assert.equal(resumed.queue.executors.size, 0);
+    assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
+    await resumed.close();
+});
+
+test("unverified recovered PID is never killed, including service shutdown", async t => {
+    const { fork } = require("node:child_process");
+    const { service } = await fixture(t);
+    const child = fork(path.join(__dirname, "fixtures/account-login-executor.js"), [], {
+        detached: true,
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    t.after(() => {
+        try {
+            process.kill(-child.pid, "SIGKILL");
+        } catch {
+            /* Already reaped. */
+        }
+    });
+    const owner = { executor: { executorId: "unverified", pid: child.pid, startTime: "wrong" }, taskId: "unverified" };
+    await service.queue.recover(owner);
+    assert.equal(service.queue.faults.size, 1);
+    await service.queue.close();
+    assert.doesNotThrow(() => process.kill(child.pid, 0));
+    assert.equal(service.queue.executors.size, 1);
+});
+
+test("cancel during cleanup discards the reusable executor and rejects a pending success", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, { browserReuse: true, cleanupTimeout: 100 });
+    const created = await service.create({ email: "cleaning-cancel@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => [...service.queue.executors.values()][0]?.state === "CLEANING");
+    await service.cancel(service.state.tasks[0].taskId);
+    await until(() => !service.queue.running.size);
+    assert.equal(service.state.tasks[0].status, "cancelled");
+    assert.equal(service.account(created.account.accountId).authIndex, null);
+    assert.equal(service.queue.executors.size, 0);
+    await service.create({ email: "after-cancel@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.state.tasks[1].status === "succeeded" && !service.queue.running.size);
+    assert.equal(service.queue.metrics.browserStarts, 2);
+});
+
+test("unconfirmed reusable cleanup quarantines capacity until process reclamation succeeds", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, {
+        browserReuse: true,
+        cleanupTimeout: 30,
+        maxAttempts: 1,
+        screenshotTimeout: 10,
+    });
+    const terminate = service.queue.terminate.bind(service.queue);
+    let allowReclaim = false;
+    service.queue.terminate = slot => (allowReclaim ? terminate(slot) : Promise.resolve(false));
+    await service.create({ email: "dirty-quarantine@example.com", password: "synthetic" });
+    await service.create({ email: "after-quarantine@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.queue.faults.size === 1);
+    await service.queue.tick();
+    assert.equal(service.state.tasks[1].attempts, 0);
+    assert.equal(service.queue.executors.size, 1);
+    assert.equal([...service.queue.executors.values()][0].state, "QUARANTINED");
+    allowReclaim = true;
+    await service.queue.tick();
+    await until(() => service.state.tasks[1].status === "succeeded" && !service.queue.running.size);
+    assert.equal(service.queue.faults.size, 0);
+    assert.equal(service.queue.metrics.browserStarts, 2);
+});
+
+test("storage rejection cannot prevent idle process cleanup on shutdown", async t => {
+    const { service } = await fixture(t);
+    Object.assign(service.state.config, { browserReuse: true, cleanupTimeout: 100 });
+    await service.create({ email: "storage-shutdown@example.com", password: "synthetic" });
+    await service.queue.tick();
+    await until(() => service.state.tasks[0].status === "succeeded" && !service.queue.running.size);
+    const executor = [...service.queue.executors.values()][0];
+    service.storageFailed = true;
+    await service.queue.close();
+    service.storageFailed = false;
+    assert.equal(service.queue.executors.size, 0);
+    assert.throws(() => process.kill(executor.child.pid, 0), { code: "ESRCH" });
 });

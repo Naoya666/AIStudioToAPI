@@ -3,7 +3,18 @@ const ConnectionRegistry = require("../core/ConnectionRegistry");
 const TargetValidationTransport = require("./TargetValidationTransport");
 
 class TargetSessionValidator {
-    constructor({ browser, storageState, proxy, targetUrl, timeout, stepTimeout, onPage, onSignal, onFailure }) {
+    constructor({
+        browser,
+        storageState,
+        proxy,
+        targetUrl,
+        timeout,
+        stepTimeout,
+        onPage,
+        onContext,
+        onSignal,
+        onFailure,
+    }) {
         // Never forward page text, URLs, cookies or exception messages to logs.
         const signals = ["Privacy protection layer active", "Received authIndex request", "Connection successful"];
         const logger = Object.fromEntries(
@@ -40,6 +51,11 @@ class TargetSessionValidator {
         const create = this.manager._createBrowserContext.bind(this.manager);
         this.manager._createBrowserContext = async (...args) => {
             const context = await create(...args);
+            if (this.closed) {
+                await context.close();
+                throw new Error("Validation already closed");
+            }
+            onContext?.(context);
             context.on("page", onPage);
             return context;
         };
@@ -86,9 +102,19 @@ class TargetSessionValidator {
     }
 
     async close() {
+        this.closed = true;
         this.manager.isClosingIntentionally = true;
+        for (const attempt of this.manager._contextInitAttempts.values()) attempt.cancel?.("validation_closed");
+        this.manager.contexts.clear();
         await this.transport.close();
         for (const timer of this.registry.reconnectGraceTimers.values()) clearTimeout(timer);
+        this.registry.reconnectGraceTimers.clear();
+        for (const { timeoutId } of this.registry.lightweightReconnectTimeouts.values()) clearTimeout(timeoutId);
+        this.registry.lightweightReconnectTimeouts.clear();
+        this.registry.closeAllMessageQueues();
+        this.registry.connectionsByAuth.clear();
+        this.registry.removeAllListeners();
+        this.manager.setConnectionRegistry(null);
     }
 }
 module.exports = TargetSessionValidator;

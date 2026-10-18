@@ -8,7 +8,11 @@ const { performance } = require("node:perf_hooks");
 const privateValues = new Set();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const explicitTotpSelector = 'input[name="totpPin"], input[id="totpPin"], input[autocomplete="one-time-code"]';
-const diagnostics = {};
+let diagnostics = {};
+const attemptContexts = new Set();
+let activeInput,
+    executorId,
+    busy = false;
 const totpSelector =
     'input[name="totpPin"], input[id="totpPin"], input[autocomplete="one-time-code"], input[inputmode="numeric"], input[type="tel"], input[type="text"], input[type="number"], input:not([type])';
 let page,
@@ -23,7 +27,7 @@ let page,
     stopped = false,
     diagnosing = false;
 function send(message) {
-    if (process.connected) process.send({ token, ...message });
+    if (process.connected) process.send({ executorId, taskId: activeInput?.taskId, token, ...message });
 }
 function fail(reason, retryable = false) {
     throw Object.assign(new Error(reason), { reason, retryable });
@@ -55,14 +59,28 @@ async function screenshot() {
     }
 }
 async function close() {
+    // Every created context is registered, including validation failures before
+    // validate() returns. Never reuse a browser after incomplete cleanup.
+    const results = await Promise.allSettled([...[...attemptContexts].map(owned => owned.close()), validator?.close()]);
+    if (results.some(result => result.status === "rejected") || browser?.contexts?.().length)
+        fail("executor_cleanup_failed");
+    attemptContexts.clear();
+    page = context = validator = handlers = interaction = null;
+    privateValues.clear();
+}
+async function complete(result) {
+    send({ result });
     try {
-        await page?.close();
-        await context?.close();
-        await browser?.close();
+        await close();
+        send({ cleaned: true });
     } catch {
-        /* Supervisor enforces cleanup. */
+        send({ cleanupFailed: true });
     } finally {
-        await validator?.close();
+        activeInput = null;
+        config = null;
+        token = null;
+        diagnostics = {};
+        busy = false;
     }
 }
 async function visible(selector) {
@@ -262,6 +280,7 @@ async function validateStudio(credentials) {
     return validation;
 }
 async function run(input) {
+    activeInput = input;
     token = input.token;
     config = input.config;
     const deadline = performance.now() + config.attemptTimeout;
@@ -278,16 +297,22 @@ async function run(input) {
         if (value) privateValues.add(value);
     if (!input.targetUrl) fail("service_target_missing");
     phase("browser_launch");
-    browser = await firefox.launch({
-        headless: true,
-        ...(input.executablePath ? { executablePath: input.executablePath } : {}),
-        firefoxUserPrefs: {
-            "network.proxy.allow_hijacking_localhost": true,
-            "network.proxy.no_proxies_on": "",
-            "network.trr.mode": 5,
-        },
-        timeout: config.stepTimeout,
-    });
+    if (!browser) {
+        browser = await firefox.launch({
+            headless: true,
+            ...(input.executablePath ? { executablePath: input.executablePath } : {}),
+            firefoxUserPrefs: {
+                "network.proxy.allow_hijacking_localhost": true,
+                "network.proxy.no_proxies_on": "",
+                "network.trr.mode": 5,
+            },
+            timeout: config.stepTimeout,
+        });
+        browser.on?.("disconnected", () => {
+            send({ browserDisconnected: true });
+        });
+        send({ browserStarted: true });
+    }
     guard();
     context = await browser.newContext({
         ...(input.proxy ? { proxy: input.proxy } : {}),
@@ -295,6 +320,7 @@ async function run(input) {
         locale: "en-US",
         viewport: { height: 1000, width: 1440 },
     });
+    attemptContexts.add(context);
     context.setDefaultTimeout(config.stepTimeout);
     context.setDefaultNavigationTimeout(config.stepTimeout);
     page = await context.newPage();
@@ -536,8 +562,13 @@ async function run(input) {
         phase("target_service_initialization");
         const storageState = await context.storageState();
         guard();
+        await context.close();
+        attemptContexts.delete(context);
+        context = null;
+        page = null;
         validator = new TargetSessionValidator({
             browser,
+            onContext: owned => attemptContexts.add(owned),
             onFailure: screenshot,
             onPage: targetPage => {
                 page = targetPage;
@@ -551,8 +582,8 @@ async function run(input) {
         });
         const result = await validator.validate();
         guard();
-        await context.close();
         context = result.context;
+        attemptContexts.add(context);
         page = result.page;
         send({ validationSignal: "native_connection_verified" });
         phase("aistudio_revalidation");
@@ -565,17 +596,14 @@ async function run(input) {
     phase("storage_state");
     const storageState = await context.storageState();
     guard();
-    send({
-        result: {
-            diagnostics: { ...diagnostics, pageStateAfter: "studio_shell" },
-            email: validation.email,
-            storageState,
-            targetInitialized: !!validator,
-            termsOutcome: handlers.termsOutcome,
-            termsVerified: true,
-        },
+    await complete({
+        diagnostics: { ...diagnostics, pageStateAfter: "studio_shell" },
+        email: validation.email,
+        storageState,
+        targetInitialized: !!validator,
+        termsOutcome: handlers.termsOutcome,
+        termsVerified: true,
     });
-    await close();
 }
 process.on("disconnect", () => {
     stopped = true;
@@ -590,14 +618,37 @@ process.on("disconnect", () => {
     close().then(terminateGroup).catch(terminateGroup);
 });
 process.on("message", input => {
-    if (input.abort && input.token === token) {
+    if (input.shutdown && input.executorId === executorId && !busy) {
+        stopped = true;
+        close()
+            .then(() => browser?.close())
+            .then(() => process.exit(0))
+            .catch(() => process.exit(1));
+        return;
+    }
+    if (
+        input.abort &&
+        input.token === token &&
+        input.executorId === executorId &&
+        input.taskId === activeInput?.taskId
+    ) {
         stopped = true;
         screenshot()
             .then(close)
             .catch(() => {});
         return;
     }
-    if (token) return;
+    if (busy) {
+        send({ protocolError: true });
+        return;
+    }
+    if (!input.credentials) return;
+    if (executorId && input.executorId !== executorId) return;
+    executorId = input.executorId;
+    busy = true;
+    stopped = false;
+    diagnosing = false;
+    diagnostics = {};
     run(input).catch(async cause => {
         stopped = true;
         const reason =
@@ -656,28 +707,25 @@ process.on("message", input => {
                 /* Diagnostic metadata is best effort and excludes values. */
             }
         }
-        send({
-            result: {
-                controls: Array.isArray(controls) ? controls : [],
-                diagnostics: {
-                    ...diagnostics,
-                    ...interaction?.diagnostics,
-                    ...cause.operationDiagnostics,
-                    ...cause.onboardingDiagnostics,
-                    operation:
-                        cause.loginOperation ||
-                        (handlers?.operation?.startsWith("terms_") && diagnostics.operation === "aistudio_terms"
-                            ? handlers.operation
-                            : diagnostics.operation),
-                    operationPart: cause.operationPart || interaction?.diagnostics?.operationPart,
-                },
-                error: reason,
-                frameKinds,
-                retryable:
-                    cause.retryable ?? ["network_timeout", "ui_operation_timeout", "browser_failure"].includes(reason),
-                termsOutcome: handlers?.termsOutcome,
+        await complete({
+            controls: Array.isArray(controls) ? controls : [],
+            diagnostics: {
+                ...diagnostics,
+                ...interaction?.diagnostics,
+                ...cause.operationDiagnostics,
+                ...cause.onboardingDiagnostics,
+                operation:
+                    cause.loginOperation ||
+                    (handlers?.operation?.startsWith("terms_") && diagnostics.operation === "aistudio_terms"
+                        ? handlers.operation
+                        : diagnostics.operation),
+                operationPart: cause.operationPart || interaction?.diagnostics?.operationPart,
             },
+            error: reason,
+            frameKinds,
+            retryable:
+                cause.retryable ?? ["network_timeout", "ui_operation_timeout", "browser_failure"].includes(reason),
+            termsOutcome: handlers?.termsOutcome,
         });
-        await close();
     });
 });

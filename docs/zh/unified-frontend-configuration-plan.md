@@ -173,15 +173,19 @@ API Key 修改要处理现有控制台认证的关联，不能因请求重复提
 
 下列配置所有模式均展示，全部保存后热生效。
 
-| 配置项                              | 中文名称与含义                                           |
-| ----------------------------------- | -------------------------------------------------------- |
-| `ACCOUNT_AUTO_RELOGIN_ENABLED`      | 自动登录与重登：为新增账号及认证失效账号自动安排登录任务 |
-| `ACCOUNT_LOGIN_CONCURRENCY`         | 登录任务并发数：同时执行的独立登录任务上限               |
-| `ACCOUNT_LOGIN_STEP_TIMEOUT_MS`     | 登录单步骤超时：单个登录步骤的等待上限，毫秒             |
-| `ACCOUNT_LOGIN_ATTEMPT_TIMEOUT_MS`  | 单次登录尝试超时：一次尝试的总时间上限，毫秒             |
-| `ACCOUNT_LOGIN_RECOVERY_TIMEOUT_MS` | 登录恢复总期限：包含等待和重试的恢复任务时间预算，毫秒   |
-| `ACCOUNT_LOGIN_MAX_ATTEMPTS`        | 登录最大尝试次数：包含首次尝试的总次数                   |
-| `ACCOUNT_LOGIN_LOG_RETENTION_DAYS`  | 登录日志保留天数：登录任务日志的保留时间                 |
+| 配置项                                  | 中文名称与含义                                           |
+| --------------------------------------- | -------------------------------------------------------- |
+| `ACCOUNT_AUTO_RELOGIN_ENABLED`          | 自动登录与重登：为新增账号及认证失效账号自动安排登录任务 |
+| `ACCOUNT_LOGIN_CONCURRENCY`             | 登录任务并发数：同时执行的独立登录任务上限               |
+| `ACCOUNT_LOGIN_BROWSER_REUSE`           | 复用独立登录浏览器：每次尝试使用干净 Context，默认关闭   |
+| `ACCOUNT_LOGIN_BROWSER_IDLE_TIMEOUT_MS` | 登录浏览器空闲保留时间：默认 60000 毫秒                  |
+| `ACCOUNT_LOGIN_BROWSER_MAX_ATTEMPTS`    | 登录浏览器最大尝试数：默认 20 次，任务边界重建           |
+| `ACCOUNT_LOGIN_BROWSER_MAX_AGE_MS`      | 登录浏览器最长存活时间：默认 1800000 毫秒                |
+| `ACCOUNT_LOGIN_STEP_TIMEOUT_MS`         | 登录单步骤超时：单个登录步骤的等待上限，毫秒             |
+| `ACCOUNT_LOGIN_ATTEMPT_TIMEOUT_MS`      | 单次登录尝试超时：一次尝试的总时间上限，毫秒             |
+| `ACCOUNT_LOGIN_RECOVERY_TIMEOUT_MS`     | 登录恢复总期限：包含等待和重试的恢复任务时间预算，毫秒   |
+| `ACCOUNT_LOGIN_MAX_ATTEMPTS`            | 登录最大尝试次数：包含首次尝试的总次数                   |
+| `ACCOUNT_LOGIN_LOG_RETENTION_DAYS`      | 登录日志保留天数：登录任务日志的保留时间                 |
 
 ### 4.9 用量统计
 
