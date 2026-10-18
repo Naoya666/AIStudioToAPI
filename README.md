@@ -247,11 +247,15 @@ Docker 中包含的 Node.js、Camoufox、Mihomo 等第三方组件遵循各自�
 
 ### Gemini 4 Argon 账号资格
 
-`gemini-4-argon` 默认使用宿主页的 MakerSuite GenerateContent 桥接，具体路由见下方“模型传输兼容”。先用同一账号在现有 Build App 验证准确模型 ID 和调用权限，再在 `.env` 配置 `ARGON_VERIFIED_ACCOUNTS=[0,2]`（内部 authIndex，示例值需替换）并重启。默认 `[]` 不派发此模型；此配置只声明已核验账号，不能授予会员权限。更换账号或重新编号后须重新核验并更新配置。
+`gemini-4-argon` 默认使用宿主页的 MakerSuite GenerateContent 桥接。账号管理中可设置 Free、Pro、Ultra 5x 或 Ultra 20x；未设置时跟随当前会话的成功权益检测（TIER1/TIER2 均按 Pro 回退）。有效层级为 Pro 或 Ultra 时通过本地层级准入，Free 和未知不准入。`ARGON_VERIFIED_ACCOUNTS` 已废弃，旧值会被忽略，无须迁移白名单。
 
-每个账号独立观察宿主页原生权益信息，必要时查询 `GetAiStudioBenefitTier`。只有已核验且实时权益为付费的账号才可生成；未知状态只允许预检。认证未就绪、查询失败、免费或没有合格账号会返回明确错误，不会批量标记登录失效。查询失败可在 30 秒后重新预检，也可通过页面重载重新取得上下文。
+在账号操作栏点击“检测付费权限”，或跨分页选择账号后批量检测。任务串行执行，可查看逐账号进度并取消；只调用 `GetAiStudioBenefitTier`，不生成内容、不消耗本地模型计数，也不会自动登录。普通浏览器容量满时最多使用一个额外的检测 context。上游没有公开此内部接口的限流承诺。账号新增、导入、轮换和首次 Argon 请求不会强制查询。替换 Cookie 或重新登录后，旧检测保留为历史并标记待复检；查询失败保留同会话最近成功观察。
 
-Chat Completions、Responses、Anthropic 和 Gemini native 均支持原有 JSON/SSE 响应格式。此模型的流式请求（包括全局 `real`、`-real` 后缀和原生 `alt=sse`）实际使用 unary 并缓冲输出；不是实时增量流。其他模型沿用原有流模式。桥接使用当前宿主页真实权益与认证，为转换后的载荷生成新的 WAA，不自动跨通道回退。Argon 的本地日额度仍显示未知，实际 429 保留现有限流处理。
+手动层级优先，仅控制本地准入及额度估算，不授予上游权限、不伪造权益头。手动付费与检测 Free 冲突时提示管理员，但仍允许真实请求；手动 Free 不会被检测付费自动升级。层级修改、检测及恢复模型均保留历史用量；真实模型权限错误和 429 继续按账号 × 模型处理。普通 Cookie 下载与现有 CSV/ZIP 导出格式不包含新增层级或检测元数据；完整元数据由账号 SQLite 数据库保存，兼容缺少字段的旧记录。
+
+本地每模型日额度基数（Flash / Pro / Argon）：未知或 Free 为 100 / 10 / 不准入，Pro 为 100 / 50 / 50，Ultra 5x 为 500 / 100 / 100，Ultra 20x 为 500 / 200 / 200。按各账号当日上游尝试数扣减，失败尝试也计数；采用 America/Los_Angeles 自然日。公开及管理看板逐账号聚合，属于本地预估，并非实时上游余额，估算归零不会新增调度拦截。
+
+Chat Completions、Responses、Anthropic 和 Gemini native 均支持原有 JSON/SSE 响应格式。此模型的流式请求（包括全局 `real`、`-real` 后缀和原生 `alt=sse`）实际使用 unary 并缓冲输出；不是实时增量流。其他模型沿用原有流模式。桥接使用当前宿主页真实权益与认证，为转换后的载荷生成新的 WAA，不自动跨通道回退。Argon 的额度按上述层级预估，实际 429 保留现有限流处理。
 
 离线测试包含真实 Firefox 与本地 TLS/CONNECT fixture，运行 `node --test tests/build-benefit.test.js`（需安装 Playwright Firefox 和 OpenSSL）；测试不访问 Google。代码及 fixture 通过不等同于真实账号已通过上游验收，具体记录见 [适配方案](docs/zh/gemini-4-argon-legacy-build-adaptation-plan-20261017.md)。
 
@@ -265,7 +269,7 @@ Camoufox 生产差异及后续修复见 [生产问题定位](docs/zh/gemini-4-ar
 MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"legacy","gemini-4-argon":"makersuite"}
 ```
 
-只接受无指令后缀的精确模型 ID 和 `legacy` / `makersuite`，不支持通配符、自动跨通道重试或模型改名。每个请求固定策略，重试和后续轮次不切换路径。Argon 仍要求 `ARGON_VERIFIED_ACCOUNTS` 与该账号当前页面真实付费权益；配置账号 ID 不授予权限，付费也不代表有可用额度。
+只接受无指令后缀的精确模型 ID 和 `legacy` / `makersuite`，不支持通配符、自动跨通道重试或模型改名。每个请求固定策略，重试和后续轮次不切换路径。Argon 使用统一账号层级准入，同时保留当前页面的真实认证及权益头；手动层级不授予真实上游权限。
 
 桥接先等待完整结果，再输出 JSON 或 SSE；`-real` 和全局 real 在桥接时转为缓冲，Chat 可选择 early 提前开始并发送心跳，其他入口保留原有缓冲 SSE 行为。`FAKE_STREAM_TIMEOUT_MS` 是固定生成总预算（默认 300000，最大 300000 毫秒），“桥接生成超时”（`MAKERSUITE_TIMEOUT_MS`，默认 295000，范围 1–300000 毫秒）可在前端修改，保存后对新请求生效，已有请求保留原预算。实际桥接等待取该时限与缓冲总预算剩余时间减去结算余量的较小值，包括认证、WAA、fetch 和正文读取。心跳不会延长预算。`STREAM_TIMEOUT_MS` 仍用于 legacy real 的增量空闲等待。排队期限独立；网关及调用方需要覆盖排队与生成时间。
 

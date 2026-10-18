@@ -53,6 +53,15 @@ class AccountRoutes {
                 size = Math.min(100, Math.max(1, Number(req.query.pageSize) || 25));
             return { accounts: accounts.slice((page - 1) * size, page * size), total: accounts.length };
         });
+        route("post", "/benefit-checks", (service, req) => service.benefitQueue.submit(req.body?.accountIds), 202);
+        route("get", "/benefit-checks", service => ({ tasks: service.state.benefitTasks }));
+        route("post", "/benefit-checks/cancel", (service, req) => service.benefitQueue.cancel(req.body?.accountIds));
+        route(
+            "post",
+            "/accounts/:id/check-benefits",
+            (service, req) => service.benefitQueue.submit([req.params.id]),
+            202
+        );
         route("post", "/accounts/batch/cancel-login", (service, req) => service.batchCancelLogin(req.body));
         route("post", "/accounts", (service, req) => service.create(req.body), 202);
         route("patch", "/accounts/batch/recovery", (service, req) => service.setRecovery(req.body));

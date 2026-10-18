@@ -131,7 +131,10 @@
                     </div>
 
                     <div class="quota-card-footer">
-                        <span>{{ quota.tracked_accounts }} × {{ quota.quota_per_account }}</span>
+                        <span
+                            >{{ t("schedulerQuotaTotal") }}
+                            {{ quota.total_quota ?? quota.tracked_accounts * quota.quota_per_account }}</span
+                        >
                         <span
                             >{{ t("schedulerTodayRequests") }}
                             <strong>{{ formatNumber(quota.daily_requests) }}</strong></span
@@ -959,7 +962,7 @@ function formatPersistent403Duration(account) {
 }
 
 function getQuotaPercent(quota) {
-    const total = (quota.tracked_accounts || 0) * (quota.quota_per_account || 0);
+    const total = quota.total_quota ?? (quota.tracked_accounts || 0) * (quota.quota_per_account || 0);
     if (!total) return 0;
     const remaining = quota.estimated_remaining_quota || 0;
     return Math.min(100, Math.max(0, Math.round((remaining / total) * 100)));

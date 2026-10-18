@@ -67,17 +67,12 @@ function loadSchedulerConfig(env = process.env) {
     if (contextInitTotalTimeoutMs <= contextOperationTimeoutMs) {
         throw new Error("CONTEXT_INIT_TOTAL_TIMEOUT_MS must exceed CONTEXT_OPERATION_TIMEOUT_MS");
     }
-    const argonVerifiedAccounts = JSON.parse(env.ARGON_VERIFIED_ACCOUNTS || "[]");
-    if (
-        !Array.isArray(argonVerifiedAccounts) ||
-        argonVerifiedAccounts.some(index => !Number.isSafeInteger(index) || index < 0)
-    )
-        throw new Error("Invalid ARGON_VERIFIED_ACCOUNTS: expected JSON array of auth indices");
+    if (env.ARGON_VERIFIED_ACCOUNTS)
+        process.emitWarning("ARGON_VERIFIED_ACCOUNTS is deprecated and ignored; use account tiers.");
     return {
         accountConcurrency,
         accountModelConcurrency,
         allocation,
-        argonVerifiedAccounts: [...new Set(argonVerifiedAccounts)],
         browserRecoveryBackoffMs: integer("BROWSER_RECOVERY_BACKOFF_MS", 5000),
         browserRecoveryMaxAttempts: integer("BROWSER_RECOVERY_MAX_ATTEMPTS", 3),
         browserRecoveryStableMs: integer("BROWSER_RECOVERY_STABLE_MS", 300000),

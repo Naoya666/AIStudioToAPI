@@ -95,6 +95,7 @@ class AccountLoginQueue {
                         this.service.failTask(task, "recovery_deadline");
                         continue;
                     }
+                    if (this.service.system.browserManager?.benefitCheckingIndices?.has(account.authIndex)) continue;
                     task.deadline ||= Date.now() + config.recoveryTimeout;
                     task.startedAt ||= Date.now();
                     task.attempts++;

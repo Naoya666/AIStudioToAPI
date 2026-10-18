@@ -3159,8 +3159,13 @@ const deduplicateAuth = () => {
                     const credentialChoices = {};
                     for (const conflict of data.conflicts) {
                         const indices = conflict.candidates.map(account => account.authIndex);
+                        const tierNames = { free: "Free", pro: "Pro", ultra: "Ultra 5x", ultra20: "Ultra 20x" };
+                        const descriptions = conflict.candidates.map(
+                            account =>
+                                `#${account.authIndex}: ${tierNames[account.manualTier] || t("accountTierUnset")}`
+                        );
                         const { value } = await ElMessageBox.prompt(
-                            `${conflict.email}: ${t("accountCredentialConflict")} [${indices.join(", ")}]`,
+                            `${conflict.email}: ${t("accountCredentialConflict")} [${descriptions.join(", ")}]`,
                             t("accountManagement"),
                             {
                                 inputPlaceholder: t("accountCredentialChooseIndex"),

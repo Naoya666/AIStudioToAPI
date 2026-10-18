@@ -125,7 +125,7 @@ async function fixture(t) {
     state.open = async (index = 0, timeoutMs = 1000) => {
         const context = await browser.newContext({ ignoreHTTPSErrors: true });
         const page = await context.newPage();
-        const benefit = new BuildBenefitContext(page, { authIndex: index, timeoutMs, verified: true });
+        const benefit = new BuildBenefitContext(page, { authIndex: index, canUse: () => true, timeoutMs });
         benefit.dispatcher = true;
         await benefit.install();
         const bridge = new MakerSuiteBridge({
@@ -155,6 +155,7 @@ async function fixture(t) {
         ]);
         await page.goto("https://aistudio.google.com/", { waitUntil: "domcontentloaded" });
         await waitPageReady(page);
+        await benefit.ensure();
         await benefit.assertReady();
         return { benefit, bridge, context, page };
     };

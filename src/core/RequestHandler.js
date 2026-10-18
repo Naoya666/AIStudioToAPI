@@ -1,3 +1,4 @@
+const { accountForIndex, resolveTier } = require("../accounts/AccountTierPolicy");
 const TransportPolicy = require("./ModelTransportPolicy");
 const { isArgon, benefitError } = require("./BuildBenefitContext");
 /**
@@ -4847,6 +4848,10 @@ class RequestHandler {
         if (this.scheduled || !isArgon(this._extractModelFromPath(proxyRequest.path)) || !proxyRequest.is_generative)
             return;
         const benefit = this.browserManager.contexts?.get(this.currentAuthIndex)?.page?.buildBenefit;
+        if (this.browserManager.benefitCheckingIndices?.has(this.currentAuthIndex))
+            throw benefitError("Account benefit check in progress");
+        if (!resolveTier(accountForIndex(this.authSource, this.currentAuthIndex)).argonEligible)
+            throw benefitError("Account tier does not allow gemini-4-argon");
         if (!benefit) throw benefitError("Build benefit context unavailable");
         await benefit.assertReady();
     }
@@ -4911,13 +4916,15 @@ class RequestHandler {
                 entry.transportPolicy = policy;
             }
         }
+        if (this.browserManager.benefitCheckingIndices?.has(authIndex))
+            throw benefitError("Account benefit check in progress");
         if (proxyRequest.is_generative && isArgon(this._extractModelFromPath(proxyRequest.path))) {
             const benefit = this.browserManager.contexts?.get(authIndex)?.page?.buildBenefit;
             if (
-                !benefit?.verified ||
+                !resolveTier(accountForIndex(this.authSource, authIndex)).argonEligible ||
+                !benefit ||
                 benefit.disposed ||
-                benefit.isCurrent?.() === false ||
-                benefit.state !== "ready-paid"
+                benefit.isCurrent?.() === false
             )
                 throw benefitError("No qualified Build account for gemini-4-argon");
             this.logger.info(

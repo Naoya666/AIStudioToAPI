@@ -1,6 +1,8 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { resolveTier, TIERS } = require("./AccountTierPolicy");
+const BenefitCheckQueue = require("./BenefitCheckQueue");
 const AccountStore = require("./AccountStore");
 const AccountLoginQueue = require("./AccountLoginQueue");
 const LoginArtifactService = require("./LoginArtifactService");
@@ -23,6 +25,7 @@ class AccountLoginService {
         this.previews = new Map();
         this.invalidated = new Set();
         this.queue = new AccountLoginQueue(this, options.workerPath);
+        this.benefitQueue = new BenefitCheckQueue(this);
     }
     exclusive(work) {
         this.pendingOperations ||= 0;
@@ -59,7 +62,14 @@ class AccountLoginService {
             paused: this.state.config.paused,
         };
         this.system?.configurationService?.initializeAccounts(this.state);
-        for (const account of this.state.accounts) account.recoveryEmail ??= null;
+        for (const account of this.state.accounts) {
+            account.recoveryEmail ??= null;
+            account.manualTier ??= null;
+        }
+        this.state.benefitTasks ||= [];
+        for (const task of this.state.benefitTasks)
+            if (["queued", "waiting", "running"].includes(task.status))
+                Object.assign(task, { finishedAt: Date.now(), reason: "interrupted", status: "failed" });
         await this.artifacts.initialize();
         await fs.mkdir(this.authDir, { mode: 0o700, recursive: true });
         for (const task of this.state.tasks) await this.queue.recover(task);
@@ -178,6 +188,7 @@ class AccountLoginService {
             lastExpiredAt: null,
             lastFailure: null,
             lastSuccessAt: null,
+            manualTier: null,
             password: null,
             recoveryEmail: null,
             recoveryState: "credentials_missing",
@@ -197,6 +208,7 @@ class AccountLoginService {
         const task = this.state.tasks.find(item => item.taskId === account.currentTaskId);
         return {
             ...metadata,
+            benefitTask: this.benefitQueue.latest(account.accountId),
             disabled:
                 account.authIndex !== null &&
                 this.system.scheduler?.isAccountManuallyDisabled(account.authIndex) === true,
@@ -208,6 +220,7 @@ class AccountLoginService {
                 (this.system.authSource.duplicateIndices || []).includes(account.authIndex),
             loginStopping: this.isLoginStopping(account.accountId),
             nextAttemptAt: task?.nextAttemptAt || null,
+            tier: resolveTier(account),
         };
     }
     list() {
@@ -235,14 +248,19 @@ class AccountLoginService {
         const account = this.account(id);
         return {
             autoRecovery: account.autoRecovery,
+            benefitLastCheck: account.benefitLastCheck || null,
+            benefitObservation: account.benefitObservation || null,
             credentialVersion: account.credentialVersion,
             email: account.email,
+            manualTier: account.manualTier ?? null,
             password: account.password,
             recoveryEmail: account.recoveryEmail,
+            tier: resolveTier(account),
             totpSecret: account.totp?.secret || null,
         };
     }
     invalidate(account) {
+        this.benefitQueue.cancelAccount(account.accountId);
         for (const task of this.state.tasks.filter(task => task.accountId === account.accountId && active(task))) {
             task.token = null;
             task.status = "cancelled";
@@ -253,6 +271,9 @@ class AccountLoginService {
         account.recoveryState = account.password ? "idle" : "credentials_missing";
     }
     validateCredentials(input, creating = false) {
+        if (input.manualTier !== undefined && !TIERS.includes(input.manualTier)) throw error("Invalid manual tier");
+        if (["benefitObservation", "benefitLastCheck", "effectiveTier", "tier", "conflict"].some(key => key in input))
+            throw error("Benefit results are read-only");
         if ((creating || input.email !== undefined) && !emailKey(input.email))
             throw error("A complete login email is required");
         if (
@@ -283,6 +304,7 @@ class AccountLoginService {
             autoRecovery: input.autoRecovery !== false,
             displayName: emailKey(input.email),
             email: emailKey(input.email),
+            manualTier: input.manualTier ?? null,
             password: input.password,
             recoveryEmail: emailKey(input.recoveryEmail),
             recoveryState: "idle",
@@ -330,8 +352,19 @@ class AccountLoginService {
         if (input.clearPassword === true) account.password = null;
         if (input.clearTotpSecret === true) account.totp = null;
         if (input.autoRecovery !== undefined) account.autoRecovery = input.autoRecovery;
-        if (!account.password) account.recoveryState = "credentials_missing";
+        if (input.manualTier !== undefined) {
+            account.manualTier = input.manualTier;
+            if (!changes) {
+                account.credentialVersion++;
+                // Tier-only edits do not invalidate an already authorized login.
+                for (const task of this.state.tasks)
+                    if (task.accountId === account.accountId && active(task))
+                        task.credentialVersion = account.credentialVersion;
+            }
+        }
+        if (changes && !account.password) account.recoveryState = "credentials_missing";
         await this.save();
+        if (input.manualTier !== undefined) this.notifyTierChanged();
         return this.publicAccount(account);
     }
     isLoginStopping(accountId) {
@@ -688,6 +721,7 @@ class AccountLoginService {
             );
             const keep = candidates.find(account => account.authIndex === group.keptIndex);
             const conflict =
+                new Set(candidates.map(account => account.manualTier ?? null)).size > 1 ||
                 new Set(candidates.map(account => account.password).filter(Boolean)).size > 1 ||
                 new Set(candidates.map(account => account.totp?.secret).filter(Boolean)).size > 1 ||
                 new Set(candidates.map(account => account.recoveryEmail).filter(Boolean)).size > 1;
@@ -717,6 +751,7 @@ class AccountLoginService {
                 ? source.recoveryEmail
                 : candidates.find(account => account.recoveryEmail)?.recoveryEmail || null;
             keep.totp = conflict ? source.totp : candidates.find(account => account.totp)?.totp || null;
+            keep.manualTier = conflict ? (source.manualTier ?? null) : (keep.manualTier ?? null);
             keep.credentialVersion++;
         }
         await this.save();
@@ -927,10 +962,52 @@ class AccountLoginService {
             task => active(task) || task.executor || !task.finishedAt || task.finishedAt > cutoff
         );
     }
+    notifyTierChanged() {
+        const scheduler = this.system.scheduler;
+        if (scheduler) {
+            scheduler.sequence = (scheduler.sequence || 0) + 1;
+            scheduler._eligibleRound = null;
+            scheduler._selectionPass = null;
+            scheduler.drain?.();
+        }
+    }
+    async recordBenefit(accountId, sessionVersion, result, isCurrent = () => true) {
+        return this.exclusive(async () => {
+            const account = this.state.accounts.find(item => item.accountId === accountId);
+            if (
+                !account ||
+                account.sessionVersion !== sessionVersion ||
+                this.invalidated.has(account.authIndex) ||
+                !isCurrent() ||
+                this.closed
+            )
+                return false;
+            const checkedAt = Date.now();
+            const succeeded = ["ready-free", "ready-paid"].includes(result.state);
+            if (succeeded)
+                account.benefitObservation = {
+                    observedAt: checkedAt,
+                    rawTier: result.state === "ready-free" ? null : result.rawTier,
+                    sessionVersion,
+                    source: result.source || "query",
+                    state: result.state,
+                };
+            account.benefitLastCheck = {
+                checkedAt,
+                reason: succeeded ? null : result.reason || "query_failed",
+                sessionVersion,
+                status: succeeded ? "succeeded" : "failed",
+            };
+            await this.save();
+            this.notifyTierChanged();
+            return true;
+        });
+    }
     async close() {
         if (this.closed) return;
         this.closed = true;
         clearInterval(this.cleanupTimer);
+        await this.benefitQueue.close();
         await this.queue.close();
         await this.chain;
         await this.save();

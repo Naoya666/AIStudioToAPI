@@ -1,3 +1,4 @@
+const { accountForIndex, resolveTier } = require("../accounts/AccountTierPolicy");
 /**
  * File: src/core/BrowserManager.js
  * Description: Browser manager for launching and controlling headless Firefox instances with authentication contexts
@@ -1495,7 +1496,13 @@ class BrowserManager {
 
         // Run every 4 seconds
         contextData.healthMonitorInterval = setInterval(async () => {
-            if (contextData.monitorRunning || this.contexts.get(authIndex) !== contextData || this._recovering) return;
+            if (
+                contextData.monitorRunning ||
+                this.contexts.get(authIndex) !== contextData ||
+                this._recovering ||
+                this.benefitCheckingIndices?.has(authIndex)
+            )
+                return;
             contextData.monitorRunning = true;
             try {
                 // Check if this is still the current active account
@@ -2055,6 +2062,8 @@ class BrowserManager {
      * Launch browser instance if not already running
      */
     async ensureWorkerContext(authIndex) {
+        if (this.benefitCheckingIndices?.has(authIndex))
+            throw new ContextAbortedError(authIndex, "benefit check in progress");
         if (!this.scheduler) return this.launchOrSwitchContext(authIndex);
         if (this.scheduler.closed) throw new Error("Scheduler is shutting down");
         if (this._recovering) throw new ContextAbortedError(authIndex, "browser recovering");
@@ -2135,7 +2144,7 @@ class BrowserManager {
                           reason: data.page.buildBenefit.failureReason || null,
                           source: data.page.buildBenefit.source || null,
                           state: data.page.buildBenefit.state,
-                          verified: data.page.buildBenefit.verified,
+                          tier: resolveTier(accountForIndex(this.authSource, authIndex)),
                       }
                     : null,
                 connection_epoch: this.connectionRegistry?.getConnectionEpoch(authIndex) || null,
@@ -2410,6 +2419,7 @@ class BrowserManager {
     _reserveContextCapacity(authIndex, purpose = "foreground") {
         this.contextCapacityReservations ??= new Map();
         if (
+            this.benefitCheckingIndices?.has(authIndex) ||
             this.scheduler.closed ||
             (this._recovering && this._recoveryAuthIndex !== authIndex) ||
             this.isClosingIntentionally ||
@@ -2493,6 +2503,7 @@ class BrowserManager {
     }
 
     _isContextIdle(authIndex) {
+        if (this.benefitCheckingIndices?.has(authIndex)) return false;
         return !this.scheduler?.account(authIndex).inflight && !this._hasActiveQueueForAuth(authIndex);
     }
 
@@ -3323,6 +3334,8 @@ class BrowserManager {
      * also the only code allowed to release the tracking markers.
      */
     _getOrStartContextInit(authIndex, options = {}) {
+        if (this.benefitCheckingIndices?.has(authIndex))
+            return Promise.reject(new ContextAbortedError(authIndex, "benefit check in progress"));
         if (this.isClosingIntentionally || (this._recovering && this._recoveryAuthIndex !== authIndex))
             return Promise.reject(new ContextAbortedError(authIndex, "browser recovering"));
         const existing = this._contextInitTasks.get(authIndex);
@@ -3517,8 +3530,10 @@ class BrowserManager {
             page = await this._runInitOperation(attempt, "context.newPage", () => context.newPage());
             page.accountSessionVersion = storageStateObject._accountSessionVersion || 0;
             attempt.page = page;
+            const benefitAccountId = accountForIndex(this.authSource, authIndex).accountId;
             const benefit = new BuildBenefitContext(page, {
                 authIndex,
+                canUse: () => resolveTier(accountForIndex(this.authSource, authIndex)).argonEligible,
                 isCurrent: () => {
                     const service = this.authSource?.accountLoginService;
                     const session = service?.state?.accounts.find(account => account.authIndex === authIndex);
@@ -3526,7 +3541,8 @@ class BrowserManager {
                         page.buildBenefit === benefit &&
                         attempt.browserGeneration === this.browserGeneration &&
                         (!service?.state ||
-                            (session?.sessionVersion === page.accountSessionVersion &&
+                            (session?.accountId === benefitAccountId &&
+                                session?.sessionVersion === page.accountSessionVersion &&
                                 !service.invalidated.has(authIndex)))
                     );
                 },
@@ -3538,7 +3554,18 @@ class BrowserManager {
                         this.scheduler.drain();
                     }
                 },
-                verified: (this.config?.scheduler?.argonVerifiedAccounts || []).includes(authIndex),
+                onObservation: result => {
+                    const service = this.authSource?.accountLoginService;
+                    if (service && benefitAccountId)
+                        service
+                            .recordBenefit(
+                                benefitAccountId,
+                                page.accountSessionVersion,
+                                result,
+                                () => benefit.isCurrent() && !benefit.disposed
+                            )
+                            .catch(() => {});
+                },
             });
             page.buildBenefit = benefit;
             benefit.dispatcher = true;
@@ -3683,10 +3710,6 @@ class BrowserManager {
             await this._simulateHumanMovement(page, 1, 1, attempt);
             attempt.mouseReady = true;
 
-            if (page.buildBenefit.verified) {
-                await this._runInitOperation(attempt, "benefit.preflight", () => page.buildBenefit.ensure());
-            }
-
             // Final check before adding to contexts map
             this._setInitPhase(attempt, "publishing");
             this._assertCurrentInitAttempt(attempt);
@@ -3763,6 +3786,8 @@ class BrowserManager {
     }
 
     async launchOrSwitchContext(authIndex) {
+        if (this.benefitCheckingIndices?.has(authIndex))
+            throw new ContextAbortedError(authIndex, "benefit check in progress");
         if (typeof authIndex !== "number" || authIndex < 0) {
             this.logger.error(`[Browser] Invalid authIndex: ${authIndex}. authIndex must be >= 0.`);
             this._currentAuthIndex = -1;

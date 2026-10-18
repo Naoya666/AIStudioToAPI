@@ -1291,3 +1291,65 @@ test("selection endpoint uses the list filters across every page and only return
     service.state.accounts.push(...large);
     assert.equal(service.selectedAccounts({ accountIds: large.map(account => account.accountId) }).length, 1001);
 });
+
+test("account tiers persist independently from observations, credentials and session refresh", async t => {
+    const f = await fixture(t, 1);
+    const account = f.service.state.accounts[0];
+    const id = account.accountId;
+    assert.equal(account.manualTier, null);
+    await f.service.recordBenefit(id, 0, { rawTier: "TIER2", source: "native", state: "ready-paid" });
+    const original = { ...account.benefitObservation };
+    await f.service.recordBenefit(id, 0, { reason: "query_http", state: "failed" });
+    assert.deepEqual(account.benefitObservation, original);
+    assert.equal(account.benefitLastCheck.status, "failed");
+    await f.service.edit(id, { credentialVersion: account.credentialVersion, manualTier: "free" });
+    assert.equal(f.service.publicAccount(account).tier.effectiveTier, "free");
+    assert.equal(f.service.publicAccount(account).tier.conflict, false);
+    for (const key of ["benefitObservation", "benefitLastCheck", "effectiveTier", "tier", "conflict"])
+        await assert.rejects(
+            f.service.edit(id, { credentialVersion: account.credentialVersion, [key]: {} }),
+            /read-only/
+        );
+    await f.service.edit(id, { credentialVersion: account.credentialVersion, manualTier: null });
+    assert.equal(f.service.publicAccount(account).tier.effectiveTier, "pro");
+    account.sessionVersion++;
+    assert.equal(f.service.publicAccount(account).tier.stale, true);
+    assert.equal(f.service.publicAccount(account).tier.effectiveTier, null);
+    assert.equal(await f.service.recordBenefit(id, 0, { state: "ready-free" }), false);
+    await f.service.edit(id, { credentialVersion: account.credentialVersion, manualTier: "ultra20" });
+    assert.equal(f.service.publicAccount(account).tier.argonEligible, true);
+    assert.deepEqual(account.benefitObservation, original);
+    await f.service.recordBenefit(id, 1, { rawTier: null, source: "query", state: "ready-free" });
+    assert.equal(f.service.publicAccount(account).tier.conflict, true);
+    f.service.state.benefitTasks.push({ accountId: id, status: "running", taskId: "interrupted" });
+    const crashSnapshot = JSON.stringify(f.service.state);
+    await f.close();
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(f.options.storePath);
+    db.prepare("UPDATE account_state SET value=? WHERE id=1").run(crashSnapshot);
+    db.close();
+    const restarted = new Service(f.system, f.options);
+    await restarted.initialize({ startQueue: false });
+    try {
+        assert.equal(restarted.account(id).manualTier, "ultra20");
+        assert.equal(restarted.state.benefitTasks[0].reason, "interrupted");
+        assert.equal(restarted.state.benefitTasks[0].status, "failed");
+        restarted.state.accounts = [];
+        assert.equal(await restarted.recordBenefit(id, 1, { rawTier: "TIER1", state: "ready-paid" }), false);
+    } finally {
+        await restarted.close();
+    }
+});
+
+test("deduplication requires review for different manual tiers and preserves the selected tier", async t => {
+    const f = await fixture(t, 2);
+    const [first, second] = f.service.state.accounts;
+    first.manualTier = "free";
+    second.manualTier = "ultra";
+    const groups = [{ email: "same@example.com", keptIndex: 0, removedIndices: [1] }];
+    const preview = await f.service.prepareDeduplicate(groups);
+    assert.equal(preview.conflicts.length, 1);
+    const versions = Object.fromEntries([first, second].map(account => [account.accountId, account.credentialVersion]));
+    await f.service.prepareDeduplicate(groups, { "same@example.com": { accountId: second.accountId, versions } });
+    assert.equal(first.manualTier, "ultra");
+});

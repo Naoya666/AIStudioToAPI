@@ -103,6 +103,36 @@
                 l("去重清理", "Clean duplicates")
             }}</ElButton>
         </div>
+        <ElCard>
+            <strong>{{ l("付费权限检测", "Benefit checks") }}</strong>
+            <span>
+                · {{ benefitTasks.filter(task => ["queued", "waiting", "running"].includes(task.status)).length }}
+                {{ l("进行中", "pending") }} / {{ benefitTasks.length }} {{ l("任务", "tasks") }}</span
+            >
+            <small>
+                ·
+                {{
+                    l(
+                        "仅查询权益，不生成内容；额度为本地预估。",
+                        "Queries benefits only, without generating content. Quotas are local estimates."
+                    )
+                }}</small
+            >
+            <details v-if="benefitTasks.length">
+                <summary>{{ l("逐账号结果与进度", "Per-account results and progress") }}</summary>
+                <p v-for="task in benefitTasks.slice().reverse().slice(0, 100)" :key="task.taskId">
+                    {{ task.authIndex === null ? task.accountId : "#" + task.authIndex }} ·
+                    {{ benefitState(task.status) }}
+                    <span v-if="task.reason"> · {{ task.reason }}</span>
+                    <ElButton
+                        v-if="['queued', 'waiting', 'running'].includes(task.status)"
+                        size="small"
+                        @click="cancelBenefits([task.accountId])"
+                        >{{ l("取消", "Cancel") }}</ElButton
+                    >
+                </p>
+            </details>
+        </ElCard>
         <div class="account-toolbar batch-toolbar">
             <span
                 >{{ l("已选", "Selected") }} {{ selected.length }}
@@ -132,6 +162,15 @@
                 :loading="loginSubmitting"
                 @click="batchLogin"
                 >{{ l("批量重新登录", "Log in selected") }}</ElButton
+            >
+            <ElButton size="small" :disabled="!selected.length || busy" @click="checkBenefits(selected)">{{
+                l("批量检测付费权限", "Check selected benefits")
+            }}</ElButton>
+            <ElButton
+                size="small"
+                :disabled="!selected.length || busy"
+                @click="cancelBenefits(selected.map(row => row.accountId))"
+                >{{ l("取消选中检测", "Cancel selected checks") }}</ElButton
             >
             <ElButton size="small" :disabled="!selected.length || busy" @click="batchRecovery(true)">{{
                 l("启用自动恢复", "Enable auto recovery")
@@ -201,6 +240,7 @@
                         l("人工禁用", "Manually disabled")
                     }}</ElTag>
                 </div>
+                <p><AccountTierBadge :account="row" /></p>
                 <p>
                     {{ l("会话 / 恢复", "Session / recovery") }}：
                     <span :class="['state-text', 'state-' + row.sessionState]">{{ stateLabel(row.sessionState) }}</span>
@@ -227,6 +267,16 @@
                 /></label>
                 <div class="row-actions">
                     <ElButton size="small" @click="openEdit(row)">{{ l("编辑凭据", "Edit credentials") }}</ElButton>
+                    <ElButton
+                        size="small"
+                        :disabled="['queued', 'waiting', 'running'].includes(row.benefitTask?.status)"
+                        @click="checkBenefits([row])"
+                        >{{
+                            ["queued", "waiting", "running"].includes(row.benefitTask?.status)
+                                ? benefitState(row.benefitTask.status)
+                                : l("检测付费权限", "Check paid benefits")
+                        }}</ElButton
+                    >
                     <ElButton size="small" @click="login(row)">{{ l("重新登录", "Log in") }}</ElButton>
                     <ElButton
                         v-if="schedulingMode === 'legacy' && row.authIndex !== null"
@@ -289,6 +339,9 @@
                         </div>
                     </template>
                 </ElTableColumn>
+                <ElTableColumn :label="l('账号层级', 'Account tier')" min-width="160">
+                    <template #default="{ row }"><AccountTierBadge :account="row" /></template>
+                </ElTableColumn>
                 <ElTableColumn :label="l('会话 / 恢复', 'Session / recovery')" width="150">
                     <template #default="{ row }">
                         <span :class="['state-text', 'state-' + row.sessionState]">{{
@@ -326,6 +379,16 @@
                             <ElButton size="small" @click="openEdit(row)">{{
                                 l("编辑凭据", "Edit credentials")
                             }}</ElButton>
+                            <ElButton
+                                size="small"
+                                :disabled="['queued', 'waiting', 'running'].includes(row.benefitTask?.status)"
+                                @click="checkBenefits([row])"
+                                >{{
+                                    ["queued", "waiting", "running"].includes(row.benefitTask?.status)
+                                        ? benefitState(row.benefitTask.status)
+                                        : l("检测付费权限", "Check paid benefits")
+                                }}</ElButton
+                            >
                             <ElButton size="small" @click="login(row)">{{ l("重新登录", "Log in") }}</ElButton>
                             <ElButton
                                 v-if="schedulingMode === 'legacy' && row.authIndex !== null"
@@ -383,6 +446,68 @@
             @closed="clearForm"
         >
             <ElForm label-position="top">
+                <ElFormItem :label="l('手动层级', 'Manual tier')">
+                    <ElSelect v-model="form.manualTier">
+                        <ElOption
+                            :value="''"
+                            :label="l('未设置（跟随检测结果）', 'Unset (follow detected benefits)')"
+                        />
+                        <ElOption v-for="(name, tier) in tierNames" :key="tier" :value="tier" :label="name" />
+                    </ElSelect>
+                </ElFormItem>
+                <div v-if="editing" aria-live="polite">
+                    <p>
+                        {{ l("当前有效层级", "Effective tier") }}:
+                        {{ tierNames[form.manualTier || editing.tier?.detectedTier] || l("未知", "Unknown") }}
+                    </p>
+                    <p
+                        v-if="
+                            ['pro', 'ultra', 'ultra20'].includes(form.manualTier) &&
+                            editing.tier?.detectedTier === 'free'
+                        "
+                    >
+                        ⚠
+                        {{
+                            l(
+                                "手动设置为付费账号，但最近一次有效检测为 Free，请检查订阅或账号会话。",
+                                "Manually marked as paid, but the latest valid observation is Free. Check the subscription or session."
+                            )
+                        }}
+                    </p>
+                    <p>
+                        {{ l("原始权益（只读）", "Raw benefits (read-only)") }}:
+                        {{
+                            editing.benefitObservation?.state === "ready-free"
+                                ? "Free"
+                                : editing.benefitObservation?.rawTier || l("未检测", "Not checked")
+                        }}
+                    </p>
+                    <p>
+                        {{ l("来源 / 成功观察时间", "Source / observed at") }}:
+                        {{ editing.benefitObservation?.source || "—" }} /
+                        {{
+                            editing.benefitObservation?.observedAt
+                                ? new Date(editing.benefitObservation.observedAt).toLocaleString()
+                                : "—"
+                        }}
+                    </p>
+                    <p>
+                        {{
+                            editing.tier?.observationCurrent
+                                ? l("当前会话", "Current session")
+                                : l("无当前会话检测，待复检", "No current session observation; recheck needed")
+                        }}
+                    </p>
+                    <p>
+                        {{ l("最近检测", "Last check") }}: {{ benefitState(editing.benefitLastCheck?.status) }} ·
+                        {{ editing.benefitLastCheck?.reason || "—" }} ·
+                        {{
+                            editing.benefitLastCheck?.checkedAt
+                                ? new Date(editing.benefitLastCheck.checkedAt).toLocaleString()
+                                : "—"
+                        }}
+                    </p>
+                </div>
                 <ElFormItem label="Email"><ElInput v-model="form.email" autocomplete="off" /></ElFormItem>
                 <ElFormItem label="Password"
                     ><ElInput
@@ -716,6 +841,7 @@
 import { computed, nextTick, ref, reactive, watch, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
+import AccountTierBadge from "../components/AccountTierBadge.vue";
 import I18n from "../utils/i18n";
 const router = useRouter();
 defineProps({
@@ -725,6 +851,31 @@ defineProps({
     legacyActions: { default: () => ({}), type: Object },
     schedulingMode: { default: null, type: String },
 });
+const benefitTasks = ref([]);
+const tierNames = { free: "Free", pro: "Pro", ultra: "Ultra 5x", ultra20: "Ultra 20x" };
+const benefitState = value =>
+    ({
+        cancelled: l("已取消", "Cancelled"),
+        failed: l("失败", "Failed"),
+        queued: l("排队", "Queued"),
+        running: l("检测中", "Checking"),
+        succeeded: l("成功", "Succeeded"),
+        waiting: l("等待账号空闲", "Waiting for account"),
+    })[value] || l("未检测", "Not checked");
+async function checkBenefits(rows) {
+    await action(async () => {
+        const result = await api("/benefit-checks", "POST", { accountIds: rows.map(row => row.accountId) });
+        const rejected = result.results.filter(item => item.status === "rejected");
+        if (rejected.length) ElMessage.warning(rejected.map(item => `${item.accountId}: ${item.reason}`).join("; "));
+        await refresh();
+    });
+}
+async function cancelBenefits(accountIds) {
+    await action(async () => {
+        await api("/benefit-checks/cancel", "POST", { accountIds });
+        await refresh();
+    });
+}
 const accountTable = ref(null);
 const mobile = ref(window.matchMedia("(max-width: 768px)").matches);
 const mobileQuery = window.matchMedia("(max-width: 768px)");
@@ -773,6 +924,7 @@ const editVisible = ref(false),
         clearTotpSecret: false,
         email: "",
         loginNow: false,
+        manualTier: "",
         password: "",
         recoveryEmail: "",
         totpSecret: "",
@@ -910,12 +1062,13 @@ async function refresh() {
     const sequence = ++refreshSequence;
     await action(async () => {
         const selectionVersion = selectionSequence;
-        const [list, status, selection] = await Promise.all([
+        const [list, status, selection, benefits] = await Promise.all([
             api(
                 `/accounts?page=${page.value}&pageSize=${pageSize.value}&search=${encodeURIComponent(search.value || "")}&state=${encodeURIComponent(filter.value || "")}`
             ),
             api("/login-queue"),
             selected.value.length ? api("/accounts/selection") : null,
+            api("/benefit-checks"),
         ]);
         if (disposed || sequence !== refreshSequence) return;
         const lastPage = Math.max(1, Math.ceil(list.total / pageSize.value));
@@ -925,6 +1078,11 @@ async function refresh() {
         }
         syncingSelection = true;
         accounts.value = list.accounts;
+        benefitTasks.value = benefits.tasks || [];
+        const edited = list.accounts.find(account => account.accountId === editing.value?.accountId);
+        if (edited)
+            for (const key of ["benefitObservation", "benefitLastCheck", "tier", "benefitTask"])
+                editing.value[key] = edited[key];
         const refreshed = new Map(list.accounts.map(account => [account.accountId, account]));
         if (selection && selectionVersion === selectionSequence) {
             const existing = new Map(selection.accounts.map(account => [account.accountId, account]));
@@ -996,6 +1154,7 @@ function clearForm() {
         clearTotpSecret: false,
         email: "",
         loginNow: false,
+        manualTier: "",
         password: "",
         recoveryEmail: "",
         totpSecret: "",
@@ -1011,6 +1170,7 @@ function openEdit(account) {
     releaseImage();
     editing.value = account;
     form.email = account.email || "";
+    form.manualTier = account.manualTier || "";
     editVisible.value = true;
 }
 async function reveal() {
@@ -1026,7 +1186,8 @@ async function save() {
     busy.value = true;
     await action(async () => {
         const body = {
-            email: form.email,
+            ...(!editing.value || form.email !== (editing.value.email || "") ? { email: form.email } : {}),
+            manualTier: form.manualTier || null,
             ...(form.recoveryEmail ? { recoveryEmail: form.recoveryEmail } : {}),
             ...(form.password ? { password: form.password } : {}),
             ...(form.totpSecret ? { totpSecret: form.totpSecret } : {}),

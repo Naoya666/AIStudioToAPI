@@ -1,3 +1,4 @@
+const { accountForIndex, modelQuota, resolveTier } = require("../accounts/AccountTierPolicy");
 const { isArgon } = require("./BuildBenefitContext");
 const fs = require("fs");
 const path = require("path");
@@ -12,7 +13,6 @@ const PACIFIC_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
     timeZone: PACIFIC_TIMEZONE,
     year: "numeric",
 });
-const DAILY_QUOTAS = Object.freeze({ flash: 100, pro: 10 });
 const MAX_MODEL_NAME_LENGTH = 200;
 const PERSISTENT_403_THRESHOLD_MS = 48 * 60 * 60 * 1000;
 const PACIFIC_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
@@ -88,13 +88,8 @@ function normalizeModelName(model) {
     return normalized;
 }
 
-function getModelDailyQuota(model) {
-    const normalized = String(model || "").toLowerCase();
-    if (normalized.startsWith("__") || normalized.includes("embedding") || normalized.includes("imagen")) return null;
-    const segments = normalized.split("-");
-    if (segments.includes("flash")) return DAILY_QUOTAS.flash;
-    if (segments.includes("pro")) return DAILY_QUOTAS.pro;
-    return null;
+function getModelDailyQuota(model, account = {}) {
+    return modelQuota(model, account);
 }
 
 function isValidDateKey(value) {
@@ -301,13 +296,7 @@ class ModelScheduler {
 
     isResourceEligible(account, model, now = this.now()) {
         const slot = account.models[model];
-        if (isArgon(model)) {
-            if (!(this.config.argonVerifiedAccounts || []).includes(account.index)) return false;
-            const benefit = this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit;
-            if (benefit?.isCurrent?.() === false) return false;
-            if (benefit?.state === "failed" && Date.now() >= benefit.retryAt) benefit.ensure();
-            if (benefit && ["ready-free", "failed"].includes(benefit.state)) return false;
-        }
+        if (isArgon(model) && !resolveTier(accountForIndex(this.authSource, account.index)).argonEligible) return false;
         return (
             account.healthy &&
             !account.disabled &&
@@ -373,13 +362,8 @@ class ModelScheduler {
         this.cooldownWakeTimer?.unref?.();
     }
 
-    noteBenefitState(authIndex, state) {
-        // A failed/free preflight excludes this account only from currently waiting
-        // Argon requests. Eviction cannot cause the same queue item to reload it.
-        if (["ready-free", "failed"].includes(state)) {
-            const key = this.account(authIndex).key;
-            for (const item of this.pending) if (isArgon(item.model)) item.excluded.add(key);
-        }
+    noteBenefitState() {
+        this._eligibleRound = null;
     }
 
     eligibleAccounts(model, excluded = new Set()) {
@@ -406,8 +390,7 @@ class ModelScheduler {
             if (isArgon(model)) {
                 const benefit = this.browserManager.contexts?.get(account.index)?.page?.buildBenefit;
                 if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
-                if (benefit?.state === "unknown") benefit.ensure().catch(() => {});
-                return benefit?.state === "ready-paid";
+                return true;
             }
             return true;
         });
@@ -452,13 +435,12 @@ class ModelScheduler {
     }
 
     canLease(account, model) {
-        if (
-            isArgon(model) &&
-            (!(this.config.argonVerifiedAccounts || []).includes(account.index) ||
-                this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit?.state !== "ready-paid" ||
-                this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit?.isCurrent?.() === false)
-        )
-            return false;
+        if (this.browserManager?.benefitCheckingIndices?.has(account.index)) return false;
+        if (isArgon(model)) {
+            const benefit = this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit;
+            if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
+        }
+        if (isArgon(model) && !resolveTier(accountForIndex(this.authSource, account.index)).argonEligible) return false;
         if (account.key === this.drainingAccount) return false;
         if (model !== "__files__" && this.isAccountQuotaExhausted(account)) return false;
         const accountLimit = this.config.accountConcurrency || 0;
@@ -504,7 +486,7 @@ class ModelScheduler {
         if (!eligible.length)
             return Promise.reject(
                 schedulerError(
-                    `No eligible accounts for model ${model}${isArgon(model) ? " (requires verified Build account and paid benefit)" : ""}`
+                    `No eligible accounts for model ${model}${isArgon(model) ? " (requires a paid account tier)" : ""}`
                 )
             );
         // Record accepted discovery only after validation and access checks. Other
@@ -600,7 +582,7 @@ class ModelScheduler {
                 this.remove(item);
                 item.reject(
                     schedulerError(
-                        `No eligible accounts for model ${item.model}${isArgon(item.model) ? " (benefit preflight failed or unavailable)" : ""}`
+                        `No eligible accounts for model ${item.model}${isArgon(item.model) ? " (no eligible paid account tier)" : ""}`
                     )
                 );
             }
@@ -1269,6 +1251,7 @@ class ModelScheduler {
                 index,
                 inflight: account.inflight,
                 key: account.key,
+                tier: resolveTier(accountForIndex(this.authSource, index)),
             };
         });
         return { accounts, revision: `accounts:${this.sequence}`, summary };
@@ -1284,22 +1267,31 @@ class ModelScheduler {
             .filter(entry => entry.limit !== null)
             .sort((a, b) => a.model.localeCompare(b.model));
         const quotaAccounts = indices.map(index => this.account(index));
-        const quotaByModel = quotaModels.map(({ limit, model }) => {
+        const quotaByModel = quotaModels.map(({ model }) => {
             let dailyRequests = 0;
             let estimatedRemainingQuota = 0;
+            let totalQuota = 0;
+            let trackedAccounts = 0;
+            const limits = new Set();
             for (const account of quotaAccounts) {
+                const limit = getModelDailyQuota(model, accountForIndex(this.authSource, account.index));
                 const slot = account.models[model];
                 const requests =
                     slot?.daily_request_date === this.getPacificDateKey(now) ? slot.daily_request_count : 0;
                 dailyRequests += requests;
+                if (isArgon(model) && !limit) continue;
+                totalQuota += limit;
+                trackedAccounts++;
+                limits.add(limit);
                 estimatedRemainingQuota += Math.max(0, limit - requests);
             }
             return {
                 daily_requests: dailyRequests,
                 estimated_remaining_quota: estimatedRemainingQuota,
                 model,
-                quota_per_account: limit,
-                tracked_accounts: quotaAccounts.length,
+                quota_per_account: limits.size === 1 ? [...limits][0] : null,
+                total_quota: totalQuota,
+                tracked_accounts: trackedAccounts,
             };
         });
         const contexts = this.browserManager?.getContextPoolSnapshot?.() || [];
@@ -1409,18 +1401,29 @@ class ModelScheduler {
             models: models.map(model => {
                 const accountSlots = indices.map(index => {
                     const account = accountFor(index);
-                    return { account, slot: slotFor(account, model) };
+                    return { account, index, slot: slotFor(account, model) };
                 });
                 const quotaPerAccount = getModelDailyQuota(model);
                 const today = accountSlots.reduce((sum, item) => sum + dailyRequests(item.slot), 0);
                 return {
                     active: this.active(model),
-                    availableAccounts: accountSlots.filter(item => isAvailable(item.account, item.slot)).length,
+                    availableAccounts: accountSlots.filter(
+                        item =>
+                            isAvailable(item.account, item.slot) &&
+                            !this.authSource.isExpired?.(item.index) &&
+                            (!isArgon(model) || resolveTier(accountForIndex(this.authSource, item.index)).argonEligible)
+                    ).length,
                     estimatedRemaining:
                         quotaPerAccount === null
                             ? null
                             : accountSlots.reduce(
-                                  (sum, item) => sum + Math.max(0, quotaPerAccount - dailyRequests(item.slot)),
+                                  (sum, item) =>
+                                      sum +
+                                      Math.max(
+                                          0,
+                                          getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) -
+                                              dailyRequests(item.slot)
+                                      ),
                                   0
                               ),
                     model,

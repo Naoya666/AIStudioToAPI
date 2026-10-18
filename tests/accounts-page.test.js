@@ -65,6 +65,8 @@ test(
                 result = { status: { accountDetails: [], currentAuthIndex: -1, schedulingMode: "legacy" } };
             } else if (url.pathname === "/api/account-management/login-queue") {
                 result = { attemptTimeout: 180000, autoRecovery: false, concurrency: 1 };
+            } else if (url.pathname === "/api/account-management/benefit-checks") {
+                result = { tasks: [] };
             } else if (url.pathname === "/api/account-management/accounts") {
                 queries.push(url.searchParams);
                 const search = url.searchParams.get("search") || "";
@@ -849,6 +851,121 @@ test(
             imports[0].rows.map(row => row.skip),
             [false, true]
         );
+        assert.deepEqual(errors, []);
+    }
+);
+
+test(
+    "account tier editing and single/batch benefit checks work on desktop and mobile",
+    { skip: !fs.existsSync(chromium.executablePath()) },
+    async t => {
+        const { resolveTier } = require("../src/accounts/AccountTierPolicy");
+        const server = await createServer({
+            configFile: path.resolve(__dirname, "../vite.config.js"),
+            logLevel: "error",
+            server: { host: "127.0.0.1", port: 0, strictPort: false },
+        });
+        t.after(() => server.close());
+        await server.listen();
+        const browser = await chromium.launch({ args: ["--no-sandbox"] });
+        t.after(() => browser.close());
+        const page = await browser.newPage();
+        const errors = [];
+        page.on("pageerror", error => errors.push(error.message));
+        const account = {
+            accountId: "tier-account",
+            authIndex: 0,
+            autoRecovery: false,
+            benefitLastCheck: { checkedAt: Date.now(), status: "succeeded" },
+            benefitObservation: {
+                observedAt: Date.now(),
+                rawTier: null,
+                sessionVersion: 2,
+                source: "query",
+                state: "ready-free",
+            },
+            credentialVersion: 1,
+            displayName: "Cookie account",
+            email: null,
+            manualTier: "pro",
+            sessionState: "valid",
+            sessionVersion: 2,
+        };
+        const tasks = [],
+            edits = [],
+            submissions = [];
+        await page.route("**/locales/*.json", route =>
+            route.fulfill({
+                body: fs.readFileSync(path.resolve(__dirname, "../ui/locales/en.json"), "utf8"),
+                contentType: "application/json",
+            })
+        );
+        await page.route("**/api/**", async route => {
+            const req = route.request();
+            const url = new URL(req.url());
+            let result = {};
+            if (url.pathname.startsWith("/api/status"))
+                result = { status: { accountDetails: [], currentAuthIndex: -1, schedulingMode: "legacy" } };
+            if (url.pathname === "/api/account-management/login-queue")
+                result = { attemptTimeout: 180000, autoRecovery: false, concurrency: 1 };
+            if (
+                ["/api/account-management/accounts", "/api/account-management/accounts/selection"].includes(
+                    url.pathname
+                )
+            )
+                result = {
+                    accounts: [{ ...account, benefitTask: tasks.at(-1), tier: resolveTier(account) }],
+                    total: 1,
+                };
+            if (url.pathname.endsWith("/credentials") && req.method() === "PATCH") {
+                const input = req.postDataJSON();
+                edits.push(input);
+                account.manualTier = input.manualTier;
+                result = { ...account, tier: resolveTier(account) };
+            }
+            if (url.pathname === "/api/account-management/benefit-checks") {
+                if (req.method() === "POST") {
+                    const input = req.postDataJSON();
+                    submissions.push(input);
+                    if (!tasks.length)
+                        tasks.push({ accountId: account.accountId, authIndex: 0, status: "queued", taskId: "check-1" });
+                    result = { results: [{ accountId: account.accountId, status: "queued", taskId: "check-1" }] };
+                } else result = { tasks };
+            }
+            if (url.pathname === "/api/account-management/benefit-checks/cancel") {
+                tasks[0].status = "cancelled";
+                result = { cancelled: true };
+            }
+            await route.fulfill({ body: JSON.stringify(result), contentType: "application/json" });
+        });
+        await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/accounts`);
+        await page.getByRole("button", { exact: true, name: "Edit credentials" }).click();
+        const dialog = page.getByRole("dialog");
+        await dialog.getByText("Raw benefits (read-only): Free", { exact: true }).waitFor();
+        await dialog.locator(".el-select__wrapper").click();
+        await page.getByRole("option", { exact: true, name: "Free" }).click();
+        await dialog.getByText("Effective tier: Free", { exact: true }).waitFor();
+        await dialog.getByRole("button", { exact: true, name: "Save" }).click();
+        await dialog.waitFor({ state: "hidden" });
+        assert.equal(edits[0].manualTier, "free");
+        assert.equal(edits[0].email, undefined);
+        assert.equal(edits[0].password, undefined);
+        assert.equal(edits[0].benefitObservation, undefined);
+        await page.getByRole("button", { exact: true, name: "Edit credentials" }).click();
+        await dialog.locator(".el-select__wrapper").click();
+        await page.getByRole("option", { exact: true, name: "Unset (follow detected benefits)" }).click();
+        await dialog.getByRole("button", { exact: true, name: "Save" }).click();
+        await page.getByRole("button", { exact: true, name: "Check paid benefits" }).click();
+        assert.deepEqual(submissions[0].accountIds, ["tier-account"]);
+        await page.getByRole("button", { exact: true, name: "Select all" }).click();
+        await page.getByRole("button", { exact: true, name: "Check selected benefits" }).click();
+        await page.getByRole("button", { exact: true, name: "Cancel selected checks" }).click();
+        assert.equal(edits[1].manualTier, null);
+        assert.equal(submissions.length, 2);
+        assert.equal(tasks[0].status, "cancelled");
+        await page.setViewportSize({ height: 800, width: 375 });
+        await page.getByRole("button", { exact: true, name: "Check paid benefits" }).waitFor();
+        await page.getByRole("button", { exact: true, name: "Edit credentials" }).waitFor();
         assert.deepEqual(errors, []);
     }
 );

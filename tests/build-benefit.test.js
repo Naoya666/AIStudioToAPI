@@ -57,7 +57,12 @@ async function fixture(t) {
             if (req.method === "OPTIONS") return res.end();
             if (req.method === "GET") {
                 res.setHeader("content-type", "text/html");
-                return res.end("<!doctype html><title>Local Build fixture</title>");
+                return res.end(
+                    "<!doctype html><title>Local Build fixture</title>" +
+                        (state.autoAuth
+                            ? `<script>fetch(${JSON.stringify(ORIGIN + RPC + "ListModels")}, {method:"POST", headers:${JSON.stringify(auth)}, body:"[]", credentials:"include"})</script>`
+                            : "")
+                );
             }
             let body = "";
             for await (const chunk of req) body += chunk;
@@ -104,10 +109,11 @@ async function fixture(t) {
         proxy: { server: `http://127.0.0.1:${proxy.address().port}` },
     });
     runtime.browser = browser;
+    state.browser = browser;
     state.open = async (index = 0, timeoutMs = 1000) => {
         const context = await browser.newContext({ ignoreHTTPSErrors: true });
         const page = await context.newPage();
-        const benefit = new BuildBenefitContext(page, { authIndex: index, timeoutMs, verified: true });
+        const benefit = new BuildBenefitContext(page, { authIndex: index, canUse: () => true, timeoutMs });
         await benefit.install();
         page._fixtureBenefit = benefit;
         await context.addCookies([
@@ -311,119 +317,205 @@ test("Argon policy applies before WAA and native SSE intent remains separate", (
     assert.equal(handler._effectiveStreamMode("gemini-4-argon", "real"), "fake");
     assert.equal(handler._effectiveStreamMode("gemini-4-argon", "early"), "early");
     assert.equal(handler._effectiveStreamMode("gemini-4-other", "real"), "real");
-    assert.equal(getModelDailyQuota("gemini-4-argon"), null);
-    assert.throws(() => loadConfig({ ARGON_VERIFIED_ACCOUNTS: '["TIER2"]' }), /Invalid ARGON/);
-    assert.deepEqual(loadConfig({ ARGON_VERIFIED_ACCOUNTS: "[0,2,2]" }).argonVerifiedAccounts, [0, 2]);
+    assert.equal(getModelDailyQuota("gemini-4-argon"), 0);
+    assert.doesNotThrow(() => loadConfig({ ARGON_VERIFIED_ACCOUNTS: "invalid old config" }));
+    assert.equal(loadConfig({ ARGON_VERIFIED_ACCOUNTS: "[0,2,2]" }).argonVerifiedAccounts, undefined);
 });
 
-test("scheduler separates verified preflight candidates and paid generation eligibility", () => {
+test("scheduler uses account tiers without querying benefits or requiring ready-paid", () => {
     const scheduler = Object.create(ModelScheduler.prototype);
-    const benefit = { state: "unknown" };
+    const metadata = {
+        authIndex: 0,
+        benefitObservation: { rawTier: null, sessionVersion: 2, state: "ready-free" },
+        manualTier: "pro",
+        sessionVersion: 2,
+    };
+    const benefit = {
+        ensure() {
+            throw new Error("unexpected query");
+        },
+        state: "ready-free",
+    };
     Object.assign(scheduler, {
-        authSource: { isExpired: () => false },
+        authSource: { accountLoginService: { state: { accounts: [metadata] } }, isExpired: () => false },
         browserManager: { contexts: new Map([[0, { page: { buildBenefit: benefit } }]]), isContextReady: () => true },
-        config: { argonVerifiedAccounts: [0], readyContextOnly: true },
+        config: { argonVerifiedAccounts: [1], readyContextOnly: true },
         hiddenModels: new Set(),
         isAccountQuotaExhausted: () => false,
         now: () => 0,
     });
     const account = { healthy: true, index: 0, inflight: 0, key: "auth-0", models: {} };
-    assert.equal(scheduler.isResourceEligible(account, "gemini-4-argon"), true);
-    assert.equal(scheduler.canLease(account, "gemini-4-argon"), false);
-    benefit.state = "ready-paid";
-    assert.equal(scheduler.canLease(account, "gemini-4-argon"), true);
-    for (const state of ["ready-free", "failed"]) {
+    for (const state of ["unknown", "failed", "ready-free", "ready-paid"]) {
         benefit.state = state;
-        assert.equal(scheduler.isResourceEligible(account, "gemini-4-argon"), false);
-        assert.equal(scheduler.canLease(account, "gemini-4-argon"), false);
-        assert.equal(account.healthy, true);
+        assert.equal(scheduler.isResourceEligible(account, "gemini-4-argon"), true);
+        assert.equal(scheduler.canLease(account, "gemini-4-argon"), true);
     }
+    metadata.manualTier = "free";
+    assert.equal(scheduler.canLease(account, "gemini-4-argon"), false);
+    metadata.manualTier = null;
+    metadata.benefitObservation = { rawTier: "TIER2", sessionVersion: 1, state: "ready-paid" };
+    assert.equal(scheduler.canLease(account, "gemini-4-argon"), false);
+    metadata.benefitObservation.sessionVersion = 2;
+    assert.equal(scheduler.canLease(account, "gemini-4-argon"), true);
+    benefit.isCurrent = () => false;
+    assert.equal(scheduler.canLease(account, "gemini-4-argon"), false);
     assert.equal(scheduler.isResourceEligible({ ...account, index: 1 }, "gemini-4-argon"), false);
     assert.equal(scheduler.isResourceEligible({ ...account, index: 1 }, "gemini-2.5-flash"), true);
 });
 
-test("cold Argon preflight remains bounded and settles without reloading rejected accounts", async t => {
+test("unknown Argon accounts fail without starting a context or a preflight", async t => {
     for (const readyContextOnly of [true, false]) {
-        await t.test(`readyContextOnly=${readyContextOnly}`, async t => {
-            const scheduler = new ModelScheduler(
-                {
-                    ...loadConfig({
-                        ARGON_VERIFIED_ACCOUNTS: "[0,1]",
-                        CONTEXT_INIT_CONCURRENCY: "1",
-                        CONTEXT_POOL_MIN_READY: "0",
-                        MAX_BROWSER_WORKERS: "1",
-                        REQUEST_DISPATCH_TIMEOUT_MS: "1000",
-                    }),
-                    readyContextOnly,
-                    statePath: null,
-                },
-                { accountNameMap: new Map(), getRotationIndices: () => [0, 1, 2] },
-                logger
-            );
-            t.after(() => scheduler.close());
-            const seen = [];
-            const browser = {
-                _contextInitTasks: new Map(),
-                contexts: new Map(),
-                initializingContexts: new Set(),
-                isContextReady(index) {
-                    return this.contexts.has(index);
-                },
-                requestContexts(requests) {
-                    for (const { authIndex } of requests) {
-                        assert.ok(
-                            !seen.includes(authIndex),
-                            "failed preflight must not reload during the same queued request"
-                        );
-                        seen.push(authIndex);
-                        this.initializingContexts.add(authIndex);
-                        setImmediate(() => {
-                            this.contexts.clear();
-                            const state = authIndex === 0 ? "ready-free" : "failed";
-                            this.contexts.set(authIndex, { page: { buildBenefit: { state } }, state: "READY" });
-                            this.initializingContexts.delete(authIndex);
-                            scheduler.noteBenefitState(authIndex, state);
-                            scheduler._eligibleRound = null;
-                            scheduler.drain();
-                        });
-                    }
-                },
-            };
-            scheduler.browserManager = browser;
-            await assert.rejects(scheduler.acquire("gemini-4-argon"), /No eligible accounts/);
-            assert.deepEqual(seen, [0, 1]);
-            assert.equal(scheduler.pending.length, 0);
-            assert.equal(
-                [...scheduler.accounts.values()].some(account => account.inflight),
-                false
-            );
-            assert.equal(scheduler.account(0).healthy, true);
-            assert.equal(scheduler.account(1).healthy, true);
-        });
+        const scheduler = new ModelScheduler(
+            { ...loadConfig({ CONTEXT_POOL_MIN_READY: "0" }), readyContextOnly, statePath: null },
+            { accountNameMap: new Map(), getRotationIndices: () => [0, 1] },
+            logger
+        );
+        t.after(() => scheduler.close());
+        scheduler.browserManager = {
+            contexts: new Map(),
+            isContextReady: () => false,
+            requestContexts() {
+                throw new Error("unexpected browser launch");
+            },
+        };
+        await assert.rejects(scheduler.acquire("gemini-4-argon"), /No eligible accounts/);
+        assert.equal(scheduler.pending.length, 0);
     }
 });
 
-test("Argon eligibility rejects stale sessions and preflight cancellation releases the queue", async t => {
-    const scheduler = new ModelScheduler(
-        { ...loadConfig({ ARGON_VERIFIED_ACCOUNTS: "[0]", CONTEXT_POOL_MIN_READY: "0" }), statePath: null },
-        { accountNameMap: new Map(), getRotationIndices: () => [0] },
-        logger
-    );
-    t.after(() => scheduler.close());
-    const benefit = { isCurrent: () => false, state: "ready-paid", verified: true };
-    scheduler.browserManager = {
-        contexts: new Map([[0, { page: { buildBenefit: benefit } }]]),
-        isContextReady: () => true,
-    };
-    assert.equal(scheduler.canLease(scheduler.account(0), "gemini-4-argon"), false);
-    await assert.rejects(scheduler.acquire("gemini-4-argon"), /No eligible/);
-    scheduler.browserManager.contexts.clear();
-    scheduler.browserManager.initializingContexts = new Set([0]);
-    scheduler.browserManager.isContextReady = () => false;
-    scheduler.browserManager.requestContexts = () => {};
-    const controller = new AbortController();
-    const request = scheduler.acquire("gemini-4-argon", new Set(), controller.signal);
-    controller.abort();
-    await assert.rejects(request, /Client disconnected/);
-    assert.equal(scheduler.pending.length, 0);
+test(
+    "paid tier checks preserve document validity and never force an entitlement query",
+    { timeout: 60000 },
+    async t => {
+        const f = await fixture(t);
+        const { page, benefit } = await f.open();
+        await f.native(page);
+        const before = f.requests.length;
+        await benefit.assertReady();
+        assert.equal(f.requests.length, before);
+        const body = JSON.stringify(["/v1beta/models/gemini-4-argon:generateContent", '{"contents":[]}', "proof"]);
+        assert.equal(await f.native(page, auth, "ProxyUnaryCall", body), 200);
+        assert.equal(f.requests.at(-1).headers["x-aistudio-g1-tier"], undefined);
+        assert.equal(
+            f.requests.some(item => item.url.includes("GetAiStudioBenefitTier")),
+            false
+        );
+        benefit.canUse = () => false;
+        await assert.rejects(benefit.assertReady(), /Account tier/);
+        benefit.canUse = () => true;
+        benefit.isCurrent = () => false;
+        await assert.rejects(benefit.assertReady(), /disposed/);
+    }
+);
+
+test("normal page queries and native headers emit observations without extra queries", { timeout: 60000 }, async t => {
+    const f = await fixture(t);
+    const { page, benefit } = await f.open();
+    const observations = [];
+    benefit.onObservation = result => observations.push(result);
+    f.body = "[0]";
+    await f.native(page, auth, "GetAiStudioBenefitTier");
+    for (let i = 0; i < 100 && !observations.length; i++) await page.waitForTimeout(10);
+    assert.equal(observations.at(-1).state, "ready-free");
+    assert.equal(observations.at(-1).rawTier, null);
+    await f.native(page, { ...auth, "x-aistudio-g1-tier": "TIER2" });
+    for (let i = 0; i < 100 && observations.at(-1).source !== "native"; i++) await page.waitForTimeout(10);
+    assert.equal(observations.at(-1).rawTier, "TIER2");
+    assert.equal(f.requests.filter(item => item.url.includes("GetAiStudioBenefitTier")).length, 1);
 });
+
+test(
+    "real queued checks only query benefits and close each overflow context before the next account",
+    { timeout: 60000 },
+    async t => {
+        const f = await fixture(t);
+        const ordinary = await f.open(99);
+        f.autoAuth = true;
+        const AccountLoginService = require("../src/accounts/AccountLoginService");
+        const BenefitCheckQueue = require("../src/accounts/BenefitCheckQueue");
+        const BrowserManager = require("../src/core/BrowserManager");
+        const service = Object.create(AccountLoginService.prototype);
+        const accounts = [0, 1].map(authIndex => ({
+            accountId: `account-${authIndex}`,
+            authIndex,
+            dailyRequests: 12,
+            manualTier: null,
+            sessionState: "valid",
+            sessionVersion: 1,
+        }));
+        Object.assign(service, {
+            chain: Promise.resolve(),
+            invalidated: new Set(),
+            logger,
+            queue: { running: new Map() },
+            readAuth: async index => ({
+                cookies: [
+                    {
+                        domain: "alkalimakersuite-pa.clients6.google.com",
+                        httpOnly: true,
+                        name: "fixture-session",
+                        path: "/",
+                        secure: true,
+                        value: `account-${index}`,
+                    },
+                ],
+                origins: [],
+            }),
+            resolveProxy: () => null,
+            save: async () => {},
+            state: { accounts, benefitTasks: [], tasks: [] },
+            system: {},
+        });
+        let maxContexts = 0;
+        const manager = {
+            _contextCapacityIndices: () => new Set([99]),
+            _createBrowserContext: async (options, index) => {
+                const context = await BrowserManager.prototype._createBrowserContext.call(
+                    manager,
+                    { ...options, ignoreHTTPSErrors: true },
+                    index
+                );
+                maxContexts = Math.max(maxContexts, f.browser.contexts().length);
+                return context;
+            },
+            _ensureBrowser: async () => {},
+            _isContextIdle: () => true,
+            _releaseContextCapacity: index => manager.contextCapacityReservations.delete(index),
+            browser: f.browser,
+            browserGeneration: 1,
+            config: { maxContexts: 1 },
+            contextCapacityReservations: new Map(),
+            contexts: new Map([[99, ordinary]]),
+            initializingContexts: new Set(),
+            targetUrl: "https://aistudio.google.com/",
+        };
+        service.system.browserManager = manager;
+        const queue = new BenefitCheckQueue(service, { operationMs: 5000 });
+        service.benefitQueue = queue;
+        t.after(() => queue.close());
+        await service.exclusive(() => queue.submit(accounts.map(account => account.accountId)));
+        const deadline = Date.now() + 20000;
+        while (service.state.benefitTasks.some(task => !task.finishedAt)) {
+            if (Date.now() > deadline) throw new Error("real queue timeout");
+            await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        assert.ok(service.state.benefitTasks.every(task => task.status === "succeeded"));
+        const queries = f.requests.filter(request => request.url.includes("GetAiStudioBenefitTier"));
+        assert.equal(queries.length, 2);
+        assert.deepEqual(
+            queries.map(request => request.headers.cookie),
+            ["fixture-session=account-0", "fixture-session=account-1"]
+        );
+        assert.ok(queries.every(request => request.body === "[]"));
+        assert.equal(
+            f.requests.some(request => /GenerateContent|ProxyUnaryCall|ProxyStreamedCall/.test(request.url)),
+            false
+        );
+        assert.equal(maxContexts, 2);
+        assert.equal(f.browser.contexts().length, 1);
+        assert.equal(manager.contexts.size, 1);
+        assert.ok(
+            accounts.every(account => account.dailyRequests === 12 && account.benefitObservation.rawTier === "TIER1")
+        );
+    }
+);

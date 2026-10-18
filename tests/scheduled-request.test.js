@@ -68,6 +68,9 @@ function setup(reply, overrides = {}) {
         ...overrides,
     };
     const auth = {
+        accountLoginService: {
+            state: { accounts: (overrides.paidAccounts || []).map(authIndex => ({ authIndex, manualTier: "pro" })) },
+        },
         accountNameMap: new Map(),
         availableIndices: [0, 1, 2, 3],
         getRotationIndices() {
@@ -81,7 +84,7 @@ function setup(reply, overrides = {}) {
     );
     const registry = new ConnectionRegistry(logger);
     const sent = [];
-    const browser = { currentAuthIndex: 99, async ensureWorkerContext() {}, notifyUserActivity() {} };
+    const browser = { authSource: auth, currentAuthIndex: 99, async ensureWorkerContext() {}, notifyUserActivity() {} };
     for (const index of auth.availableIndices)
         registry.connectionsByAuth.set(index, {
             readyState: 1,
@@ -1460,7 +1463,7 @@ test("Argon uses unary across all adapters while preserving client JSON and SSE"
     ]) {
         for (const stream of [false, true]) {
             await t.test(`${method} stream=${stream}`, async t => {
-                const fixture = setup(() => success, { scheduler: { argonVerifiedAccounts: [0] } });
+                const fixture = setup(() => success, { paidAccounts: [0] });
                 t.after(() => fixture.scheduler.close());
                 const benefit = { state: "ready-paid", verified: true };
                 fixture.browser.contexts = new Map([
@@ -1501,7 +1504,7 @@ test("Argon uses unary across all adapters while preserving client JSON and SSE"
 
 test("Argon permission errors affect only the model and do not replay generation", async t => {
     const fixture = setup(() => [{ event_type: "error", message: "PERMISSION_DENIED", status: 403 }], {
-        scheduler: { argonVerifiedAccounts: [0, 1] },
+        paidAccounts: [0, 1],
     });
     t.after(() => fixture.scheduler.close());
     fixture.browser.contexts = new Map(
@@ -1529,7 +1532,7 @@ test("Argon permission errors affect only the model and do not replay generation
 });
 
 test("Argon does not replay a unary generation after its connection is lost", async t => {
-    const fixture = setup(() => [], { scheduler: { argonVerifiedAccounts: [0, 1] } });
+    const fixture = setup(() => [], { paidAccounts: [0, 1] });
     t.after(() => fixture.scheduler.close());
     fixture.browser.contexts = new Map(
         [0, 1].map(index => [
@@ -1559,7 +1562,8 @@ test("Argon does not replay a unary generation after its connection is lost", as
 test("Argon upstream 429 retains quota cooldown without expiring the account", async t => {
     const fixture = setup(() => [{ event_type: "error", message: "RESOURCE_EXHAUSTED", status: 429 }], {
         maxRetries: 1,
-        scheduler: { argonVerifiedAccounts: [0], maxRetries: 0 },
+        paidAccounts: [0],
+        scheduler: { maxRetries: 0 },
     });
     t.after(() => fixture.scheduler.close());
     fixture.browser.contexts = new Map([
@@ -1587,7 +1591,7 @@ test("Argon upstream 429 retains quota cooldown without expiring the account", a
     assert.equal(res.statusCode, 429);
 });
 
-test("legacy benefit preflight failures return controlled responses in every generation adapter", async t => {
+test("legacy document validity failures return controlled responses in every generation adapter", async t => {
     for (const method of [
         "processOpenAIRequest",
         "processOpenAIResponseRequest",
@@ -1596,7 +1600,7 @@ test("legacy benefit preflight failures return controlled responses in every gen
     ]) {
         for (const stream of [false, true]) {
             await t.test(`${method} stream=${stream}`, async t => {
-                const fixture = setup(() => success);
+                const fixture = setup(() => success, { paidAccounts: [0] });
                 t.after(() => fixture.scheduler.close());
                 fixture.handler.serverSystem.scheduler = null;
                 fixture.handler.authSwitcher.currentAuthIndex = 0;
@@ -1678,7 +1682,7 @@ test("all adapters keep buffered generation through 59/61/90 seconds within one 
                 t.mock.timers.enable({ apis: ["setTimeout"] });
                 const fixture = setup(() => [], {
                     fakeStreamTimeoutMs: 120000,
-                    scheduler: { argonVerifiedAccounts: [0] },
+                    paidAccounts: [0],
                     streamTimeoutMs: 60000,
                 });
                 t.after(() => fixture.scheduler.close());
