@@ -8,6 +8,7 @@ let server,
     snapshot,
     receivedAt = 0,
     cached,
+    localCached,
     collector,
     expiryTimer,
     config,
@@ -48,7 +49,27 @@ process.on("message", async message => {
         } else {
             try {
                 validateEnvelope(message.body, config.nodeId);
-                const next = config.role === "agent" ? serialize(message.body, MAX_AGENT_BYTES) : null;
+                const body = message.body;
+                const local = serialize(
+                    {
+                        generated_at: body.generated_at,
+                        models: body.snapshot.models.map(model => ({
+                            model: model.model,
+                            realtime: { available_accounts: model.realtime.available_accounts },
+                        })),
+                        node_id: body.node_id,
+                        schema_version: 1,
+                        service_status: body.service_status,
+                        snapshot_sequence: body.snapshot_sequence,
+                        usage_window: {
+                            date: body.snapshot.usage_window.date,
+                            timezone: body.snapshot.usage_window.timezone,
+                        },
+                    },
+                    MAX_AGENT_BYTES
+                );
+                const next = config.role === "agent" ? serialize(body, MAX_AGENT_BYTES) : null;
+                localCached = local;
                 snapshot = message.body;
                 receivedAt = Date.now();
                 if (config.role === "agent") cached = next;
@@ -70,6 +91,12 @@ process.on("message", async message => {
                 },
             };
         } else server.cachedResponseProvider = () => cached;
+        server.localResponseProvider = () => ({
+            cached: localCached,
+            usable:
+                snapshot?.service_status === "ready" &&
+                Date.now() - Date.parse(snapshot.generated_at) <= config.staleAfterMs,
+        });
         server.healthProvider = () => ({
             status:
                 config.role === "master"

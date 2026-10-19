@@ -199,12 +199,16 @@ test("configuration validates roles, URLs and periods, persists IDs, and preserv
     const snapshot = save({
         PUBLIC_DASHBOARD_AGENT_TOKEN: "LOCAL_AGENT_SECRET",
         PUBLIC_DASHBOARD_AGENTS: [agent],
+        PUBLIC_DASHBOARD_HEALTH_TOKEN: "LOCAL_HEALTH_SECRET",
         PUBLIC_DASHBOARD_ROLE: "master",
     });
-    assert.doesNotMatch(JSON.stringify(snapshot), /SENSITIVE_AGENT_KEY|LOCAL_AGENT_SECRET/);
+    assert.doesNotMatch(JSON.stringify(snapshot), /SENSITIVE_AGENT_KEY|LOCAL_AGENT_SECRET|LOCAL_HEALTH_SECRET/);
     assert.equal(service.running.publicDashboard.role, "standalone");
     save({ PUBLIC_DASHBOARD_AGENTS: [{ ...snapshot.saved.PUBLIC_DASHBOARD_AGENTS[0], name: "renamed" }] });
     assert.equal(service.saved.publicDashboard.agents[0].token, agent.token);
+    save({ PUBLIC_DASHBOARD_HEALTH_TOKEN: null });
+    assert.equal(service.saved.publicDashboard.healthToken, "LOCAL_HEALTH_SECRET");
+    assert.throws(() => save({ PUBLIC_DASHBOARD_HEALTH_TOKEN: "bad\nvalue" }), /凭证|Token/);
     const reloaded = new ConfigurationService({ logger }, { env: {}, file });
     assert.equal(reloaded.running.publicDashboard.role, "master");
     assert.equal(reloaded.running.publicDashboard.agents[0].token, agent.token);
@@ -336,6 +340,7 @@ test(
                 { nodeId: "b", token: "token-b", url: b.url },
             ],
             fetchTimeoutMs: 100,
+            healthToken: "health-secret",
             nodeId: "master",
             pollIntervalMs: 100,
             role: "master",
@@ -348,6 +353,14 @@ test(
         };
         const result = await waitFor(read, value => value?.cluster.fresh_nodes === 3);
         assert.equal(result.history.total_requests, 210);
+        const local = await (
+            await fetch(master.url + "/api/internal/model-health", {
+                headers: { Authorization: "Bearer health-secret" },
+            })
+        ).json();
+        assert.equal(local.node_id, "master");
+        assert.equal(local.models[0].realtime.available_accounts, 2);
+        assert.equal(result.models[0].realtime.available_accounts, 6);
         assert.equal(result.models[0].quota.estimated_remaining, 300);
         assert.equal((await fetch(master.url + "/api/agent/dashboard", { headers })).status, 404);
         await Promise.all(Array.from({ length: 30 }, () => fetch(master.url + "/api/public/dashboard")));
@@ -448,7 +461,7 @@ test("collector aborts slow HTTP bodies and shutdown cancels requests without la
     assert.equal(collector.controllers.size, 0);
 });
 
-test("agent HTTP reads do not generate snapshots or run additional usage queries", { timeout: 15000 }, async t => {
+test("agent and machine HTTP reads reuse cached statistics", { timeout: 15000 }, async t => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-isolation-"));
     const modulePath = JSON.stringify(path.resolve(__dirname, "../src/public/IsolatedPublicDashboard.js"));
     const statsPath = JSON.stringify(path.resolve(__dirname, "../src/core/UsageStatsService.js"));
@@ -459,7 +472,7 @@ test("agent HTTP reads do not generate snapshots or run additional usage queries
 const Dashboard=require(${modulePath}); const Stats=require(${statsPath});
 let queries=0; const logger={warn(){}}; const stats=new Stats(null,logger,null,false);
 const original=stats.getPublicModelWindows.bind(stats);stats.getPublicModelWindows=(...args)=>{queries++;return original(...args)};
-const dashboard=new Dashboard({config:{role:'agent',agentToken:'test',host:'127.0.0.1',port:0,corsOrigins:[],snapshotIntervalMs:60000},logger,usageStatsService:stats,browserManager:{getContextInitHealth:()=>({ready:1})}});
+const dashboard=new Dashboard({config:{role:'agent',agentToken:'test',healthToken:'test',host:'127.0.0.1',port:0,corsOrigins:[],snapshotIntervalMs:60000},logger,usageStatsService:stats,browserManager:{getContextInitHealth:()=>({ready:1})}});
 dashboard.start().then(()=>process.send({port:dashboard.address.port,queries}));
 process.on('message',async message=>{if(message==='queries')process.send({queries});if(message==='close'){await dashboard.close();process.exit(0)}});
 `
@@ -477,14 +490,15 @@ process.on('message',async message=>{if(message==='queries')process.send({querie
     });
     const [ready] = await once(owner, "message");
     assert.equal(ready.queries, 1);
-    const url = `http://127.0.0.1:${ready.port}/api/agent/dashboard`;
+    const url = `http://127.0.0.1:${ready.port}/api/internal/model-health`;
     await waitFor(
         () => fetch(url, { headers: { Authorization: "Bearer test" } }),
         response => response.status === 200
     );
     await Promise.all(
-        Array.from({ length: 50 }, async () => {
-            const response = await fetch(url, { headers: { Authorization: "Bearer test" } });
+        Array.from({ length: 100 }, async (_, index) => {
+            const target = index % 2 ? url : url.replace("/api/internal/model-health", "/api/agent/dashboard");
+            const response = await fetch(target, { headers: { Authorization: "Bearer test" } });
             assert.equal(response.status, 200);
             await response.arrayBuffer();
         })
@@ -554,4 +568,74 @@ test("collector timeout covers an HTTP response that never finishes its body", {
     assert.equal([...collector.entries.values()][0].failed, true);
     assert.equal(updates, 1);
     assert.equal(collector.controllers.size, 0);
+});
+
+for (const role of ["master", "agent"]) {
+    test(`${role} machine health authenticates, projects only local cached counts and retains expired source identity`, async t => {
+        const node = await childDashboard(t, {
+            agentToken: "agent-secret",
+            healthToken: "health-secret",
+            nodeId: "local",
+            role,
+            staleAfterMs: 60000,
+        });
+        const url = node.url + "/api/internal/model-health";
+        const headers = { Authorization: "Bearer health-secret", Origin: "https://untrusted.example" };
+        for (const token of [null, "agent-secret", "wrong"]) {
+            assert.equal(
+                (await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })).status,
+                401
+            );
+        }
+        assert.equal((await fetch(url, { headers })).status, 503);
+        const source = envelope("local");
+        source.snapshot.secret = "PRIVATE_ACCOUNT";
+        source.snapshot.models[0].accounts = ["PRIVATE_ACCOUNT"];
+        node.child.send({ body: source, type: "snapshot" });
+        const response = await waitFor(
+            () => fetch(url, { headers }),
+            value => value.status === 200
+        );
+        assert.equal(response.headers.get("cache-control"), "private, no-store");
+        assert.equal(response.headers.get("access-control-allow-origin"), null);
+        const original = await response.text();
+        assert.deepEqual(JSON.parse(original), {
+            generated_at: source.generated_at,
+            models: [{ model: "flash", realtime: { available_accounts: 2 } }],
+            node_id: "local",
+            schema_version: 1,
+            service_status: "ready",
+            snapshot_sequence: 1,
+            usage_window: source.snapshot.usage_window,
+        });
+        assert.doesNotMatch(original, /PRIVATE_ACCOUNT|aggregation|quota|accounts":\[/);
+        const reads = await Promise.all(Array.from({ length: 30 }, () => fetch(url, { headers })));
+        for (const read of reads) assert.equal(await read.text(), original);
+        const expired = envelope("local", Date.now() - 61000);
+        expired.snapshot_sequence = 2;
+        node.child.send({ body: expired, type: "snapshot" });
+        const stale = await waitFor(
+            () => fetch(url, { headers }),
+            value => value.status === 503
+        );
+        const staleBody = await stale.json();
+        assert.equal(staleBody.generated_at, expired.generated_at);
+        assert.equal(staleBody.node_id, "local");
+        assert.equal(staleBody.snapshot_sequence, 2);
+        node.child.send({ body: envelope("local", Date.now(), { serviceStatus: "unavailable" }), type: "snapshot" });
+        await waitFor(
+            async () => (await fetch(url, { headers })).json(),
+            value => value.service_status === "unavailable"
+        );
+        assert.equal((await fetch(url, { headers })).status, 503);
+    });
+}
+
+test("machine health denies access without a configured token", async t => {
+    const node = await childDashboard(t, { nodeId: "local", role: "master" });
+    assert.equal(
+        (await fetch(node.url + "/api/internal/model-health", { headers: { Authorization: "Bearer undefined" } }))
+            .status,
+        401
+    );
 });

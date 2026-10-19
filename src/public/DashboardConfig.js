@@ -6,6 +6,7 @@ const defaults = {
     agents: [],
     agentToken: "",
     fetchTimeoutMs: 2000,
+    healthToken: "",
     pollIntervalMs: 5000,
     role: "standalone",
     snapshotIntervalMs: 5000,
@@ -14,6 +15,7 @@ const defaults = {
 const fields = [
     ["ROLE", "role"],
     ["AGENT_TOKEN", "agentToken"],
+    ["HEALTH_TOKEN", "healthToken"],
     ["AGENTS", "agents"],
     ["SNAPSHOT_INTERVAL_MS", "snapshotIntervalMs"],
     ["POLL_INTERVAL_MS", "pollIntervalMs"],
@@ -75,6 +77,8 @@ function load(config, env) {
         } else config[key] = raw;
     }
     if (!["standalone", "master", "agent"].includes(config.role)) throw new Error("PUBLIC_DASHBOARD_ROLE: 无效角色");
+    if (config.healthToken && !validToken(config.healthToken))
+        throw new Error("PUBLIC_DASHBOARD_HEALTH_TOKEN: 无效 Token");
     if (config.agentToken && !validToken(config.agentToken))
         throw new Error("PUBLIC_DASHBOARD_AGENT_TOKEN: 无效 Token");
     if (config.enabled && config.role === "agent" && !validToken(config.agentToken))

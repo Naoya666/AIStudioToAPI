@@ -46,6 +46,26 @@ class PublicDashboardServer {
                 res.set("Access-Control-Allow-Headers", "Accept, Content-Type");
                 return res.sendStatus(204);
             });
+        if (["master", "agent"].includes(this.config.role))
+            app.get("/api/internal/model-health", (req, res) => {
+                res.set("Cache-Control", "private, no-store");
+                const digest = value => crypto.createHash("sha256").update(value).digest();
+                if (
+                    !this.config.healthToken ||
+                    !crypto.timingSafeEqual(
+                        digest(req.get("authorization") || ""),
+                        digest(`Bearer ${this.config.healthToken}`)
+                    )
+                )
+                    return res.status(401).json({ error: "unauthorized" });
+                const local = this.localResponseProvider?.();
+                if (!local?.cached) return res.status(503).json({ error: "snapshot_unavailable" });
+                // Retain the source timestamp and identity even when the cache expires.
+                return res
+                    .status(local.usable ? 200 : 503)
+                    .type("application/json")
+                    .send(local.cached.serialized);
+            });
         app.get("/healthz", (req, res) => res.json(this.healthProvider?.() || { status: "ok" }));
         app.get(this.config.role === "agent" ? "/api/agent/dashboard" : "/api/public/dashboard", async (req, res) => {
             const agent = this.config.role === "agent";

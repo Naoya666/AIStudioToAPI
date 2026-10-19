@@ -282,7 +282,8 @@ class ConfigurationService {
         const overrides = { ...this.document.overrides };
         for (const [name, submitted] of Object.entries(changes)) {
             let value = submitted;
-            if (name === "PUBLIC_DASHBOARD_AGENT_TOKEN" && value === null) continue;
+            if (["PUBLIC_DASHBOARD_AGENT_TOKEN", "PUBLIC_DASHBOARD_HEALTH_TOKEN"].includes(name) && value === null)
+                continue;
             if (name === "PUBLIC_DASHBOARD_AGENTS" && Array.isArray(value)) {
                 value = value.map(row => ({
                     ...row,

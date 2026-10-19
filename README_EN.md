@@ -214,3 +214,12 @@ The bridge buffers the upstream result. JSON and SSE formats remain available; r
 For example, set the bridge generation timeout to `600000` for ten minutes without changing the ordinary buffered timeout. The browser must run this version’s [build.js](scripts/client/build.js) to honor the server’s remaining budget. Synchronize the client code in existing custom Build Apps; older clients may still abort after 300 seconds. The project does not automatically modify saved Build Apps. Internal correlation markers are removed before outbound Google calls. Credentials, opaque benefit data, proof and payloads are not logged by the transport.
 
 Run `npm test`, `npm run test:transport:browser`, and `npm run test:transport:long` for regressions, browser checks, and a real local TLS response taking over 60 seconds. Set `BUILD_BENEFIT_BROWSER_EXECUTABLE_PATH` to test production Camoufox with the TLS fixture. CONNECT destinations are restricted; the fixture cannot connect to Google or production port 9998. Offline results do not establish real-account availability. Deployment and account switching require separate authorization. See the [implementation record](docs/zh/model-transport-compatibility-implementation-20261017.md).
+
+
+### Authenticated local model health
+
+Master and agent expose the same `GET /api/internal/model-health` on the public dashboard listener. Set `PUBLIC_DASHBOARD_HEALTH_TOKEN` and restart, then send `Authorization: Bearer <token>`. An empty token denies access. This credential is independent of `PUBLIC_DASHBOARD_AGENT_TOKEN`. Standalone does not expose the machine endpoint.
+
+The endpoint projects only the existing local cache, including `schema_version: 1`, original `generated_at`, persistent `node_id`, `snapshot_sequence`, `service_status`, `usage_window`, and each model's `realtime.available_accounts`. It contains no account details or remote agent totals and triggers no statistics queries. Missing/incorrect credentials return 401; missing/expired cache or a service that is not ready returns 503. Existing cached responses retain their source timestamp and identity even on 503. Public display and master-to-agent collection endpoints retain their existing purposes.
+
+Configure the channel controller with `aistudio.status_url: "http://aistudio:7861/api/internal/model-health"` and `aistudio.token_env: "AISTUDIO_HEALTH_TOKEN"`; inject the matching credential through that environment variable, including in dry-run. Channel switching policy remains unchanged.

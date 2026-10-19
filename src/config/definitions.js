@@ -29,6 +29,14 @@ module.exports = [
             type: "secret",
         },
         {
+            description: "master 和 agent 的本机状态只读凭证；留空关闭访问，独立于 Agent 采集凭证",
+            label: "本机状态查询凭证",
+            name: "PUBLIC_DASHBOARD_HEALTH_TOKEN",
+            path: "healthToken",
+            secret: true,
+            type: "secret",
+        },
+        {
             description:
                 "主控使用；账号池必须互不重复，填写节点 data/public-dashboard-node-id 中的 ID；已有 Token 留空保留",
             label: "Agent 节点列表",

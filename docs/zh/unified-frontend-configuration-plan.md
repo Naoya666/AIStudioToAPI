@@ -68,6 +68,7 @@
 | `PUBLIC_DASHBOARD_ENABLED` | 启用公开用量看板：启动无需登录的独立只读用量看板                          | 通用     | 重启生效 |
 | `PUBLIC_DASHBOARD_ROLE` | 公示角色：独立 / 主控 / agent | 通用 | 重启生效 |
 | `PUBLIC_DASHBOARD_AGENT_TOKEN` | Agent 查询凭证，读取时脱敏 | 通用 | 重启生效 |
+| `PUBLIC_DASHBOARD_HEALTH_TOKEN` | master/agent 本机状态只读凭证，读取时脱敏 | 通用 | 重启生效 |
 | `PUBLIC_DASHBOARD_AGENTS` | 主控节点列表，已有节点留空 Token 保留凭证 | 通用 | 重启生效 |
 | `PUBLIC_DASHBOARD_SNAPSHOT_INTERVAL_MS` | 本机快照生成周期 | 通用 | 重启生效 |
 | `PUBLIC_DASHBOARD_POLL_INTERVAL_MS` | 主控后台采集周期 | 通用 | 重启生效 |
