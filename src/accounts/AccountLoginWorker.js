@@ -364,6 +364,10 @@ async function run(input) {
             transitionUntil = performance.now() + config.stepTimeout;
             continue;
         }
+        if (await handlers.skipProfilePhotoSetup()) {
+            transitionUntil = performance.now() + config.stepTimeout;
+            continue;
+        }
         if (state !== previousState && (state === "challenge_choice" || state === "passkey")) {
             authenticatorSelected = false;
             alternativeAttempted = false;

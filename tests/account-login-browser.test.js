@@ -107,7 +107,9 @@ async function run(options = {}) {
                                 ) +
                                 '<script>setTimeout(()=>document.getElementById("late-terms").style.display="block",700)</script>';
                         if (url.pathname === "/address")
-                            html = `<main><h1>${options.addressTitle || "Set your home address"}</h1><input aria-label="Home address"><button onclick="${options.addressStuck ? "void 0" : "setTimeout(()=>location.href='https://aistudio.google.com/prompts/new',200)"}">${options.addressChinese ? "跳过" : "Skip"}</button><button onclick="location.href='https://untrusted.example/'">Save</button></main>`;
+                            html = `<main><h1>${options.addressTitle || "Set your home address"}</h1><input aria-label="Home address"><button onclick="${options.addressStuck ? "void 0" : `setTimeout(()=>location.href='${options.profilePhoto ? "/profile-photo" : "https://aistudio.google.com/prompts/new"}',200)`}">${options.addressChinese ? "跳过" : "Skip"}</button><button onclick="location.href='https://untrusted.example/'">Save</button></main>`;
+                        if (url.pathname === "/profile-photo")
+                            html = `<main><h1>${options.photoChinese ? "添加个人资料照片" : "Add a profile picture"}</h1><button onclick="${options.photoStuck ? "void 0" : "setTimeout(()=>location.href='https://aistudio.google.com/prompts/new',200)"}">${options.photoChinese ? "跳过" : "Skip"}</button><button onclick="location.href='https://untrusted.example/'">Add profile picture</button></main>`;
                         if (url.pathname === "/totp" && (options.bounceSubmit || options.bounceInput)) {
                             const bounce =
                                 "if(!document.cookie.includes('bounced=1')){document.cookie='bounced=1;path=/';location.href='/choice'}";
@@ -235,6 +237,10 @@ async function run(options = {}) {
             );
         }
         if (options.address && last.storageState) assert.ok(phases.includes("google_address"));
+        if (options.profilePhoto && last.storageState) {
+            assert.ok(phases.indexOf("google_address") >= 0);
+            assert.ok(phases.indexOf("google_profile_photo") > phases.indexOf("google_address"));
+        }
         return last;
     } finally {
         await browser?.close();
@@ -900,3 +906,47 @@ test(
         assert.ok(!result.storageState);
     }
 );
+
+test("real browser: address then profile photo can both be skipped", { skip: !executablePath }, async () => {
+    for (const options of [
+        { noTotp: true },
+        { addressChinese: true, addressTitle: "设置住址", directTotp: true, photoChinese: true },
+    ]) {
+        const result = await run({ ...options, address: true, fast: true, profilePhoto: true });
+        assert.ok(result.storageState, JSON.stringify(result));
+        assert.equal(result.targetInitialized, true);
+    }
+});
+test(
+    "real browser: profile photo skip requires prior address handling, known title and Google origin",
+    { skip: !executablePath },
+    async t => {
+        for (const [priorAddress, origin, title] of [
+            [false, "https://accounts.google.com", "Add a profile picture"],
+            [true, "https://accounts.google.com", "Unknown setup"],
+            [true, "https://untrusted.example", "Add a profile picture"],
+            [true, "https://aistudio.google.com", "Add a profile picture"],
+        ]) {
+            const { handler, page } = await handlerFixture(
+                t,
+                `<main><h1>${title}</h1><button onclick="window.clicked=true">Skip</button></main>`
+            );
+            handler.addressSkips = priorAddress ? 1 : 0;
+            await page.goto(`${origin}/test`);
+            assert.equal(await handler.skipProfilePhotoSetup(), false);
+            assert.equal(await page.evaluate(() => !!window.clicked), false);
+        }
+    }
+);
+test("real browser: stalled profile photo cannot commit a session", { skip: !executablePath }, async () => {
+    const result = await run({
+        address: true,
+        fast: true,
+        noTotp: true,
+        photoStuck: true,
+        profilePhoto: true,
+        stepTimeout: 1500,
+    });
+    assert.equal(result.error, "page_transition_timeout");
+    assert.ok(!result.storageState);
+});

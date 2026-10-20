@@ -27,31 +27,52 @@ class LoginPageHandlers {
             (await this.addressHeading().filter({ visible: true }).first().isVisible())
         );
     }
-    async skipAddressSetup() {
+    profilePhotoHeading() {
+        return this.page.getByRole("heading", {
+            name: /^(Add (?:a |your )?profile (?:photo|picture)|添加个人资料照片|新增個人資料相片|新增個人資料照片)$/i,
+        });
+    }
+    async profilePhotoSetupVisible() {
+        return (
+            new URL(this.page.url()).hostname === "accounts.google.com" &&
+            (await this.profilePhotoHeading().filter({ visible: true }).first().isVisible())
+        );
+    }
+    skipAddressSetup() {
+        return this.skipGoogleSetup("address", this.addressHeading(), () => this.addressSetupVisible());
+    }
+    async skipProfilePhotoSetup() {
         this.guard();
-        if (!(await this.addressSetupVisible())) return false;
+        // This optional step is only authorized in the flow following address setup.
+        if (!this.addressSkips) return false;
+        return this.skipGoogleSetup("profile_photo", this.profilePhotoHeading(), () => this.profilePhotoSetupVisible());
+    }
+    async skipGoogleSetup(kind, heading, visible) {
+        this.guard();
+        if (!(await visible())) return false;
         const end = Math.min(this.deadline, performance.now() + this.stepTimeout);
         const check = () => {
             this.guard();
             if (performance.now() >= end) throw Object.assign(failure("page_transition_timeout"), { retryable: true });
         };
-        if ((this.addressSkips || 0) >= 2) throw failure("unknown_page");
-        this.phase("google_address");
+        const counter = `${kind}Skips`;
+        if ((this[counter] || 0) >= 2) throw failure("unknown_page");
+        this.phase(`google_${kind}`);
         const scope = this.page
             .locator('main, [role="main"], form, section, div')
-            .filter({ has: this.addressHeading().filter({ visible: true }) })
+            .filter({ has: heading.filter({ visible: true }) })
             .filter({ has: this.page.getByRole("button", { name: /^(Skip|跳过|跳過)$/i }) })
             .filter({ visible: true })
             .last();
         try {
-            this.operation = "address_skip";
+            this.operation = `${kind}_skip`;
             await this.interaction.click(scope.getByRole("button", { name: /^(Skip|跳过|跳過)$/i }).first(), {
                 check,
                 timeout: Math.max(1, Math.floor(end - performance.now())),
             });
-            this.addressSkips = (this.addressSkips || 0) + 1;
-            this.operation = "address_wait";
-            while (await this.addressSetupVisible()) {
+            this[counter] = (this[counter] || 0) + 1;
+            this.operation = `${kind}_wait`;
+            while (await visible()) {
                 check();
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
