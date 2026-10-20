@@ -88,6 +88,36 @@ test(
         );
         assert.equal(service.running.forceThinking, true);
         assert.deepEqual(Object.keys(writes.at(-1).changes), ["FORCE_THINKING"]);
+        const permissions = panel.locator(".allowlist-editor");
+        const freeArgon = permissions.getByRole("checkbox", { exact: true, name: "gemini-4-argon Free" });
+        assert.equal(await freeArgon.isChecked(), false);
+        assert.equal(
+            await permissions.getByRole("checkbox", { exact: true, name: "gemini-4-argon Pro" }).isChecked(),
+            true
+        );
+        assert.equal(
+            await permissions.getByRole("checkbox", { exact: true, name: "gemini-4-argon Ultra 5x" }).isChecked(),
+            true
+        );
+        await permissions.getByRole("textbox", { name: "搜索权限模型" }).fill("gemini-4-argon");
+        assert.equal(await permissions.locator("tbody tr").count(), 1);
+        await freeArgon.check();
+        assert.equal(service.running.scheduler.modelAllowlist.tiers.free.includes("gemini-4-argon"), false);
+        await panel.getByRole("button", { exact: true, name: "放弃草稿" }).click();
+        assert.equal(await freeArgon.isChecked(), false);
+        await freeArgon.check();
+        await panel.getByRole("button", { exact: true, name: "保存" }).click();
+        await page.waitForFunction(() =>
+            document.querySelector(".configuration-panel")?.textContent.includes("立即生效：账号层级模型白名单")
+        );
+        assert.equal(service.running.scheduler.modelAllowlist.tiers.free.includes("gemini-4-argon"), true);
+        await freeArgon.uncheck();
+        await panel.getByRole("button", { exact: true, name: "保存" }).click();
+        await page.waitForFunction(() =>
+            document.querySelector('.configuration-panel [role="status"]')?.textContent.includes("0 项修改")
+        );
+        assert.equal(service.running.scheduler.modelAllowlist.tiers.free.includes("gemini-4-argon"), false);
+        await permissions.getByRole("textbox", { name: "搜索权限模型" }).fill("");
         const initialKeepalive = service.saved.scheduler.streamKeepaliveIntervalMs;
         await panel.locator("#config-STREAM_EARLY_HEADERS").locator("..").click();
         assert.equal(await panel.locator("#config-STREAM_KEEPALIVE_INTERVAL_MS").count(), 0);

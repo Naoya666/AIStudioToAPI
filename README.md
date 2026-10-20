@@ -169,6 +169,8 @@ curl http://localhost:7860/v1/chat/completions \
 
 控制台已保存的管理配置优先于对应环境值。修改 `.env` 后，如对应设置已在控制台保存，需要在控制台修改或恢复环境值；Compose 环境配置变更需要重新创建容器。管理配置存于 `data/managed-config.json`。
 
+账号层级模型权限可在控制台统一配置中编辑，保存后立即生效。首次初始化仅限制 Free 调用 `gemini-3-flash-preview`、`gemini-3.6-flash` 和 `gemini-4-argon`，其他现有模型默认开放；后续新增目录模型需手动授权。详见 [账号层级模型白名单说明](docs/zh/account-tier-model-allowlist-design.md#11-实现与使用说明)。
+
 模型并发、排队和冷却参数见 [模型感知调度说明](docs/zh/model-aware-scheduling.md)。每日调度冷却重置使用固定的 `America/Los_Angeles` 时区，不随 `TZ` 改变。
 
 ### 可选公开看板
@@ -193,7 +195,6 @@ PUBLIC_DASHBOARD_PORT=7861
 渠道控制器应读取 master 和 agent 统一的 `GET /api/internal/model-health`，并发送 `Authorization: Bearer <PUBLIC_DASHBOARD_HEALTH_TOKEN>`。在目标节点配置独立的 `PUBLIC_DASHBOARD_HEALTH_TOKEN` 后重启；留空时拒绝所有查询。该接口与公示服务共用监听地址和端口，只读取已生成的本机缓存，master 不含远程节点汇总。响应仅含 `schema_version: 1`、原始 `generated_at`、持久化 `node_id`、`snapshot_sequence`、`service_status`、`usage_window` 和各模型的 `realtime.available_accounts`，不含账号明细。缺少或错误令牌返回 401；缓存缺失、超过 `PUBLIC_DASHBOARD_STALE_AFTER_MS` 或服务未就绪时返回 503，已有缓存仍保留原始时间戳和身份。原公示与 Agent 采集接口用途保持不变；standalone 不提供该机器接口。
 
 配套控制器设置 `aistudio.status_url: "http://aistudio:7861/api/internal/model-health"` 和 `aistudio.token_env: "AISTUDIO_HEALTH_TOKEN"`，通过环境变量注入与目标节点相同的只读令牌，dry-run 下也需提供。渠道连续两次不可用后禁用、当日锁存和太平洋日期切换时启用的策略保持不变。
-
 
 ## 更新与维护
 

@@ -286,6 +286,12 @@ class ConfigLoader {
             config.modelList = [{ name: "models/gemini-2.5-flash-lite" }];
         }
 
+        const { catalogModels, initialPolicy, parsePolicy } = require("../accounts/ModelAllowlistPolicy");
+        config.scheduler.modelAllowlist =
+            env.MODEL_TIER_ALLOWLIST === undefined
+                ? initialPolicy(config.modelList)
+                : parsePolicy(env.MODEL_TIER_ALLOWLIST);
+        config.scheduler.registeredModels = catalogModels(config.modelList);
         this._printConfiguration(config);
         return config;
     }

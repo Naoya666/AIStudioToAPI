@@ -68,11 +68,24 @@ class ConfigurationService {
             this.baselineError = error.message;
         }
         this.saved = this.load(this.document.overrides);
+        if (!Object.hasOwn(this.document.overrides, "MODEL_TIER_ALLOWLIST")) {
+            this.document = {
+                ...this.document,
+                overrides: {
+                    ...this.document.overrides,
+                    MODEL_TIER_ALLOWLIST: clone(this.saved.scheduler.modelAllowlist),
+                },
+                version: this.document.version + 1,
+            };
+            atomicWrite(this.file, this.document);
+        }
         const goodPath = path.join(path.dirname(this.file), "managed-config.last-good.json");
         this.running =
             this.env.AISTUDIO_CONFIG_RECOVERY === "1" && fs.existsSync(goodPath)
                 ? this.load(JSON.parse(fs.readFileSync(goodPath, "utf8")).overrides)
                 : clone(this.saved);
+        // Recovery must not replace the explicit saved permissions with an older generated default.
+        this.running.scheduler.modelAllowlist = clone(this.saved.scheduler.modelAllowlist);
         const errorPath = path.join(path.dirname(this.file), "restart-status.json");
         this.restartError = fs.existsSync(errorPath) ? JSON.parse(fs.readFileSync(errorPath, "utf8")).error : null;
         system.config = this.running;
@@ -151,6 +164,13 @@ class ConfigurationService {
             (!Array.isArray(value) || value.some(code => !Number.isInteger(code) || code < 400 || code > 599))
         )
             throw fail(`${name}: 使用 400–599 错误码`);
+        if (d.type === "modelAllowlist") {
+            try {
+                require("../accounts/ModelAllowlistPolicy").parsePolicy(value);
+            } catch (error) {
+                throw fail(error.message);
+            }
+        }
         if (d.type === "transport") {
             try {
                 require("../core/ModelTransportPolicy").parsePolicy(value);
@@ -210,14 +230,9 @@ class ConfigurationService {
                 default: d.name === "API_KEYS" ? null : publicValue(this.defaults, d),
             })),
             environmentError: this.baselineError || null,
+            hiddenModels: this.system.scheduler?.hiddenModelsSnapshot?.() || [],
             instanceId: this.instanceId,
-            models: [
-                ...new Set(
-                    this.running.modelList.map(model =>
-                        require("../core/ModelScheduler").normalizeModelName(model.name)
-                    )
-                ),
-            ],
+            models: [...this.running.scheduler.registeredModels],
             operational: this.operational(),
             overridden: Object.keys(this.document.overrides),
             pending,
@@ -251,6 +266,7 @@ class ConfigurationService {
     }
     apply(config, force = false) {
         const { system } = this;
+        const policyChanged = force || !equal(this.running.scheduler.modelAllowlist, config.scheduler.modelAllowlist);
         const debugChanged = force || this.running.debugMode !== config.debugMode;
         const dailyChanged =
             force ||
@@ -260,6 +276,7 @@ class ConfigurationService {
             if (d.application === "hot") write(this.running, d.path, read(config, d.path));
         }
 
+        if (system.scheduler && policyChanged) system.scheduler.permissionsChanged();
         this.running.apiKeySource = config.apiKeySource;
         if (system.accountLoginService?.state) {
             for (const d of definitions.filter(item => item.path.startsWith("login.")))
@@ -294,10 +311,23 @@ class ConfigurationService {
                 }));
             }
             this.validateField(name, value);
+            if (name === "MODEL_TIER_ALLOWLIST") {
+                const { parsePolicy } = require("../accounts/ModelAllowlistPolicy");
+                value = parsePolicy(value);
+                const registered = new Set(this.running.scheduler.registeredModels);
+                const previous = this.saved.scheduler.modelAllowlist;
+                for (const [tier, models] of Object.entries(value.tiers)) {
+                    for (const model of models) {
+                        if (!registered.has(model) && !previous.tiers[tier].includes(model))
+                            throw fail(`未登记的模型：${model}`);
+                    }
+                }
+            }
             overrides[name] = clone(value);
         }
         for (const name of reset) {
             if (!definitions.some(d => d.name === name)) throw fail(`不允许重置：${name}`);
+            if (name === "MODEL_TIER_ALLOWLIST") throw fail("模型白名单不支持重置，请在权限矩阵中显式修改");
             delete overrides[name];
         }
         let target;

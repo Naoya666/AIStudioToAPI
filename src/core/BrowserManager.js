@@ -1,4 +1,4 @@
-const { accountForIndex, resolveTier } = require("../accounts/AccountTierPolicy");
+const { accountForIndex, canUseModel, resolveTier } = require("../accounts/AccountTierPolicy");
 /**
  * File: src/core/BrowserManager.js
  * Description: Browser manager for launching and controlling headless Firefox instances with authentication contexts
@@ -2323,13 +2323,25 @@ class BrowserManager {
             for (const index of new Set([...this.contexts.keys(), ...this.initializingContexts])) {
                 const data = this.contexts.get(index);
                 const exhausted = this.scheduler.isAccountQuotaExhausted(this.scheduler.account(index), now, models);
-                const retire = exhausted && !this._canKeepPooledContext(index);
-                const quotaDrain = data?.drainReason === "visible_models_rate_limited";
+                const restriction = this.scheduler.accountPoolRestriction?.(this.scheduler.account(index), models);
+                const reason = restriction || "visible_models_rate_limited";
+                const retire = (exhausted || restriction) && !this._canKeepPooledContext(index);
+                const quotaDrain = [
+                    "visible_models_rate_limited",
+                    "model_permissions_empty",
+                    "models_unsupported",
+                    "models_unavailable",
+                ].includes(data?.drainReason);
                 if (!retire) {
                     if (
                         quotaDrain &&
                         !this._poolClosingContexts?.has(index) &&
-                        this.pendingContextClosures.get(index) === "visible_models_rate_limited"
+                        [
+                            "visible_models_rate_limited",
+                            "model_permissions_empty",
+                            "models_unsupported",
+                            "models_unavailable",
+                        ].includes(this.pendingContextClosures.get(index))
                     ) {
                         this._cancelPendingContextClosure(index, "quota_eligibility_restored");
                         data.draining = false;
@@ -2342,11 +2354,11 @@ class BrowserManager {
                 // abort it here: a newly discovered model may restore its eligibility.
                 if (!data || this.initializingContexts.has(index) || this._poolClosingContexts?.has(index)) continue;
                 if (!data.draining) {
-                    data.drainReason = "visible_models_rate_limited";
+                    data.drainReason = reason;
                     this.logger.info(
-                        `[ContextPool] Draining #${index}: reason=visible_models_rate_limited, visible_models=${models.size}, inflight=${this.scheduler.account(index).inflight}`
+                        `[ContextPool] Draining #${index}: reason=${reason}, visible_models=${models.size}, inflight=${this.scheduler.account(index).inflight}`
                     );
-                    this.beginAccountDrain(index, "visible_models_rate_limited");
+                    this.beginAccountDrain(index, reason);
                 }
                 this.handleAccountLeaseReleased(index);
             }
@@ -2549,7 +2561,10 @@ class BrowserManager {
         const data = this.contexts.get(authIndex) || {};
         const rotation = this.authSource.getRotationIndices();
         const account = this.scheduler?.account(authIndex);
-        const unusableSlots = this.scheduler?.isAccountQuotaExhausted?.(account, now) || false;
+        const unusableSlots =
+            this.scheduler?.accountPoolRestriction?.(account) ||
+            this.scheduler?.isAccountQuotaExhausted?.(account, now) ||
+            false;
         return [
             account?.disabled ? 0 : 1,
             !account?.healthy || !rotation.includes(authIndex) || this.authSource.isExpired?.(authIndex) ? 0 : 1,
@@ -2565,7 +2580,11 @@ class BrowserManager {
         const rank = this.rankContextForEviction(authIndex, now);
         if (rank[0] === 0) return "account_disabled";
         if (rank[1] === 0) return "account_unhealthy";
-        if (rank[2] === 0) return "visible_models_rate_limited";
+        if (rank[2] === 0)
+            return (
+                this.scheduler?.accountPoolRestriction?.(this.scheduler.account(authIndex)) ||
+                "visible_models_rate_limited"
+            );
         if (rank[3] === 0) return "no_account_context_demand";
         return "healthy_idle_lru";
     }
@@ -2946,7 +2965,15 @@ class BrowserManager {
         }
 
         const pendingReason = this.pendingContextClosures.get(authIndex);
-        if (pendingReason === "visible_models_rate_limited" && this._canKeepPooledContext(authIndex)) {
+        if (
+            [
+                "visible_models_rate_limited",
+                "model_permissions_empty",
+                "models_unsupported",
+                "models_unavailable",
+            ].includes(pendingReason) &&
+            this._canKeepPooledContext(authIndex)
+        ) {
             this._cancelPendingContextClosure(authIndex, "quota_eligibility_restored");
             Object.assign(data, { draining: false, drainReason: null });
             return false;
@@ -3571,7 +3598,12 @@ class BrowserManager {
             const benefitAccountId = accountForIndex(this.authSource, authIndex).accountId;
             const benefit = new BuildBenefitContext(page, {
                 authIndex,
-                canUse: () => resolveTier(accountForIndex(this.authSource, authIndex)).argonEligible,
+                canUse: () =>
+                    canUseModel(
+                        accountForIndex(this.authSource, authIndex),
+                        "gemini-4-argon",
+                        this.config?.scheduler?.modelAllowlist
+                    ),
                 isCurrent: () => {
                     const service = this.authSource?.accountLoginService;
                     const session = service?.state?.accounts.find(account => account.authIndex === authIndex);

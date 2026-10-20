@@ -491,7 +491,7 @@
                     <tr>
                         <th>{{ t("schedulerModel") }}</th>
                         <th>{{ t("schedulerTodayRequests") }}</th>
-                        <th>{{ t("schedulerAvailable") }}</th>
+                        <th>层级允许 / {{ t("schedulerAvailable") }}</th>
                         <th class="text-center">429</th>
                         <th>{{ t("schedulerQueued") }}</th>
                         <th>{{ t("schedulerWorkers") }}</th>
@@ -515,7 +515,7 @@
                         <td class="font-mono font-medium">{{ formatNumber(model.daily_requests) }}</td>
                         <!-- 可用账号: 纯数字，过低时黄色预警 -->
                         <td class="font-mono font-bold" :class="{ 'text-warning': model.available_accounts <= 1 }">
-                            {{ model.available_accounts }}
+                            {{ model.tier_allowed_accounts ?? "—" }} / {{ model.available_accounts }}
                         </td>
                         <!-- 429: 表头已有明确定义，单元格仅保留纯数字徽章，绝不重复文字 -->
                         <td class="text-center">

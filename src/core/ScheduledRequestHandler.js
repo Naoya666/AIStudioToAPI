@@ -240,6 +240,7 @@ class ScheduledRequestHandler extends RequestHandler {
     }
 
     _shouldRetryError(error) {
+        if (["MODEL_TIER_DENIED", "MODEL_DISABLED", "UNKNOWN_MODEL"].includes(error.code)) return false;
         if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return false;
         if (
             require("./ModelTransportPolicy").resolve(this.model || "", "fake", this.config?.modelTransportPolicy)
@@ -286,6 +287,7 @@ class ScheduledRequestHandler extends RequestHandler {
     _forwardRequest(proxyRequest, authIndex = this.currentAuthIndex) {
         if (this.controller.signal.aborted)
             throw Object.assign(new Error("Client disconnected"), { reason: "client_disconnect" });
+        this._assertModelPermission(proxyRequest, authIndex);
         this.scheduler.startAttempt(this.lease);
         return super._forwardRequest(proxyRequest, authIndex);
     }

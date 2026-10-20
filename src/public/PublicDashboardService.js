@@ -113,6 +113,7 @@ class PublicDashboardService {
                         available_accounts: count(item.availableAccounts),
                         queued: count(item.queued),
                         rate_limited_accounts: count(item.rateLimitedAccounts),
+                        tier_allowed_accounts: nullableCount(item.tierAllowedAccounts ?? null),
                     },
                     recent_stats: Object.fromEntries(
                         ["24h", "1h"].map(range => {

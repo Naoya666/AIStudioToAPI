@@ -117,7 +117,12 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
                 estimated_remaining: quota.coverage.status === "complete" ? quota.values.remaining : null,
                 known_estimated_remaining: quota.values.remaining,
             },
-            realtime: modelRealtime.values,
+            realtime: {
+                ...modelRealtime.values,
+                tier_allowed_accounts: sum(
+                    modelSources.filter(ready).map(source => source.model.realtime.tier_allowed_accounts)
+                ),
+            },
             recent_stats: Object.fromEntries(ranges.map(range => [range, recent[range].stats])),
             today: today.values,
         };

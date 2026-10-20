@@ -1,5 +1,5 @@
 const { BRIDGE_SETTLEMENT_MS, DEFAULT_MAKERSUITE_TIMEOUT_MS } = require("../config/TransportConfig");
-const { accountForIndex, resolveTier } = require("../accounts/AccountTierPolicy");
+const { accountForIndex, canUseModel } = require("../accounts/AccountTierPolicy");
 const TransportPolicy = require("./ModelTransportPolicy");
 const { isArgon, benefitError } = require("./BuildBenefitContext");
 /**
@@ -4845,14 +4845,39 @@ class RequestHandler {
         return TransportPolicy.resolve(model, mode, this.config.modelTransportPolicy).effectiveMode;
     }
 
+    _assertModelPermission(proxyRequest, authIndex = this.currentAuthIndex) {
+        let model = this._extractModelFromPath(proxyRequest.path);
+        if (!model && proxyRequest.body) {
+            try {
+                model = JSON.parse(proxyRequest.body).model;
+            } catch {
+                /* File body. */
+            }
+        }
+        if (!model) return;
+        const config = this.serverSystem?.configurationService?.running || this.serverSystem?.config || this.config;
+        const { normalizeModelName } = require("./ModelName");
+        model = normalizeModelName(model);
+        const scheduler = this.serverSystem?.scheduler;
+        scheduler?.assertModelAccessible(model);
+        if (config.scheduler?.registeredModels && !config.scheduler.registeredModels.includes(model))
+            throw Object.assign(new Error(`Unknown model ${model}`), { code: "UNKNOWN_MODEL", status: 404 });
+        if (!canUseModel(accountForIndex(this.authSource, authIndex), model, config.scheduler?.modelAllowlist))
+            throw Object.assign(new Error(`Account tier does not allow model ${model}`), {
+                code: "MODEL_TIER_DENIED",
+                reason: "model_tier_denied",
+                skipAccountSwitch: true,
+                status: 403,
+            });
+    }
+
     async _ensureLegacyBenefit(proxyRequest) {
+        if (!this.scheduled) this._assertModelPermission(proxyRequest);
         if (this.scheduled || !isArgon(this._extractModelFromPath(proxyRequest.path)) || !proxyRequest.is_generative)
             return;
         const benefit = this.browserManager.contexts?.get(this.currentAuthIndex)?.page?.buildBenefit;
         if (this.browserManager.benefitCheckingIndices?.has(this.currentAuthIndex))
             throw benefitError("Account benefit check in progress");
-        if (!resolveTier(accountForIndex(this.authSource, this.currentAuthIndex)).argonEligible)
-            throw benefitError("Account tier does not allow gemini-4-argon");
         if (!benefit) throw benefitError("Build benefit context unavailable");
         await benefit.assertReady();
     }
@@ -4899,6 +4924,7 @@ class RequestHandler {
     }
 
     _forwardRequest(proxyRequest, authIndex = this.currentAuthIndex) {
+        this._assertModelPermission(proxyRequest, authIndex);
         const policy = proxyRequest.is_generative ? proxyRequest.transport_policy : null;
         if (policy?.transport === "makersuite") {
             const bridge = this.browserManager.contexts?.get(authIndex)?.page?.makerSuiteBridge;
@@ -4930,12 +4956,7 @@ class RequestHandler {
             throw benefitError("Account benefit check in progress");
         if (proxyRequest.is_generative && isArgon(this._extractModelFromPath(proxyRequest.path))) {
             const benefit = this.browserManager.contexts?.get(authIndex)?.page?.buildBenefit;
-            if (
-                !resolveTier(accountForIndex(this.authSource, authIndex)).argonEligible ||
-                !benefit ||
-                benefit.disposed ||
-                benefit.isCurrent?.() === false
-            )
+            if (!benefit || benefit.disposed || benefit.isCurrent?.() === false)
                 throw benefitError("No qualified Build account for gemini-4-argon");
             this.logger.info(
                 `[Build] account=${authIndex} request=${proxyRequest.request_id} attempt=${proxyRequest.request_attempt_id} model=gemini-4-argon transport=${policy?.transport || "legacy"} rpc=${policy?.transport === "makersuite" ? "GenerateContent" : "ProxyUnaryCall"} policy=${policy?.version || "unknown"} benefit_source=${benefit.source || "unknown"} benefit_state=${benefit.state} stream_mode=${proxyRequest.streaming_mode} buffered=true`

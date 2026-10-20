@@ -981,10 +981,13 @@ class AccountLoginService {
     notifyTierChanged() {
         const scheduler = this.system.scheduler;
         if (scheduler) {
-            scheduler.sequence = (scheduler.sequence || 0) + 1;
-            scheduler._eligibleRound = null;
-            scheduler._selectionPass = null;
-            scheduler.drain?.();
+            if (scheduler.permissionsChanged) scheduler.permissionsChanged();
+            else {
+                scheduler.sequence = (scheduler.sequence || 0) + 1;
+                scheduler._eligibleRound = null;
+                scheduler._selectionPass = null;
+                scheduler.drain?.();
+            }
         }
     }
     async recordBenefit(accountId, sessionVersion, result, isCurrent = () => true) {

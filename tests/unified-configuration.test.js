@@ -23,7 +23,14 @@ test("allowlist matches plan and excludes file-only queue timeout and usage enab
     const keys = [...section.matchAll(/^\| `([A-Z_]+)`\s+\|/gm)].map(match => match[1]);
     assert.deepEqual(
         new Set(definitions.map(d => d.name)),
-        new Set([...keys, "LOG_DISPLAY_LIMIT", "DEBUG_MODE", "MODEL_TRANSPORT_POLICY", "MAKERSUITE_TIMEOUT_MS"])
+        new Set([
+            ...keys,
+            "LOG_DISPLAY_LIMIT",
+            "DEBUG_MODE",
+            "MODEL_TRANSPORT_POLICY",
+            "MAKERSUITE_TIMEOUT_MS",
+            "MODEL_TIER_ALLOWLIST",
+        ])
     );
     assert.equal(new Set(definitions.map(d => d.name)).size, definitions.length);
 });

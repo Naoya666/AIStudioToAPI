@@ -28,7 +28,11 @@
             </p>
         </details>
         <div v-if="snapshot" class="configuration-groups">
-            <fieldset v-for="group in groups" :key="group.name">
+            <fieldset
+                v-for="group in groups"
+                :key="group.name"
+                :class="{ 'allowlist-group': group.fields.some(d => d.type === 'modelAllowlist') }"
+            >
                 <legend>{{ group.name }}</legend>
                 <div v-for="d in group.fields" :key="d.name" class="configuration-field">
                     <div class="configuration-label">
@@ -42,8 +46,15 @@
                             pending(d.name) ? "重启后生效" : d.application === "hot" ? "保存后生效" : "重启后生效"
                         }}</span>
                     </div>
+                    <ModelAllowlistEditor
+                        v-if="d.type === 'modelAllowlist'"
+                        v-model="draft[d.name]"
+                        :models="models"
+                        :hidden-models="snapshot.hiddenModels || []"
+                        :disabled="busy"
+                    />
                     <ElSwitch
-                        v-if="d.type === 'boolean'"
+                        v-else-if="d.type === 'boolean'"
                         :id="`config-${d.name}`"
                         v-model="draft[d.name]"
                         :disabled="busy"
@@ -212,7 +223,7 @@
                     </p>
                     <p v-if="d.name === 'SCHEDULER_DAILY_RESET_TIME'">每日重置不会恢复上游真实配额。</p>
                     <ElButton
-                        v-if="snapshot.overridden.includes(d.name)"
+                        v-if="d.resettable !== false && snapshot.overridden.includes(d.name)"
                         size="small"
                         :disabled="busy"
                         @click="resetField(d)"
@@ -225,6 +236,7 @@
 </template>
 
 <script setup>
+import ModelAllowlistEditor from "./ModelAllowlistEditor.vue";
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { ElButton, ElSwitch, ElSelect, ElOption, ElInputNumber, ElInput, ElPopover, ElMessageBox } from "element-plus";
 const secretDefaultDraft = ref(null);
@@ -318,6 +330,7 @@ async function api(url = "/api/configuration", method = "GET", body) {
     return result;
 }
 function toDraft(d, value) {
+    if (d.type === "modelAllowlist") return JSON.parse(JSON.stringify(value));
     if (d.type === "agents") return JSON.parse(JSON.stringify(value || []));
     if (d.type === "transport") return Object.entries(value || {}).map(([model, transport]) => ({ model, transport }));
     if (d.type === "models")
@@ -544,6 +557,9 @@ onBeforeUnmount(() => {
     border: 1px solid var(--el-border-color);
     border-radius: 8px;
     padding: 16px;
+}
+.allowlist-group {
+    grid-column: 1 / -1;
 }
 .configuration-field {
     padding: 12px 0;

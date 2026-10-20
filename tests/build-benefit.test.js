@@ -378,7 +378,7 @@ test("unknown Argon accounts fail without starting a context or a preflight", as
                 throw new Error("unexpected browser launch");
             },
         };
-        await assert.rejects(scheduler.acquire("gemini-4-argon"), /No eligible accounts/);
+        await assert.rejects(scheduler.acquire("gemini-4-argon"), { code: "MODEL_TIER_DENIED", status: 403 });
         assert.equal(scheduler.pending.length, 0);
     }
 });

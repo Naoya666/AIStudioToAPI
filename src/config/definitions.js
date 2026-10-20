@@ -2,6 +2,17 @@ const { MAX_GENERATION_TIMEOUT_MS } = require("./TransportConfig");
 
 module.exports = [
     {
+        application: "hot",
+        description: "按账号层级配置模型白名单。未知账号使用 Free；Ultra 两档初始复制 Pro。新增目录模型需显式授权。",
+        group: "账号层级模型权限",
+        label: "账号层级模型白名单",
+        mode: "all",
+        name: "MODEL_TIER_ALLOWLIST",
+        path: "scheduler.modelAllowlist",
+        resettable: false,
+        type: "modelAllowlist",
+    },
+    {
         application: "restart",
         description: "精确模型 ID 到 legacy 或 makersuite 的映射；重启生效",
         group: "请求处理与模型功能",

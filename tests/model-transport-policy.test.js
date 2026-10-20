@@ -118,6 +118,7 @@ test("non-generation requests never register a bridge call or receive its intern
     handler.config = {};
     handler.logger = logger;
     handler.browserManager = { contexts: new Map() };
+    handler.authSource = { accountLoginService: { state: { accounts: [{ authIndex: 0, manualTier: "pro" }] } } };
     handler.connectionRegistry = { getConnectionByAuth: () => ({ send: value => sent.push(JSON.parse(value)) }) };
     const request = {
         is_generative: false,

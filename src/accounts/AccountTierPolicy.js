@@ -39,4 +39,7 @@ function modelQuota(model, account = {}) {
 function accountForIndex(authSource, index) {
     return authSource?.accountLoginService?.state?.accounts.find(account => account.authIndex === index) || {};
 }
-module.exports = { accountForIndex, modelQuota, resolveTier, TIERS };
+function canUseModel(account, model, policy) {
+    return !!require("./ModelAllowlistPolicy").allows(resolveTier(account).effectiveTier, model, policy);
+}
+module.exports = { accountForIndex, canUseModel, modelQuota, resolveTier, TIERS };

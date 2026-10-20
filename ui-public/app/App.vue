@@ -450,7 +450,10 @@ function onMockChange() {
                             <div class="account-ring-meta">
                                 <div class="account-ring-title">账号池健康度</div>
                                 <div class="account-ring-detail">
-                                    <span class="account-ok">{{ number(model.realtime.available_accounts) }} 可用</span>
+                                    <span class="account-ok"
+                                        >{{ number(model.realtime.available_accounts) }} 可用 /
+                                        {{ number(model.realtime.tier_allowed_accounts) }} 层级允许</span
+                                    >
                                     <span v-if="model.realtime.rate_limited_accounts > 0" class="account-warn">
                                         · {{ number(model.realtime.rate_limited_accounts) }} 耗尽
                                     </span>

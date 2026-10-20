@@ -1,8 +1,7 @@
-const { accountForIndex, modelQuota, resolveTier } = require("../accounts/AccountTierPolicy");
+const { accountForIndex, canUseModel, modelQuota, resolveTier } = require("../accounts/AccountTierPolicy");
 const { isArgon } = require("./BuildBenefitContext");
 const fs = require("fs");
 const path = require("path");
-const FormatConverter = require("./FormatConverter");
 const { isUserAbortedError } = require("../utils/CustomErrors");
 
 const schedulerError = (message, status = 503) => Object.assign(new Error(message), { status });
@@ -13,7 +12,6 @@ const PACIFIC_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
     timeZone: PACIFIC_TIMEZONE,
     year: "numeric",
 });
-const MAX_MODEL_NAME_LENGTH = 200;
 const PERSISTENT_403_THRESHOLD_MS = 48 * 60 * 60 * 1000;
 const PACIFIC_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
     day: "2-digit",
@@ -71,22 +69,7 @@ function calculateNextPacificResetAt(now, configuredTime, skipDate = null) {
     throw new Error(`Cannot calculate next ${PACIFIC_TIMEZONE} reset time`);
 }
 
-const normalizedModels = new Map();
-function normalizeModelName(model) {
-    if (typeof model !== "string") throw schedulerError("Model must be a non-empty string", 400);
-    if (normalizedModels.has(model)) return normalizedModels.get(model);
-    let normalized = FormatConverter.parseModelAntiPrefix(model).cleanModelName;
-    normalized = FormatConverter.parseModelBuiltInToolSuffixes(normalized).cleanModelName;
-    normalized = FormatConverter.parseModelStreamingModeSuffix(normalized).cleanModelName;
-    normalized = FormatConverter.parseModelThinkingLevel(normalized).cleanModelName;
-    if (!normalized || normalized.length > MAX_MODEL_NAME_LENGTH)
-        throw schedulerError(`Model must contain 1-${MAX_MODEL_NAME_LENGTH} characters`, 400);
-    if (normalized.startsWith("__") || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(normalized))
-        throw schedulerError("Invalid model name", 400);
-    if (normalizedModels.size >= 1024) normalizedModels.delete(normalizedModels.keys().next().value);
-    normalizedModels.set(model, normalized);
-    return normalized;
-}
+const { normalizeModelName } = require("./ModelName");
 
 function getModelDailyQuota(model, account = {}) {
     return modelQuota(model, account);
@@ -273,10 +256,27 @@ class ModelScheduler {
         return models;
     }
 
+    accountPoolRestriction(account, models = this.getVisibleModels()) {
+        if (!this.config.modelAllowlist) return null;
+        const allowed = [...models].filter(model => this.isTierAllowed(account.index, model));
+        if (!allowed.length) return "model_permissions_empty";
+        if (allowed.every(model => account.models[model]?.unsupported)) return "models_unsupported";
+        if (
+            allowed.some(model => account.models[model]?.unsupported) &&
+            allowed.every(model => {
+                const slot = account.models[model];
+                return slot?.unsupported || (slot?.rate_limited && slot.cooldown_until > this.now());
+            })
+        )
+            return "models_unavailable";
+        return null;
+    }
+
     isAccountQuotaExhausted(account, now = this.now(), models = this.getVisibleModels()) {
+        const allowed = [...models].filter(model => this.isTierAllowed(account.index, model));
         return (
-            models.size > 0 &&
-            [...models].every(model => {
+            allowed.length > 0 &&
+            allowed.every(model => {
                 const slot = account.models[model];
                 return slot?.rate_limited === true && slot.cooldown_until > now;
             })
@@ -290,13 +290,14 @@ class ModelScheduler {
             account.healthy &&
             !account.disabled &&
             !this.authSource.isExpired?.(index) &&
+            !this.accountPoolRestriction(account, models) &&
             !this.isAccountQuotaExhausted(account, now, models)
         );
     }
 
     isResourceEligible(account, model, now = this.now()) {
         const slot = account.models[model];
-        if (isArgon(model) && !resolveTier(accountForIndex(this.authSource, account.index)).argonEligible) return false;
+        if (!this.isTierAllowed(account.index, model)) return false;
         return (
             account.healthy &&
             !account.disabled &&
@@ -307,9 +308,49 @@ class ModelScheduler {
         );
     }
 
+    isTierAllowed(index, model) {
+        if (
+            model !== "__files__" &&
+            this.config.registeredModels &&
+            !this.config.registeredModels.includes(normalizeModelName(model))
+        )
+            return false;
+        return canUseModel(accountForIndex(this.authSource, index), model, this.config.modelAllowlist);
+    }
+
+    permissionsChanged() {
+        this.sequence++;
+        this._eligibleRound = null;
+        this._selectionPass = null;
+        this._validationQueue = null;
+        this._validationCursor = 0;
+        this._roundModels = null;
+        this._roundVisibleModels = null;
+        this.drain();
+        this.coordinateContextPool();
+    }
+
+    noEligibleError(model) {
+        if (!this.authSource.getRotationIndices().some(index => this.isTierAllowed(index, model)))
+            return Object.assign(schedulerError(`No accounts allowed by tier for model ${model}`, 403), {
+                code: "MODEL_TIER_DENIED",
+                reason: "model_tier_denied",
+            });
+        return Object.assign(schedulerError(`No eligible accounts for model ${model}`), {
+            code: "NO_ELIGIBLE_ACCOUNTS",
+        });
+    }
+
     assertModelAccessible(model) {
         const normalized = model === "__files__" ? model : normalizeModelName(model);
-        if (this.hiddenModels.has(normalized)) throw schedulerError(`Model ${normalized} is disabled`, 403);
+        if (
+            normalized !== "__files__" &&
+            this.config.registeredModels &&
+            !this.config.registeredModels.includes(normalized)
+        )
+            throw Object.assign(schedulerError(`Unknown model ${normalized}`, 404), { code: "UNKNOWN_MODEL" });
+        if (this.hiddenModels.has(normalized))
+            throw Object.assign(schedulerError(`Model ${normalized} is disabled`, 403), { code: "MODEL_DISABLED" });
         return normalized;
     }
 
@@ -440,7 +481,7 @@ class ModelScheduler {
             const benefit = this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit;
             if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
         }
-        if (isArgon(model) && !resolveTier(accountForIndex(this.authSource, account.index)).argonEligible) return false;
+        if (!this.isTierAllowed(account.index, model)) return false;
         if (account.key === this.drainingAccount) return false;
         if (model !== "__files__" && this.isAccountQuotaExhausted(account)) return false;
         const accountLimit = this.config.accountConcurrency || 0;
@@ -472,6 +513,8 @@ class ModelScheduler {
         } catch (error) {
             return Promise.reject(error);
         }
+        if (!this.authSource.getRotationIndices().some(index => this.isTierAllowed(index, model)))
+            return Promise.reject(this.noEligibleError(model));
         const atLimit =
             this.pending.length >= (this.config.globalQueueSize ?? 1000) ||
             this.pending.filter(item => item.model === model).length >= this.config.queueSize;
@@ -483,12 +526,7 @@ class ModelScheduler {
         if (atLimit && !immediate) return Promise.reject(schedulerError("Queue full", 429));
         if (signal?.aborted) return Promise.reject(schedulerError("Client disconnected", 499));
         const eligible = this.eligibleAccounts(model, excluded);
-        if (!eligible.length)
-            return Promise.reject(
-                schedulerError(
-                    `No eligible accounts for model ${model}${isArgon(model) ? " (requires a paid account tier)" : ""}`
-                )
-            );
+        if (!eligible.length) return Promise.reject(this.noEligibleError(model));
         // Record accepted discovery only after validation and access checks. Other
         // accounts remain unknown until they actually participate in this model.
         this.slot(eligible[0], model, this.now());
@@ -577,14 +615,12 @@ class ModelScheduler {
             if (!this.pending.includes(item)) continue;
             if (this.hiddenModels.has(item.model)) {
                 this.remove(item);
-                item.reject(schedulerError(`Model ${item.model} is disabled`, 403));
+                item.reject(
+                    Object.assign(schedulerError(`Model ${item.model} is disabled`, 403), { code: "MODEL_DISABLED" })
+                );
             } else if (!this.eligibleAccounts(item.model, item.excluded).length) {
                 this.remove(item);
-                item.reject(
-                    schedulerError(
-                        `No eligible accounts for model ${item.model}${isArgon(item.model) ? " (no eligible paid account tier)" : ""}`
-                    )
-                );
+                item.reject(this.noEligibleError(item.model));
             }
         }
         if (this.paused) return;
@@ -812,7 +848,8 @@ class ModelScheduler {
                 /PERMISSION_DENIED|RPC.*(?:Code|code)\s*7/.test(String(error.message || "")))
         )
             kind = "unsupported";
-        if (error.code === "BUILD_BENEFIT_NOT_READY") return;
+        if (["BUILD_BENEFIT_NOT_READY", "MODEL_TIER_DENIED", "MODEL_DISABLED", "UNKNOWN_MODEL"].includes(error.code))
+            return;
         if (kind === "aborted" || kind === "bridge_auth") return;
         if (kind === "transport") {
             lease.recorded = true;
@@ -1137,6 +1174,7 @@ class ModelScheduler {
     _snapshotModels() {
         if (this._roundModels) return this._roundModels;
         const names = new Set([
+            ...(this.config.registeredModels || []),
             ...Object.keys(this.config.allocation),
             ...this.pending.map(item => item.model),
             ...[...this.accounts.values()].flatMap(account => Object.keys(account.models)),
@@ -1158,7 +1196,9 @@ class ModelScheduler {
         for (const item of [...this.pending]) {
             if (item.model !== normalized) continue;
             this.remove(item);
-            item.reject(schedulerError(`Model ${normalized} is disabled`, 403));
+            item.reject(
+                Object.assign(schedulerError(`Model ${normalized} is disabled`, 403), { code: "MODEL_DISABLED" })
+            );
         }
         this.sequence++;
         this.flush();
@@ -1279,7 +1319,7 @@ class ModelScheduler {
                 const requests =
                     slot?.daily_request_date === this.getPacificDateKey(now) ? slot.daily_request_count : 0;
                 dailyRequests += requests;
-                if (isArgon(model) && !limit) continue;
+                if (!this.isTierAllowed(account.index, model)) continue;
                 totalQuota += limit;
                 trackedAccounts++;
                 limits.add(limit);
@@ -1356,6 +1396,7 @@ class ModelScheduler {
                         queue_length: this.pending.filter(item => item.model === model).length,
                         rate_limited_accounts: slots.filter(slot => slot.rate_limited).length,
                         ready_accounts: this.readyCandidates(model, new Set()).length,
+                        tier_allowed_accounts: indices.filter(index => this.isTierAllowed(index, model)).length,
                     };
                 })
                 .sort((a, b) => a.model.localeCompare(b.model)),
@@ -1411,7 +1452,7 @@ class ModelScheduler {
                         item =>
                             isAvailable(item.account, item.slot) &&
                             !this.authSource.isExpired?.(item.index) &&
-                            (!isArgon(model) || resolveTier(accountForIndex(this.authSource, item.index)).argonEligible)
+                            this.isTierAllowed(item.index, model)
                     ).length,
                     estimatedRemaining:
                         quotaPerAccount === null
@@ -1419,16 +1460,21 @@ class ModelScheduler {
                             : accountSlots.reduce(
                                   (sum, item) =>
                                       sum +
-                                      Math.max(
-                                          0,
-                                          getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) -
-                                              dailyRequests(item.slot)
-                                      ),
+                                      (this.isTierAllowed(item.index, model)
+                                          ? Math.max(
+                                                0,
+                                                getModelDailyQuota(
+                                                    model,
+                                                    accountForIndex(this.authSource, item.index)
+                                                ) - dailyRequests(item.slot)
+                                            )
+                                          : 0),
                                   0
                               ),
                     model,
                     queued: this.pending.filter(item => item.model === model).length,
                     rateLimitedAccounts: accountSlots.filter(item => isRateLimited(item.slot)).length,
+                    tierAllowedAccounts: indices.filter(index => this.isTierAllowed(index, model)).length,
                     todayRequests: today,
                 };
             }),
