@@ -84,6 +84,7 @@ class BrowserManager {
         this.contextCapacityReservations = new Map();
         this._contextPoolReplacements = new Map();
         this._contextCapacityClosures = new Map();
+        this._contextClosureTasks = new Map();
         this._contextInitAttempts = new Map();
         this._contextInitSequence = 0;
         this._contextPoolRunning = false;
@@ -463,6 +464,56 @@ class BrowserManager {
         else this._confirmBrowserFault("context_cleanup_timeout");
     }
 
+    _closeTrackedContext(owner, authIndex) {
+        this._contextClosureTasks ??= new Map();
+        const existing = this._contextClosureTasks.get(owner);
+        if (existing) return existing.task;
+        const browser = this.browser;
+        const generation = this.browserGeneration;
+        const task = Promise.resolve().then(() => owner.context.close());
+        // A late initialization cleanup must not claim capacity in a new browser.
+        if (owner.browserGeneration !== undefined && owner.browserGeneration !== generation) return task;
+        this._contextCapacityClosures ??= new Map();
+        this._contextCapacityClosures.set(owner, authIndex);
+        // Allow one cleanup timeout plus one grace interval for late success.
+        // Keep physical capacity reserved until success or a browser reset. A
+        // responsive sibling page cannot settle this context's failed close.
+        const timer = setTimeout(
+            () => {
+                if (
+                    this.browser !== browser ||
+                    this.browserGeneration !== generation ||
+                    !this._contextCapacityClosures.has(owner)
+                )
+                    return;
+                this.logger.error(
+                    `[Context#${authIndex}] context_cleanup_stalled generation=${generation} browser_recovery_required=true`
+                );
+                this._triggerBrowserRecovery("context_cleanup_stalled");
+            },
+            2 * (this.contextCleanupTimeoutMs || 5000)
+        );
+        timer.unref?.();
+        const entry = { task, timer };
+        this._contextClosureTasks.set(owner, entry);
+        task.then(
+            () => {
+                clearTimeout(timer);
+                if (this._contextClosureTasks.get(owner) !== entry) return;
+                this._contextClosureTasks.delete(owner);
+                if (this.browser !== browser || this.browserGeneration !== generation) return;
+                if (!this._contextCapacityClosures.delete(owner)) return;
+                this.scheduler?.coordinateContextPool?.();
+                this._pumpContextPool();
+            },
+            () => {
+                // Rejection is not proof of physical closure. The watchdog
+                // resolves the reservation through the existing recovery path.
+            }
+        ).catch(error => this.logger.warn(`[Browser] Context cleanup callback failed: ${error.message}`));
+        return task;
+    }
+
     async _closeAttemptContext(attempt) {
         attempt?.page?.makerSuiteBridge?.dispose();
         attempt?.page?.buildBenefit?.dispose();
@@ -471,23 +522,10 @@ class BrowserManager {
         const startedAt = Date.now();
         const cleanupTimeoutMs = this.contextCleanupTimeoutMs || 5000;
         attempt.cleanupTask = (async () => {
-            this._contextCapacityClosures ??= new Map();
-            this._contextCapacityClosures.set(attempt, attempt.authIndex);
-            let physicallyClosed = false;
-            const closeTask = Promise.resolve()
-                .then(() => attempt.context.close())
-                .then(() => {
-                    physicallyClosed = true;
-                    return { closed: true };
-                })
-                .catch(error => ({ closed: false, error }))
-                .finally(() => {
-                    // A cleanup watchdog may finish before the physical close does.
-                    // Retain capacity until that close actually settles or the browser resets.
-                    if (!physicallyClosed || !this._contextCapacityClosures.delete(attempt)) return;
-                    this.scheduler?.coordinateContextPool?.();
-                    this._pumpContextPool();
-                });
+            const closeTask = this._closeTrackedContext(attempt, attempt.authIndex).then(
+                () => ({ closed: true }),
+                error => ({ closed: false, error })
+            );
             let cleanupTimer;
             const result = await Promise.race([
                 closeTask,
@@ -4221,17 +4259,7 @@ class BrowserManager {
         // Close the context AFTER removing from map
         try {
             if (contextData.context) {
-                const closing = contextData.context.close();
-                this._contextCapacityClosures ??= new Map();
-                this._contextCapacityClosures.set(contextData, authIndex);
-                closing
-                    .then(() => {
-                        if (this._contextCapacityClosures.delete(contextData)) {
-                            this.scheduler?.coordinateContextPool?.();
-                            this._pumpContextPool();
-                        }
-                    })
-                    .catch(() => {});
+                const closing = this._closeTrackedContext(contextData, authIndex);
                 await withHardTimeout(() => closing, this.contextCleanupTimeoutMs || 5000);
                 this.logger.info(`[Browser] Context #${authIndex} closed.`);
             }
@@ -4283,6 +4311,8 @@ class BrowserManager {
         this.contexts.clear();
         this.contextCapacityReservations?.clear();
         this._contextPoolReplacements?.clear();
+        for (const entry of this._contextClosureTasks?.values() || []) clearTimeout(entry.timer);
+        this._contextClosureTasks?.clear();
         this._contextCapacityClosures?.clear();
         this._poolClosingContexts?.clear();
         this.initializingContexts.clear();

@@ -305,13 +305,14 @@ test("stale browser connections cannot replace a new instance's connection", () 
     assert.equal(registry.connectionsByAuth.get(0), replacement);
 });
 
-test("failed context cleanup retains physical capacity while responsive resources continue", async () => {
+test("failed context cleanup retains physical capacity during the grace interval", async t => {
     const pool = manager();
     pool.browser = mockBrowser();
     pool.scheduler = { config: { maxWorkers: 2 } };
     pool.connectionRegistry = { getConnectionByAuth: () => ({ readyState: 1 }) };
     pool.contexts.set(1, { page: { evaluate: async () => true, isClosed: () => false }, state: "READY" });
-    pool._triggerBrowserRecovery = () => assert.fail("A healthy context must survive local cleanup failure");
+    t.after(() => pool._cleanupAllContexts());
+    pool._triggerBrowserRecovery = () => assert.fail("Recovery must wait for the cleanup deadline");
     const attempt = {
         authIndex: 0,
         browserGeneration: pool.browserGeneration,
@@ -373,4 +374,167 @@ test("late old-generation RPC failures cannot count against the current browser"
     pool.browserGeneration = 2;
     pool._recordBrowserRpcTimeout({ authIndex: 0, browserGeneration: 1 }, { operation: "page.title" });
     assert.equal(pool._browserRpcFailures.length, 0);
+});
+
+function closingFixture(t, close) {
+    const pool = manager();
+    pool.browser = mockBrowser();
+    pool.contextCleanupTimeoutMs = 10;
+    pool.scheduler = {
+        account: () => ({ inflight: 0 }),
+        config: { contextInitConcurrency: 2, maxWorkers: 2 },
+        coordinateContextPool() {},
+    };
+    pool._pumpContextPool = () => {};
+    pool.connectionRegistry = { closeMessageQueuesForAuth() {}, getConnectionByAuth: () => ({ readyState: 1 }) };
+    pool.contexts.set(1, { page: { evaluate: async () => true, isClosed: () => false }, state: "READY" });
+    const owner = { context: { close }, state: "READY" };
+    pool.contexts.set(0, owner);
+    const recoveries = [];
+    pool._triggerBrowserRecovery = reason => recoveries.push(reason);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    t.after(() => pool._cleanupAllContexts());
+    return { owner, pool, recoveries };
+}
+
+test("rejected close converges through recovery even while another context is healthy", async t => {
+    const { owner, pool, recoveries } = closingFixture(t, async () => {
+        throw new Error("Browser.removeBrowserContext failed");
+    });
+    await pool.closeContext(0, { keepBrowser: true });
+    await pool._browserProbeTask;
+    assert.equal(pool.isContextReady(1), true);
+    assert.equal(pool._contextCapacityClosures.get(owner), 0);
+    assert.equal(pool._reserveContextCapacity(0), null);
+    assert.deepEqual(recoveries, []);
+    t.mock.timers.tick(20);
+    assert.deepEqual(recoveries, ["context_cleanup_stalled"]);
+    assert.equal(pool._contextCapacityClosures.has(owner), true, "Recovery must close the physical browser first");
+    await pool.closeBrowser();
+    assert.equal(pool._contextCapacityClosures.size, 0);
+    assert.equal(pool._contextClosureTasks.size, 0);
+    assert.ok(pool._reserveContextCapacity(0), "Account becomes reservable after physical browser closure");
+});
+
+test("synchronous close exceptions also retain capacity and reach the cleanup deadline", async t => {
+    const { owner, pool, recoveries } = closingFixture(t, () => {
+        throw new Error("sync close failure");
+    });
+    await pool.closeContext(0, { keepBrowser: true });
+    assert.equal(pool._contextCapacityClosures.has(owner), true);
+    t.mock.timers.tick(20);
+    assert.deepEqual(recoveries, ["context_cleanup_stalled"]);
+});
+
+test("successful close releases capacity and cancels cleanup escalation", async t => {
+    const { pool, recoveries } = closingFixture(t, async () => {});
+    await pool.closeContext(0, { keepBrowser: true });
+    assert.equal(pool._contextCapacityClosures.size, 0);
+    assert.equal(pool._contextClosureTasks.size, 0);
+    t.mock.timers.tick(100);
+    assert.deepEqual(recoveries, []);
+});
+
+test("close timeout retains capacity until late success and then cancels recovery", async t => {
+    let resolveClose;
+    const { pool, recoveries } = closingFixture(t, () => new Promise(resolve => (resolveClose = resolve)));
+    const closing = pool.closeContext(0, { keepBrowser: true });
+    await tick();
+    t.mock.timers.tick(10);
+    await closing;
+    assert.equal(pool._contextCapacityClosures.size, 1);
+    resolveClose();
+    await tick();
+    assert.equal(pool._contextCapacityClosures.size, 0);
+    t.mock.timers.tick(100);
+    assert.deepEqual(recoveries, []);
+});
+
+test("permanently pending close reaches recovery without admitting the occupied account", async t => {
+    const { pool, recoveries } = closingFixture(t, () => new Promise(() => {}));
+    const closing = pool.closeContext(0, { keepBrowser: true });
+    await tick();
+    t.mock.timers.tick(10);
+    await closing;
+    assert.equal(pool._reserveContextCapacity(0), null);
+    t.mock.timers.tick(10);
+    assert.deepEqual(recoveries, ["context_cleanup_stalled"]);
+});
+
+test("browser reset cancels old watchdogs and late success cannot release replacement capacity", async t => {
+    let resolveClose;
+    const { owner, pool, recoveries } = closingFixture(t, () => new Promise(resolve => (resolveClose = resolve)));
+    const closing = pool.closeContext(0, { keepBrowser: true });
+    await tick();
+    t.mock.timers.tick(10);
+    await closing;
+    pool._cleanupAllContexts();
+    pool.browser = mockBrowser();
+    pool.browserGeneration++;
+    const replacement = { context: { close: () => new Promise(() => {}) } };
+    pool._closeTrackedContext(replacement, 0);
+    resolveClose();
+    await tick();
+    assert.equal(pool._contextCapacityClosures.has(owner), false);
+    assert.equal(pool._contextCapacityClosures.get(replacement), 0);
+    t.mock.timers.tick(10);
+    assert.deepEqual(recoveries, []);
+    t.mock.timers.tick(10);
+    assert.deepEqual(recoveries, ["context_cleanup_stalled"]);
+});
+
+test("duplicate cleanup shares the physical close and cannot postpone the recovery deadline", async t => {
+    let calls = 0;
+    const { owner, pool, recoveries } = closingFixture(t, () => {
+        calls++;
+        return new Promise(() => {});
+    });
+    const first = pool._closeTrackedContext(owner, 0);
+    await tick();
+    t.mock.timers.tick(10);
+    assert.equal(pool._closeTrackedContext(owner, 0), first);
+    t.mock.timers.tick(10);
+    assert.equal(calls, 1);
+    assert.deepEqual(recoveries, ["context_cleanup_stalled"]);
+});
+
+test("failed initialization cleanup also converges and stale attempts cannot occupy a new generation", async t => {
+    const { pool, recoveries } = closingFixture(t, async () => {});
+    const attempt = {
+        authIndex: 2,
+        browserGeneration: pool.browserGeneration,
+        context: {
+            close: async () => {
+                throw new Error("init cleanup failed");
+            },
+        },
+        id: "2:1",
+    };
+    assert.equal((await pool._closeAttemptContext(attempt)).closed, false);
+    await pool._browserProbeTask;
+    t.mock.timers.tick(20);
+    assert.deepEqual(recoveries, ["context_cleanup_stalled"]);
+    await pool._browserProbeTask;
+    pool._cleanupAllContexts();
+    pool.browserGeneration++;
+    const stale = { ...attempt, cleanupTask: undefined };
+    assert.equal((await pool._closeAttemptContext(stale)).closed, false);
+    assert.equal(pool._contextCapacityClosures.size, 0);
+    t.mock.timers.tick(100);
+    assert.equal(recoveries.length, 1);
+});
+
+test("browser close failure preserves physical reservations and escalates to application recovery", async t => {
+    const { owner, pool } = closingFixture(t, async () => {
+        throw new Error("context close failed");
+    });
+    await pool.closeContext(0, { keepBrowser: true });
+    pool.browser.close = async () => {
+        throw new Error("browser close failed");
+    };
+    const escalations = [];
+    pool._requestApplicationRecovery = reason => escalations.push(reason);
+    await assert.rejects(pool.closeBrowser(), /browser close failed/);
+    assert.equal(pool._contextCapacityClosures.has(owner), true);
+    assert.deepEqual(escalations, ["browser_close_timeout"]);
 });
