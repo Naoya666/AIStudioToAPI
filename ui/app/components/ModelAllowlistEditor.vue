@@ -18,6 +18,23 @@
                 <thead>
                     <tr>
                         <th scope="col">模型 / 状态</th>
+                        <th scope="col">
+                            是否启用
+                            <div>
+                                <ElButton
+                                    size="small"
+                                    :disabled="disabled || !visibilityAvailable"
+                                    @click="setEnabledRows(true)"
+                                    >全部启用</ElButton
+                                >
+                                <ElButton
+                                    size="small"
+                                    :disabled="disabled || !visibilityAvailable"
+                                    @click="setEnabledRows(false)"
+                                    >全部禁用</ElButton
+                                >
+                            </div>
+                        </th>
                         <th v-for="tier in tiers" :key="tier.id" scope="col">
                             {{ tier.label }}
                             <div>
@@ -38,8 +55,17 @@
                             {{ row.model }}
                             <span v-if="!row.registered">（已从目录移除）</span>
                             <span v-else-if="!tiers.some(tier => allowed(tier.id, row.model))">（待授权）</span>
-                            <span v-if="hiddenModels.includes(row.model)">（全局隐藏）</span>
+                            <span v-if="!isEnabled(row.model)">（全局隐藏）</span>
                         </th>
+                        <td>
+                            <input
+                                type="checkbox"
+                                :checked="isEnabled(row.model)"
+                                :aria-label="`${row.model} 是否启用`"
+                                :disabled="disabled || !visibilityAvailable || !row.registered"
+                                @change="setEnabled(row.model, $event.target.checked)"
+                            />
+                        </td>
                         <td v-for="tier in tiers" :key="tier.id">
                             <input
                                 type="checkbox"
@@ -62,20 +88,41 @@
                 </tbody>
             </table>
         </div>
-        <p>全选仅作用于当前目录的全部模型；清空会移除该层级所有权限。复制和批量操作均需点击页面“保存”后生效。</p>
+        <div class="allowlist-actions">
+            <ElButton
+                type="primary"
+                :disabled="disabled || !visibilityAvailable || !pendingVisibility.length"
+                @click="applyVisibility"
+            >
+                应用启用状态（{{ pendingVisibility.length }}）
+            </ElButton>
+            <ElButton :disabled="disabled || !pendingVisibility.length" @click="visibilityDraft = {}"
+                >放弃启用状态修改</ElButton
+            >
+        </div>
+        <p v-if="!visibilityAvailable">启用状态管理需要启用模型调度模式。</p>
+        <p>
+            “是否启用”与控制台“从面板移除／恢复显示”一致，禁用后停止接收该模型的新请求，已发送请求正常完成。全部启用／禁用仅作用于搜索结果，点击“应用启用状态”后生效。
+        </p>
+        <p v-if="visibilityMessage" role="status">{{ visibilityMessage }}</p>
+        <p v-if="visibilityError" role="alert">{{ visibilityError }}</p>
+        <p>
+            层级全选作用于当前目录的全部模型；清空会移除该层级所有权限。层级权限的勾选、复制和批量操作需点击页面“保存”后生效。
+        </p>
     </div>
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElButton, ElInput, ElSelect, ElOption } from "element-plus";
 const props = defineProps({
     disabled: Boolean,
     hiddenModels: { default: () => [], type: Array },
     models: { required: true, type: Array },
     modelValue: { required: true, type: Object },
+    visibilityAvailable: Boolean,
 });
-const emit = defineEmits(["update:modelValue"]);
+const emit = defineEmits(["update:modelValue", "update:hiddenModels", "visibility-busy"]);
 const tiers = [
     { id: "free", label: "Free" },
     { id: "pro", label: "Pro" },
@@ -92,6 +139,69 @@ const rows = computed(() =>
         .filter(model => model.toLowerCase().includes(search.value.toLowerCase()))
         .map(model => ({ model, registered: props.models.includes(model) }))
 );
+const visibilityDraft = ref({}),
+    visibilityMessage = ref(""),
+    visibilityError = ref("");
+const pendingVisibility = computed(() =>
+    Object.entries(visibilityDraft.value).filter(
+        ([model, enabled]) => props.models.includes(model) && enabled !== !props.hiddenModels.includes(model)
+    )
+);
+const isEnabled = model =>
+    Object.hasOwn(visibilityDraft.value, model) ? visibilityDraft.value[model] : !props.hiddenModels.includes(model);
+watch(
+    () => props.hiddenModels,
+    () => {
+        for (const [model, enabled] of Object.entries(visibilityDraft.value)) {
+            if (enabled === !props.hiddenModels.includes(model)) delete visibilityDraft.value[model];
+        }
+    }
+);
+function setEnabled(model, enabled) {
+    visibilityMessage.value = "";
+    visibilityError.value = "";
+    if (enabled === !props.hiddenModels.includes(model)) delete visibilityDraft.value[model];
+    else visibilityDraft.value[model] = enabled;
+}
+function setEnabledRows(enabled) {
+    for (const row of rows.value) if (row.registered) setEnabled(row.model, enabled);
+}
+async function applyVisibility() {
+    if (props.disabled || !props.visibilityAvailable) return;
+    const changes = [...pendingVisibility.value];
+    if (!changes.length) return;
+    emit("visibility-busy", true);
+    visibilityMessage.value = "";
+    visibilityError.value = "";
+    let succeeded = 0;
+    const failures = [];
+    try {
+        for (const [model, enabled] of changes) {
+            try {
+                const response = await fetch(`/api/scheduler/models/${enabled ? "show" : "hide"}`, {
+                    body: JSON.stringify({ model }),
+                    headers: { "Content-Type": "application/json" },
+                    method: "POST",
+                });
+                const result = await response.json();
+                if (!response.ok || result.success !== true)
+                    throw new Error(result.error || `启用状态提交失败（${response.status}）`);
+                const hidden = new Set(props.hiddenModels);
+                if (enabled) hidden.delete(model);
+                else hidden.add(model);
+                emit("update:hiddenModels", [...hidden].sort());
+                delete visibilityDraft.value[model];
+                succeeded++;
+            } catch (error) {
+                failures.push(`${model}：${error.message}`);
+            }
+        }
+        visibilityMessage.value = `已应用 ${succeeded} 项启用状态。`;
+        if (failures.length) visibilityError.value = `以下修改未生效，已保留以便重试：${failures.join("；")}`;
+    } finally {
+        emit("visibility-busy", false);
+    }
+}
 const allowed = (tier, model) => props.modelValue.tiers[tier].includes(model);
 function update(change) {
     const next = JSON.parse(JSON.stringify(props.modelValue));

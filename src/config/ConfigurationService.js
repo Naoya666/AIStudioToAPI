@@ -233,6 +233,7 @@ class ConfigurationService {
             hiddenModels: this.system.scheduler?.hiddenModelsSnapshot?.() || [],
             instanceId: this.instanceId,
             models: [...this.running.scheduler.registeredModels],
+            modelVisibilityAvailable: !!this.system.scheduler,
             operational: this.operational(),
             overridden: Object.keys(this.document.overrides),
             pending,

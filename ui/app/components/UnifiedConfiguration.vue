@@ -46,13 +46,17 @@
                             pending(d.name) ? "重启后生效" : d.application === "hot" ? "保存后生效" : "重启后生效"
                         }}</span>
                     </div>
-                    <ModelAllowlistEditor
-                        v-if="d.type === 'modelAllowlist'"
-                        v-model="draft[d.name]"
-                        :models="models"
-                        :hidden-models="snapshot.hiddenModels || []"
-                        :disabled="busy"
-                    />
+                    <details v-if="d.type === 'modelAllowlist'" class="model-settings-collapse">
+                        <summary>模型权限及启用设置（{{ models.length }} 个模型，点击展开）</summary>
+                        <ModelAllowlistEditor
+                            v-model="draft[d.name]"
+                            v-model:hidden-models="snapshot.hiddenModels"
+                            :models="models"
+                            :visibility-available="snapshot.modelVisibilityAvailable"
+                            :disabled="busy"
+                            @visibility-busy="busy = $event"
+                        />
+                    </details>
                     <ElSwitch
                         v-else-if="d.type === 'boolean'"
                         :id="`config-${d.name}`"
@@ -361,7 +365,11 @@ async function readLatest() {
         throw new Error("服务未返回有效的统一配置，请确认后端已更新。");
     if (disposed) return;
     if (!snapshot.value || !dirtyNames.value.length) accept(value);
-    else if (value.version !== snapshot.value.version) conflict.value = true;
+    else {
+        snapshot.value.hiddenModels = value.hiddenModels || [];
+        snapshot.value.modelVisibilityAvailable = value.modelVisibilityAvailable;
+        if (value.version !== snapshot.value.version) conflict.value = true;
+    }
 }
 function discard() {
     if (snapshot.value) accept(snapshot.value);
@@ -557,6 +565,10 @@ onBeforeUnmount(() => {
     border: 1px solid var(--el-border-color);
     border-radius: 8px;
     padding: 16px;
+}
+.model-settings-collapse > summary {
+    cursor: pointer;
+    padding: 8px 0;
 }
 .allowlist-group {
     grid-column: 1 / -1;

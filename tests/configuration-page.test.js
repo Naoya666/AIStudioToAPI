@@ -6,20 +6,31 @@ const os = require("node:os");
 const path = require("node:path");
 const { chromium } = require("playwright");
 const { createServer } = require("vite");
+const { ModelScheduler } = require("../src/core/ModelScheduler");
 const { ConfigurationService } = require("../src/config/ConfigurationService");
 
 test(
     "configuration form stages drafts, preserves hidden fields, saves structured rows and detects concurrent pages",
-    { skip: !fs.existsSync(chromium.executablePath()), timeout: 30000 },
+    { skip: !fs.existsSync(chromium.executablePath()), timeout: 45000 },
     async t => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), "configuration-ui-"));
         t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
-        const logger = { error() {}, info() {}, setDisplayLimit() {}, warn() {} };
+        const logger = { debug() {}, error() {}, info() {}, setDisplayLimit() {}, warn() {} };
         const system = { logger, ready: true };
         let service = new ConfigurationService(system, {
             env: {},
             file: path.join(directory, "managed-config.json"),
         });
+        service.running.scheduler.statePath = path.join(directory, "scheduler-state.json");
+        const scheduler = new ModelScheduler(
+            service.running.scheduler,
+            { accountNameMap: new Map(), getRotationIndices: () => [] },
+            logger
+        );
+        system.scheduler = scheduler;
+        t.after(() => scheduler.close());
+        let visibilityFailure = "";
+        const visibilityWrites = [];
         const server = await createServer({
             configFile: path.resolve(__dirname, "../vite.config.js"),
             logLevel: "error",
@@ -51,6 +62,14 @@ test(
                         writes.push(request.postDataJSON());
                         result = service.save(request.postDataJSON());
                     } else result = service.snapshot();
+                } else if (["/api/scheduler/models/hide", "/api/scheduler/models/show"].includes(url.pathname)) {
+                    const { model } = request.postDataJSON();
+                    visibilityWrites.push({ hidden: url.pathname.endsWith("/hide"), model });
+                    if (model === visibilityFailure) throw new Error("模拟保存失败");
+                    result = {
+                        success: true,
+                        ...scheduler[url.pathname.endsWith("/hide") ? "hideModel" : "showModel"](model),
+                    };
                 } else if (url.pathname === "/api/configuration/restart") {
                     result = { accepted: true, instanceId: service.instanceId, version: service.document.version };
                     status = 202;
@@ -89,6 +108,11 @@ test(
         assert.equal(service.running.forceThinking, true);
         assert.deepEqual(Object.keys(writes.at(-1).changes), ["FORCE_THINKING"]);
         const permissions = panel.locator(".allowlist-editor");
+        const collapse = panel.locator(".model-settings-collapse");
+        assert.equal(await collapse.getAttribute("open"), null);
+        assert.equal(await permissions.isVisible(), false);
+        await collapse.locator("summary").click();
+        assert.equal(await permissions.isVisible(), true);
         const freeArgon = permissions.getByRole("checkbox", { exact: true, name: "gemini-4-argon Free" });
         assert.equal(await freeArgon.isChecked(), false);
         assert.equal(
@@ -118,6 +142,64 @@ test(
         );
         assert.equal(service.running.scheduler.modelAllowlist.tiers.free.includes("gemini-4-argon"), false);
         await permissions.getByRole("textbox", { name: "搜索权限模型" }).fill("");
+        // Visibility is independently staged, uses the existing scheduler operations and persists there.
+        const policyBeforeVisibility = structuredClone(service.running.scheduler.modelAllowlist);
+        await permissions.getByRole("textbox", { name: "搜索权限模型" }).fill("gemini-3.");
+        const matchedModels = service.running.scheduler.registeredModels.filter(model => model.includes("gemini-3."));
+        assert.ok(matchedModels.length > 1);
+        await permissions.getByRole("button", { exact: true, name: "全部禁用" }).click();
+        assert.deepEqual(scheduler.hiddenModelsSnapshot(), []);
+        assert.equal(
+            await permissions.getByRole("checkbox", { exact: true, name: "gemini-3.6-flash 是否启用" }).isChecked(),
+            false
+        );
+        await permissions.getByRole("button", { name: "放弃启用状态修改" }).click();
+        assert.equal(
+            await permissions.getByRole("checkbox", { exact: true, name: "gemini-3.6-flash 是否启用" }).isChecked(),
+            true
+        );
+        await permissions.getByRole("button", { exact: true, name: "全部禁用" }).click();
+        visibilityFailure = "gemini-3.6-flash";
+        await permissions.getByRole("button", { name: /^应用启用状态/ }).click();
+        await permissions
+            .getByRole("alert")
+            .getByText(/模拟保存失败/)
+            .waitFor();
+        assert.equal(
+            await permissions.getByRole("button", { exact: true, name: "应用启用状态（1）" }).isEnabled(),
+            true
+        );
+        assert.deepEqual(
+            scheduler.hiddenModelsSnapshot(),
+            matchedModels.filter(model => model !== visibilityFailure).sort()
+        );
+        visibilityFailure = "";
+        await permissions.getByRole("button", { exact: true, name: "应用启用状态（1）" }).click();
+        await permissions.getByRole("button", { exact: true, name: "应用启用状态（0）" }).waitFor();
+        assert.deepEqual(scheduler.hiddenModelsSnapshot(), [...matchedModels].sort());
+        assert.deepEqual(
+            JSON.parse(fs.readFileSync(scheduler.config.statePath, "utf8")).hiddenModels,
+            [...matchedModels].sort()
+        );
+        assert.equal(visibilityWrites.filter(item => item.model === "gemini-3.6-flash").length, 2);
+        // An external panel restore must reach this table even while a permission draft exists.
+        await permissions.getByRole("checkbox", { exact: true, name: "gemini-3.6-flash Free" }).check();
+        scheduler.showModel("gemini-3.6-flash");
+        await page.waitForFunction(
+            () => document.querySelector('input[aria-label="gemini-3.6-flash 是否启用"]')?.checked === true
+        );
+        assert.equal(
+            await permissions.getByRole("checkbox", { exact: true, name: "gemini-3.6-flash Free" }).isChecked(),
+            true
+        );
+        await panel.getByRole("button", { exact: true, name: "放弃草稿" }).click();
+        await permissions.getByRole("button", { exact: true, name: "全部启用" }).click();
+        await permissions.getByRole("button", { name: /^应用启用状态/ }).click();
+        await permissions.getByRole("button", { exact: true, name: "应用启用状态（0）" }).waitFor();
+        assert.deepEqual(scheduler.hiddenModelsSnapshot(), []);
+        assert.deepEqual(service.running.scheduler.modelAllowlist, policyBeforeVisibility);
+        await collapse.locator("summary").click();
+        assert.equal(await permissions.isVisible(), false);
         const initialKeepalive = service.saved.scheduler.streamKeepaliveIntervalMs;
         await panel.locator("#config-STREAM_EARLY_HEADERS").locator("..").click();
         assert.equal(await panel.locator("#config-STREAM_KEEPALIVE_INTERVAL_MS").count(), 0);
@@ -180,7 +262,8 @@ test(
         assert.equal(service.running.makerSuiteTimeoutMs, 600000);
         await panel.locator("#config-FORCE_WEB_SEARCH").locator("..").click();
         service.save({ changes: { FORCE_CODE_EXECUTION: true }, version: service.document.version });
-        await panel.getByRole("button", { exact: true, name: "保存" }).click();
+        // Polling may detect the version conflict before a save can be clicked.
+
         await panel.getByText("配置已被其他页面修改。草稿已保留，请刷新并处理差异后再保存。").waitFor();
         assert.equal(service.running.forceWebSearch, false);
         assert.equal(await panel.locator("#config-FORCE_WEB_SEARCH").getAttribute("aria-checked"), "true");
@@ -214,7 +297,9 @@ test(
         await panel.getByRole("button", { exact: true, name: "保存" }).click();
         await panel.getByText("查看待重启变更").waitFor();
         await panel.getByRole("button", { exact: true, name: "撤销待重启变更" }).click();
-        await page.waitForFunction(() => !document.querySelector(".configuration-panel details"));
+        await page.waitForFunction(
+            () => !document.querySelector(".configuration-panel details:not(.model-settings-collapse)")
+        );
         assert.equal(service.snapshot().pending.length, 0);
         assert.equal(await panel.getByText("MODEL_QUEUE_TIMEOUT_MS", { exact: true }).count(), 0);
         await panel
