@@ -19,11 +19,13 @@ async function run(options = {}) {
     const processMock = new EventEmitter();
     processMock.connected = true;
     let resolveResult, pendingResult;
-    const results = [];
+    const results = [],
+        phases = [];
     const result = new Promise(resolve => {
         resolveResult = resolve;
     });
     processMock.send = message => {
+        if (message.phase) phases.push(message.phase);
         if (message.result) pendingResult = message.result;
         if (message.cleaned || message.cleanupFailed) {
             results.push(pendingResult);
@@ -104,6 +106,8 @@ async function run(options = {}) {
                                     '<div role="dialog" style="display:none" id="late-terms">'
                                 ) +
                                 '<script>setTimeout(()=>document.getElementById("late-terms").style.display="block",700)</script>';
+                        if (url.pathname === "/address")
+                            html = `<main><h1>${options.addressTitle || "Set your home address"}</h1><input aria-label="Home address"><button onclick="${options.addressStuck ? "void 0" : "setTimeout(()=>location.href='https://aistudio.google.com/prompts/new',200)"}">${options.addressChinese ? "跳过" : "Skip"}</button><button onclick="location.href='https://untrusted.example/'">Save</button></main>`;
                         if (url.pathname === "/totp" && (options.bounceSubmit || options.bounceInput)) {
                             const bounce =
                                 "if(!document.cookie.includes('bounced=1')){document.cookie='bounced=1;path=/';location.href='/choice'}";
@@ -135,6 +139,8 @@ async function run(options = {}) {
                             !url.pathname.startsWith("/apps/")
                         )
                             html += options.finalDialog;
+                        if (options.address && ["/password", "/totp"].includes(url.pathname))
+                            html = html.replaceAll("https://aistudio.google.com/prompts/new", "/address");
                         return `<!doctype html><html><head><meta charset="utf-8"></head><body><main>${html}</main></body></html>`;
                     };
                     const originalRoute = context.route.bind(context);
@@ -228,6 +234,7 @@ async function run(options = {}) {
                 JSON.stringify(results)
             );
         }
+        if (options.address && last.storageState) assert.ok(phases.includes("google_address"));
         return last;
     } finally {
         await browser?.close();
@@ -855,5 +862,41 @@ test(
     async () => {
         const result = await run({ fast: true, noTotp: true, repetitions: 2 });
         assert.ok(result.storageState, JSON.stringify(result));
+    }
+);
+
+test("real browser: optional Google address setup after password or TOTP", { skip: !executablePath }, async () => {
+    for (const options of [
+        { noTotp: true },
+        { addressChinese: true, addressTitle: "设置住址", directTotp: true },
+        { autoSubmitDelayed: true, directTotp: true },
+    ]) {
+        const result = await run({ ...options, address: true, fast: true });
+        assert.ok(result.storageState, JSON.stringify(result));
+        assert.equal(result.targetInitialized, true);
+    }
+});
+test("real browser: address skip requires recognized heading and Google origin", { skip: !executablePath }, async t => {
+    for (const [origin, heading] of [
+        ["https://accounts.google.com", "Unknown optional setup"],
+        ["https://untrusted.example", "Set your home address"],
+        ["https://aistudio.google.com", "Set your home address"],
+    ]) {
+        const { handler, page } = await handlerFixture(
+            t,
+            `<main><h1>${heading}</h1><button onclick="window.clicked=true">Skip</button></main>`
+        );
+        await page.goto(`${origin}/test`);
+        assert.equal(await handler.skipAddressSetup(), false);
+        assert.equal(await page.evaluate(() => !!window.clicked), false);
+    }
+});
+test(
+    "real browser: address setup that does not advance cannot commit a session",
+    { skip: !executablePath },
+    async () => {
+        const result = await run({ address: true, addressStuck: true, fast: true, noTotp: true, stepTimeout: 1500 });
+        assert.equal(result.error, "page_transition_timeout");
+        assert.ok(!result.storageState);
     }
 );

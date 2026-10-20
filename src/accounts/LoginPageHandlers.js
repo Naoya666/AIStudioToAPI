@@ -16,6 +16,53 @@ class LoginPageHandlers {
     constructor({ page, interaction, guard, stepTimeout, deadline, phase }) {
         Object.assign(this, { deadline, guard, interaction, page, phase, stepTimeout });
     }
+    addressHeading() {
+        return this.page.getByRole("heading", {
+            name: /^(Set (?:your |a )?(?:home |work )?address|设置住址|設定住址|设置家庭住址|設定住家地址)$/i,
+        });
+    }
+    async addressSetupVisible() {
+        return (
+            new URL(this.page.url()).hostname === "accounts.google.com" &&
+            (await this.addressHeading().filter({ visible: true }).first().isVisible())
+        );
+    }
+    async skipAddressSetup() {
+        this.guard();
+        if (!(await this.addressSetupVisible())) return false;
+        const end = Math.min(this.deadline, performance.now() + this.stepTimeout);
+        const check = () => {
+            this.guard();
+            if (performance.now() >= end) throw Object.assign(failure("page_transition_timeout"), { retryable: true });
+        };
+        if ((this.addressSkips || 0) >= 2) throw failure("unknown_page");
+        this.phase("google_address");
+        const scope = this.page
+            .locator('main, [role="main"], form, section, div')
+            .filter({ has: this.addressHeading().filter({ visible: true }) })
+            .filter({ has: this.page.getByRole("button", { name: /^(Skip|跳过|跳過)$/i }) })
+            .filter({ visible: true })
+            .last();
+        try {
+            this.operation = "address_skip";
+            await this.interaction.click(scope.getByRole("button", { name: /^(Skip|跳过|跳過)$/i }).first(), {
+                check,
+                timeout: Math.max(1, Math.floor(end - performance.now())),
+            });
+            this.addressSkips = (this.addressSkips || 0) + 1;
+            this.operation = "address_wait";
+            while (await this.addressSetupVisible()) {
+                check();
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            check();
+            return true;
+        } catch (cause) {
+            this.guard();
+            cause.loginOperation = this.operation;
+            throw cause;
+        }
+    }
     async snapshot(locator, operation = "terms_read") {
         this.operation = operation;
         // One DOM snapshot: missing containers never enter Playwright's locator retry.

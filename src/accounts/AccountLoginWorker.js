@@ -132,6 +132,7 @@ async function pageState() {
     const host = new URL(page.url()).hostname;
     if (host === "aistudio.google.com") return "studio_shell";
     if (host !== "accounts.google.com") return "unknown";
+    if (await handlers.addressSetupVisible()) return "address_setup";
     if (
         await visible(
             '[data-challengetype="6"][role="link"], [data-challengetype="6"][role="button"], li[data-challengetype="6"]'
@@ -358,6 +359,11 @@ async function run(input) {
         if (/change your password|更改密码|修改密码/i.test(text)) fail("password_change_required");
         const state = await pageState();
         diagnostics.pageStateBefore = state;
+        if (state === "address_setup") {
+            await handlers.skipAddressSetup();
+            transitionUntil = performance.now() + config.stepTimeout;
+            continue;
+        }
         if (state !== previousState && (state === "challenge_choice" || state === "passkey")) {
             authenticatorSelected = false;
             alternativeAttempted = false;
@@ -520,14 +526,18 @@ async function run(input) {
                 diagnostics.operation = "totp_submit";
                 const advanced = async () => {
                     diagnostics.pageStateAfter = await pageState();
-                    return ["studio_shell", "challenge_choice", "passkey"].includes(diagnostics.pageStateAfter);
+                    return ["studio_shell", "challenge_choice", "passkey", "address_setup"].includes(
+                        diagnostics.pageStateAfter
+                    );
                 };
                 if (!(await advanced())) await nextButton(inputs[0], advanced);
             } catch (cause) {
                 guard();
                 diagnostics.pageStateAfter = await pageState();
                 const changed =
-                    ["studio_shell", "challenge_choice", "passkey"].includes(diagnostics.pageStateAfter) ||
+                    ["studio_shell", "challenge_choice", "passkey", "address_setup"].includes(
+                        diagnostics.pageStateAfter
+                    ) ||
                     (diagnostics.pageStateAfter === "totp_input" &&
                         !(await inputs[0].evaluate(node => node.isConnected)));
                 if (
