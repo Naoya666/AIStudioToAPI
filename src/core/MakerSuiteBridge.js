@@ -99,6 +99,8 @@ function installPageBridge() {
         dispose() {
             service.closed = true;
             clearInterval(service.timer);
+            if (service.proofWrapper && service.module?.[service.proofKey] === service.proofWrapper)
+                service.module[service.proofKey] = service.proofOriginal;
             for (const r of records.values()) r.controller.abort();
             records.clear();
             observed.clear();
@@ -108,15 +110,49 @@ function installPageBridge() {
 
         hook() {
             const M = window.default_MakerSuite;
-            if (!M?.Cn || !M.GB) return "module_missing";
-            if (!M.Cn.__aistudioBridge) {
-                const original = M.Cn;
+            if (!M) return "module_missing";
+            if (service.module !== M || !service.proofKey || !service.hashKey) {
+                const proofs = [],
+                    hashes = [];
+                // Google renames exports independently for each Studio bundle. Match
+                // the native proof/hash operations, never a previously observed name.
+                for (const key of Object.keys(M)) {
+                    try {
+                        const fn = M[key];
+                        if (typeof fn !== "function") continue;
+                        const source = Function.prototype.toString.call(fn);
+                        if (
+                            !/^class\b/.test(source) &&
+                            /\.snapshot\s*\(\s*\{/.test(source) &&
+                            /\bcontent\s*:/.test(source)
+                        )
+                            proofs.push(key);
+                        if (
+                            !/^class\b/.test(source) &&
+                            source.includes("TextEncoder") &&
+                            /\.update\s*\(/.test(source) &&
+                            /\.digest\s*\(/.test(source)
+                        )
+                            hashes.push(key);
+                    } catch {
+                        /* Ignore unrelated exports with throwing getters. */
+                    }
+                }
+                if (proofs.length !== 1 || hashes.length !== 1) return "module_unsupported";
+                if (service.module !== M) service.tb = null;
+                service.module = M;
+                service.proofKey = proofs[0];
+                service.hashKey = hashes[0];
+            }
+            if (M[service.proofKey] !== service.proofWrapper) {
+                const original = M[service.proofKey];
                 const wrapped = function (a) {
-                    if (a?.mb) service.tb = a;
+                    if (typeof a?.getMetadata === "function") service.tb = a;
                     return original.apply(this, arguments);
                 };
-                wrapped.__aistudioBridge = true;
-                M.Cn = wrapped;
+                service.proofOriginal = original;
+                service.proofWrapper = wrapped;
+                M[service.proofKey] = wrapped;
             }
             return service.tb ? "ready" : "token_pending";
         },
@@ -172,12 +208,12 @@ function installPageBridge() {
                 });
             try {
                 const readyDeadline = Date.now() + Math.min(readyTimeoutMs, timeoutMs);
-                let auth;
-                while (service.hook() !== "ready" || (auth = service.auth(excludedKeys)).state !== "ready") {
+                let auth, hook;
+                while ((hook = service.hook()) !== "ready" || (auth = service.auth(excludedKeys)).state !== "ready") {
                     check();
                     if (Date.now() >= readyDeadline)
                         return {
-                            authState: auth?.state || "token_pending",
+                            authState: hook !== "ready" ? hook : auth?.state || "token_pending",
                             status: 503,
                             text: '[14,"MakerSuite page authentication not ready"]',
                         };
@@ -186,7 +222,7 @@ function installPageBridge() {
                 check();
                 const M = window.default_MakerSuite,
                     tb = service.tb;
-                body[4] = await abortable(M.Cn(tb, await abortable(M.GB(ht))));
+                body[4] = await abortable(M[service.proofKey](tb, await abortable(M[service.hashKey](ht))));
                 check();
                 // Refresh metadata after token generation; never reuse Authorization across calls.
                 auth = service.auth(excludedKeys);
@@ -645,7 +681,7 @@ class MakerSuiteBridge {
                     );
                 }
                 this.logger.warn(
-                    `[MakerSuite] account #${this.authIndex}: generation failed status=${normalized.status}`
+                    `[MakerSuite] account #${this.authIndex}: generation failed status=${normalized.status}${result.authState ? ` readiness=${result.authState}` : ""}`
                 );
                 return await fulfill(normalized);
             }

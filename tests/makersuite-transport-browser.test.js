@@ -58,7 +58,7 @@ async function fixture(t) {
             if (req.method === "GET") {
                 res.setHeader("content-type", "text/html");
                 return res.end(`<!doctype html><title>Local Build fixture</title><script>
-                    window.default_MakerSuite = { Cn: async () => "new-proof", GB: async text => "new-hash:" + text };
+                    window.default_MakerSuite = { Cn: async a => a.proof?.snapshot({content:"fixture"}) || "new-proof", GB: text => { const hash = {update(){}, digest:()=> "new-hash:" + text}; hash.update(new TextEncoder().encode(text)); return hash.digest(); } };
                     setTimeout(async () => {
                         await window.default_MakerSuite.Cn({mb:{}, getMetadata: () => ({ authorization:"fixture-authorization", "x-goog-api-key":"AIza" + "T".repeat(35), "x-goog-authuser":"2" })});
                         await fetch(${JSON.stringify(ORIGIN + RPC + "ListModels")}, {method:"POST", headers:${JSON.stringify({ ...auth, "x-aistudio-g1-tier": "TIER2", "x-goog-ext-519733851-bin": "fixture-opaque" })}, body:"[]"});

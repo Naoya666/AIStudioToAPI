@@ -32,8 +32,12 @@ function fixture(t, authIndex = 0, options = {}) {
         },
         clearTimeout,
         default_MakerSuite: {
-            Cn: async () => "token",
-            GB: async text => "hash:" + text,
+            Cn: async a => a.proof?.snapshot({ content: "fixture" }) || "token",
+            GB: async text => {
+                const hash = { digest: () => "hash:" + text, update() {} };
+                hash.update(new TextEncoder().encode(text));
+                return hash.digest();
+            },
         },
         DOMException,
         fetch: async (url, init) => {
@@ -49,6 +53,7 @@ function fixture(t, authIndex = 0, options = {}) {
             return timer;
         },
         setTimeout,
+        TextEncoder,
         URL,
     };
     sandbox.window = sandbox;
@@ -338,7 +343,11 @@ test("init script is idempotent and can capture a fresh page token service after
     vm.runInContext("window.__makerSuiteBridge = undefined", f.realm);
     // A reload creates a fresh page realm; restore page originals for this simulation.
     f.sandbox.fetch = originalFetch;
-    f.sandbox.default_MakerSuite = { Cn: async () => "fresh-token", GB: async () => "hash" };
+    const hash = f.sandbox.default_MakerSuite.GB;
+    f.sandbox.default_MakerSuite = {
+        Cn: async a => a.proof?.snapshot({ content: "fixture" }) || "fresh-token",
+        GB: hash,
+    };
     vm.runInContext(f.page.init, f.realm);
     await f.sandbox.default_MakerSuite.Cn({
         getMetadata: () => ({ Authorization: "new-auth", "X-Goog-AuthUser": "3" }),
@@ -721,5 +730,40 @@ test("per-request bridge timeouts override the installed default while preservin
         if (expected === 504 && f.calls.length) assert.equal(f.calls[0].init.signal.aborted, true);
         assert.equal(f.bridge.active.size, 0);
         assert.equal(f.bridge.attempts.size, 0);
+    }
+});
+
+test("renamed exports and a service without mb work even when old names are unrelated UI classes", async t => {
+    const f = fixture(t);
+    const { Cn: proof, GB: hash } = f.sandbox.default_MakerSuite;
+    f.sandbox.default_MakerSuite = { An: proof, Cn: class {}, GB: class {}, NB: hash };
+    await f.init({ capture: false });
+    const service = { getMetadata: () => ({ Authorization: "private", "X-Goog-Api-Key": TOKEN_KEY }) };
+    await f.sandbox.default_MakerSuite.An(service);
+    f.sandbox.__makerSuiteBridge.observe(RPC.replace("ProxyUnaryCall", "ListModels"), { "x-goog-api-key": PAGE_KEY });
+    const route = f.route();
+    await f.bridge.handle(route);
+    assert.equal(route.outcomes[0].status, 200);
+    assert.equal(JSON.parse(f.calls[0].init.body)[4], "token");
+    assert.equal(f.calls[0].init.headers.authorization, "private");
+    assert.equal(f.calls[0].init.headers["x-goog-api-key"], PAGE_KEY);
+    f.sandbox.__makerSuiteBridge.dispose();
+    assert.equal(f.sandbox.default_MakerSuite.An, proof, "restore the original native function on disposal");
+});
+
+test("ambiguous or missing native exports fail without calling unrelated functions or upstream generation", async t => {
+    for (const ambiguous of [false, true]) {
+        const f = fixture(t);
+        const { Cn: proof, GB: hash } = f.sandbox.default_MakerSuite;
+        f.sandbox.default_MakerSuite = ambiguous
+            ? { An: proof, NB: hash, Other: proof }
+            : { Cn: class {}, GB: class {} };
+        await f.init({ capture: false });
+        const route = f.route();
+        await f.bridge.handle(route);
+        assert.equal(route.outcomes[0].status, 503);
+        assert.equal(f.calls.length, 0);
+        assert.ok(f.logs.some(line => line.includes("readiness=module_unsupported")));
+        assert.doesNotThrow(() => f.sandbox.__makerSuiteBridge.dispose());
     }
 });

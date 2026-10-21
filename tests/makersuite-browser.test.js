@@ -18,6 +18,7 @@ test(
     "Firefox performs the new RPC, preserves old envelopes and cancels fetch/XHR upstream",
     { timeout: 30000 },
     async t => {
+        let pageVersion = 0;
         let oldCalls = 0,
             newCalls = 0,
             cancelled = 0;
@@ -36,11 +37,12 @@ test(
                 return;
             }
             if (req.url === "/") {
+                const proofKey = JSON.stringify("proof" + ++pageVersion);
+                const hashKey = JSON.stringify("hash" + pageVersion);
                 res.setHeader("content-type", "text/html");
                 res.end(`<script>
-                window.default_MakerSuite = { Cn: async () => 'token', GB: async () => 'hash' };
-                setTimeout(() => window.default_MakerSuite.Cn({
-                    mb: { F: 'https://wrong.example', Ml: 99, jK: ${JSON.stringify(TOKEN_KEY)} },
+                window.default_MakerSuite = { Cn: class {}, GB: class {}, [${proofKey}]: async a => a.proof?.snapshot({content:'fixture'}) || 'token', [${hashKey}]: text => { const hash = {update(){}, digest:()=> 'hash'}; hash.update(new TextEncoder().encode(text)); return hash.digest(); } };
+                setTimeout(() => window.default_MakerSuite[${proofKey}]({
                     getMetadata: () => ({ Authorization: 'fixture-auth', 'X-Goog-AuthUser': '7', 'X-Goog-Api-Key': ${JSON.stringify(TOKEN_KEY)} })
                 }).then(async () => {
                     await fetch(${JSON.stringify(SERVICE + "ListModels")}, { method: 'POST', headers: { 'x-goog-api-key': ${JSON.stringify(PAGE_KEY)} } });
