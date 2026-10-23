@@ -122,7 +122,7 @@ const props = defineProps({
     modelValue: { required: true, type: Object },
     visibilityAvailable: Boolean,
 });
-const emit = defineEmits(["update:modelValue", "update:hiddenModels", "visibility-busy"]);
+const emit = defineEmits(["update:modelValue", "update:hiddenModels", "visibility-busy", "visibility-dirty"]);
 const tiers = [
     { id: "free", label: "Free" },
     { id: "pro", label: "Pro" },
@@ -146,6 +146,11 @@ const pendingVisibility = computed(() =>
     Object.entries(visibilityDraft.value).filter(
         ([model, enabled]) => props.models.includes(model) && enabled !== !props.hiddenModels.includes(model)
     )
+);
+watch(
+    () => pendingVisibility.value.length > 0,
+    dirty => emit("visibility-dirty", dirty),
+    { immediate: true }
 );
 const isEnabled = model =>
     Object.hasOwn(visibilityDraft.value, model) ? visibilityDraft.value[model] : !props.hiddenModels.includes(model);

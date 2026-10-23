@@ -61,6 +61,7 @@
                             :visibility-available="snapshot.modelVisibilityAvailable"
                             :disabled="busy"
                             @visibility-busy="busy = $event"
+                            @visibility-dirty="visibilityDirty = $event"
                         />
                     </details>
                     <ElSwitch
@@ -258,6 +259,7 @@ const snapshot = ref(null),
     base = reactive({}),
     resets = ref([]),
     models = ref([]);
+const visibilityDirty = ref(false);
 const busy = ref(false),
     conflict = ref(false),
     error = ref(""),
@@ -553,7 +555,7 @@ onBeforeUnmount(() => {
     clearInterval(timer);
 });
 
-useDraftGuard(() => dirtyNames.value.length > 0);
+useDraftGuard(() => dirtyNames.value.length > 0 || visibilityDirty.value);
 </script>
 
 <style scoped>

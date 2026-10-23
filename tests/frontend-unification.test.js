@@ -23,6 +23,7 @@ test(
             { logger, ready: true },
             { env: {}, file: path.join(directory, "config.json") }
         );
+        service.system.scheduler = { hiddenModelsSnapshot: () => [] };
         const server = await createServer({
             configFile: path.resolve(__dirname, "../vite.config.js"),
             logLevel: "error",
@@ -144,6 +145,29 @@ test(
         await navigate("Overview");
         await navigate("Settings");
         await page.waitForURL("**/settings");
+        // Independently staged model visibility must participate in the same draft guard.
+        await page.locator(".model-settings-collapse > summary").click();
+        const visibility = page.getByRole("checkbox", { name: / 是否启用$/ }).first();
+        await visibility.uncheck();
+        const hasUnloadGuard = () =>
+            page.evaluate(() => {
+                const event = new Event("beforeunload", { cancelable: true });
+                window.dispatchEvent(event);
+                return event.defaultPrevented;
+            });
+        assert.equal(await hasUnloadGuard(), true);
+        await navigate("Overview");
+        await answerDraft("Continue editing");
+        assert.equal(await visibility.isChecked(), false);
+        await page.getByRole("button", { name: "放弃启用状态修改" }).click();
+        assert.equal(await hasUnloadGuard(), false);
+        await visibility.uncheck();
+        await navigate("Overview");
+        await answerDraft("Discard and leave");
+        await page.waitForURL(base + "/");
+        await navigate("Settings");
+        await page.locator(".model-settings-collapse > summary").click();
+        assert.equal(await visibility.isChecked(), true);
         const thinking = page.locator("#config-FORCE_THINKING");
         await thinking.locator("..").click();
         await navigate("Overview");
