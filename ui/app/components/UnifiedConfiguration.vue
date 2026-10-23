@@ -27,221 +27,241 @@
                 {{ display(item.name, snapshot.saved[item.name]) }}（{{ item.reason }}）
             </p>
         </details>
-        <nav v-if="snapshot" class="configuration-directory" :aria-label="t('adminConfigGroups')">
-            <a v-for="(group, groupIndex) in groups" :key="group.name" :href="`#configuration-group-${groupIndex}`">{{
-                group.name
-            }}</a>
-        </nav>
-        <div v-if="snapshot" class="configuration-groups">
-            <fieldset
-                v-for="(group, groupIndex) in groups"
-                :id="`configuration-group-${groupIndex}`"
-                :key="group.name"
-                :class="{ 'allowlist-group': group.fields.some(d => d.type === 'modelAllowlist') }"
-            >
-                <legend>{{ group.name }}</legend>
-                <div v-for="d in group.fields" :key="d.name" class="configuration-field">
-                    <div class="configuration-label">
-                        <label :for="`config-${d.name}`" :title="`${d.name}：${d.description}`">{{ d.label }}</label>
-                        <ElPopover trigger="click" :width="320" :content="`${d.name}：${d.description}`">
-                            <template #reference
-                                ><button type="button" :aria-label="`${d.label}说明`">ⓘ</button></template
-                            >
-                        </ElPopover>
-                        <span>{{
-                            pending(d.name) ? "重启后生效" : d.application === "hot" ? "保存后生效" : "重启后生效"
-                        }}</span>
-                    </div>
-                    <details v-if="d.type === 'modelAllowlist'" class="model-settings-collapse">
-                        <summary>模型权限及启用设置（{{ models.length }} 个模型，点击展开）</summary>
-                        <ModelAllowlistEditor
-                            v-model="draft[d.name]"
-                            v-model:hidden-models="snapshot.hiddenModels"
-                            :models="models"
-                            :visibility-available="snapshot.modelVisibilityAvailable"
-                            :disabled="busy"
-                            @visibility-busy="busy = $event"
-                            @visibility-dirty="visibilityDirty = $event"
-                        />
-                    </details>
-                    <ElSwitch
-                        v-else-if="d.type === 'boolean'"
-                        :id="`config-${d.name}`"
-                        v-model="draft[d.name]"
-                        :disabled="busy"
-                    />
-                    <ElSelect
-                        v-else-if="d.type === 'enum'"
-                        :id="`config-${d.name}`"
-                        v-model="draft[d.name]"
-                        :disabled="busy"
-                    >
-                        <ElOption v-for="value in d.choices" :key="value" :value="value" :label="choiceLabel(value)" />
-                    </ElSelect>
-                    <template v-else-if="d.type === 'integer'">
-                        <ElInputNumber
-                            :id="`config-${d.name}`"
-                            v-model="draft[d.name]"
-                            :min="d.minimum"
-                            :max="d.maximum"
-                            :step="1"
-                            :precision="0"
-                            :disabled="busy"
-                        />
-                        <span>{{ d.unit }}</span>
-                    </template>
-                    <ElInput
-                        v-else-if="d.type === 'time'"
-                        :id="`config-${d.name}`"
-                        v-model="draft[d.name]"
-                        placeholder="HH:mm（洛杉矶时区）"
-                        :disabled="busy"
-                    />
-                    <template v-else-if="d.type === 'keys'">
-                        <ElInput
-                            v-if="secretsVisible"
-                            :id="`config-${d.name}`"
-                            v-model="draft[d.name]"
-                            type="textarea"
-                            placeholder="每行一个 API Key"
-                            :disabled="busy"
-                        />
-                        <span v-else>••••••••</span>
-                        <ElButton :disabled="busy" @click="revealSecrets">{{
-                            secretsVisible ? "隐藏密钥" : "查看及修改密钥"
-                        }}</ElButton>
-                        <p>没有独立控制台密码时，新密钥同时用于控制台登录。现有已登录会话继续有效。</p>
-                    </template>
-                    <ElInput
-                        v-else-if="d.type === 'secret'"
-                        :id="`config-${d.name}`"
-                        v-model="draft[d.name]"
-                        type="password"
-                        autocomplete="new-password"
-                        placeholder="未修改时保留原凭证；输入新值以替换"
-                        :disabled="busy"
-                    />
-                    <div v-else-if="d.type === 'agents'">
-                        <div v-for="(row, index) in draft[d.name]" :key="index" class="agent-row">
-                            <ElInput v-model="row.name" placeholder="节点名称（仅管理端）" :disabled="busy" />
-                            <ElInput v-model="row.nodeId" placeholder="节点 ID" :disabled="busy" />
-                            <ElInput v-model="row.url" placeholder="https://agent.example.org" :disabled="busy" />
-                            <ElInput
-                                v-model="row.token"
-                                type="password"
-                                autocomplete="new-password"
-                                placeholder="Token；原节点留空保留"
-                                :disabled="busy"
-                            />
-                            <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除节点</ElButton>
-                        </div>
-                        <ElButton
-                            :disabled="busy"
-                            @click="draft[d.name].push({ name: '', nodeId: '', url: '', token: '' })"
-                            >增加节点</ElButton
-                        >
-                        <p>{{ d.description }}</p>
-                    </div>
-                    <ElInput
-                        v-else-if="d.type === 'codes'"
-                        :id="`config-${d.name}`"
-                        v-model="draft[d.name]"
-                        placeholder="如 429,503；空值关闭"
-                        :disabled="busy"
-                    />
-                    <div v-else-if="d.type === 'transport'">
-                        <div class="model-columns"><span>真实上游模型 ID</span><span>调用通道</span></div>
-                        <div v-for="(row, index) in draft[d.name]" :key="index" class="model-row transport-row">
-                            <input
-                                v-model="row.model"
-                                :list="`models-${d.name}`"
-                                aria-label="真实上游模型 ID"
-                                :disabled="busy"
-                                placeholder="可手动输入上游模型 ID"
-                            />
-                            <ElSelect v-model="row.transport" aria-label="调用通道" :disabled="busy">
-                                <ElOption value="legacy" label="旧通道（legacy）" />
-                                <ElOption value="makersuite" label="桥接通道（makersuite）" />
-                            </ElSelect>
-                            <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除</ElButton>
-                        </div>
-                        <datalist :id="`models-${d.name}`">
-                            <option v-for="model in models" :key="model" :value="model" />
-                        </datalist>
-                        <ElButton :disabled="busy" @click="draft[d.name].push({ model: '', transport: 'legacy' })"
-                            >增加模型</ElButton
-                        >
-                        <p>
-                            默认 Gemini 4 Argon
-                            使用桥接通道，其他模型使用旧通道。删除配置后恢复默认规则；桥接通道缓冲输出，不提供上游实时增量。保存后需重启生效。
-                        </p>
-                    </div>
-                    <div v-else-if="d.type === 'models'">
-                        <div class="model-columns">
-                            <span>真实上游模型 ID</span
-                            ><span>{{
-                                d.name === "MODEL_WORKER_ALLOCATION" ? "最低保障 / 优先分配数量" : "并发上限"
+        <div v-if="snapshot" class="configuration-layout">
+            <nav class="configuration-directory" :aria-label="t('adminConfigGroups')">
+                <p class="directory-title">{{ t("adminConfigGroups") }}</p>
+                <a
+                    v-for="(group, groupIndex) in groups"
+                    :key="group.name"
+                    :href="`#configuration-group-${groupIndex}`"
+                    :class="{ 'is-active': activeGroup === group.name }"
+                    :aria-current="activeGroup === group.name ? 'location' : undefined"
+                    @click="activeGroup = group.name"
+                    ><span class="directory-index">{{ String(groupIndex + 1).padStart(2, "0") }}</span
+                    ><span>{{ group.name }}</span></a
+                >
+            </nav>
+            <div ref="groupsContainer" class="configuration-groups">
+                <fieldset
+                    v-for="(group, groupIndex) in groups"
+                    :id="`configuration-group-${groupIndex}`"
+                    :key="group.name"
+                    :data-group="group.name"
+                    :class="{ 'allowlist-group': group.fields.some(d => d.type === 'modelAllowlist') }"
+                >
+                    <legend>{{ group.name }}</legend>
+                    <div v-for="d in group.fields" :key="d.name" class="configuration-field">
+                        <div class="configuration-label">
+                            <label :for="`config-${d.name}`" :title="`${d.name}：${d.description}`">{{
+                                d.label
+                            }}</label>
+                            <ElPopover trigger="click" :width="320" :content="`${d.name}：${d.description}`">
+                                <template #reference
+                                    ><button type="button" :aria-label="`${d.label}说明`">ⓘ</button></template
+                                >
+                            </ElPopover>
+                            <span>{{
+                                pending(d.name) ? "重启后生效" : d.application === "hot" ? "保存后生效" : "重启后生效"
                             }}</span>
                         </div>
-                        <div v-for="(row, index) in draft[d.name]" :key="index" class="model-row">
-                            <input
-                                v-model="row.model"
-                                :list="`models-${d.name}`"
-                                aria-label="真实上游模型 ID"
+                        <details v-if="d.type === 'modelAllowlist'" class="model-settings-collapse">
+                            <summary>模型权限及启用设置（{{ models.length }} 个模型，点击展开）</summary>
+                            <ModelAllowlistEditor
+                                v-model="draft[d.name]"
+                                v-model:hidden-models="snapshot.hiddenModels"
+                                :models="models"
+                                :visibility-available="snapshot.modelVisibilityAvailable"
                                 :disabled="busy"
-                                placeholder="可手动输入上游模型 ID"
+                                @visibility-busy="busy = $event"
+                                @visibility-dirty="visibilityDirty = $event"
                             />
-                            <ElInputNumber
-                                v-if="d.name === 'MODEL_WORKER_ALLOCATION'"
-                                v-model="row.min_workers"
-                                :min="0"
-                                :precision="0"
-                                aria-label="最低保障数量"
-                                :disabled="busy"
-                            />
-                            <ElInputNumber
-                                v-model="row.value"
-                                :min="d.name === 'ACCOUNT_MODEL_MAX_CONCURRENCY' ? 0 : 1"
-                                :precision="0"
-                                :aria-label="d.name === 'MODEL_WORKER_ALLOCATION' ? '优先分配数量' : '并发上限'"
-                                :disabled="busy"
-                            />
-                            <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除</ElButton>
-                        </div>
-                        <datalist :id="`models-${d.name}`">
-                            <option v-for="model in models" :key="model" :value="model" />
-                        </datalist>
-                        <ElButton :disabled="busy" @click="draft[d.name].push({ model: '', value: 1, min_workers: 0 })"
-                            >增加模型</ElButton
+                        </details>
+                        <ElSwitch
+                            v-else-if="d.type === 'boolean'"
+                            :id="`config-${d.name}`"
+                            v-model="draft[d.name]"
+                            :disabled="busy"
+                        />
+                        <ElSelect
+                            v-else-if="d.type === 'enum'"
+                            :id="`config-${d.name}`"
+                            v-model="draft[d.name]"
+                            :disabled="busy"
                         >
-                        <p>删除单独配置后继承既有默认规则；不会禁用模型。资源分配数量并非独立浏览器进程数量。</p>
+                            <ElOption
+                                v-for="value in d.choices"
+                                :key="value"
+                                :value="value"
+                                :label="choiceLabel(value)"
+                            />
+                        </ElSelect>
+                        <template v-else-if="d.type === 'integer'">
+                            <ElInputNumber
+                                :id="`config-${d.name}`"
+                                v-model="draft[d.name]"
+                                :min="d.minimum"
+                                :max="d.maximum"
+                                :step="1"
+                                :precision="0"
+                                :disabled="busy"
+                            />
+                            <span>{{ d.unit }}</span>
+                        </template>
+                        <ElInput
+                            v-else-if="d.type === 'time'"
+                            :id="`config-${d.name}`"
+                            v-model="draft[d.name]"
+                            placeholder="HH:mm（洛杉矶时区）"
+                            :disabled="busy"
+                        />
+                        <template v-else-if="d.type === 'keys'">
+                            <ElInput
+                                v-if="secretsVisible"
+                                :id="`config-${d.name}`"
+                                v-model="draft[d.name]"
+                                type="textarea"
+                                placeholder="每行一个 API Key"
+                                :disabled="busy"
+                            />
+                            <span v-else>••••••••</span>
+                            <ElButton :disabled="busy" @click="revealSecrets">{{
+                                secretsVisible ? "隐藏密钥" : "查看及修改密钥"
+                            }}</ElButton>
+                            <p>没有独立控制台密码时，新密钥同时用于控制台登录。现有已登录会话继续有效。</p>
+                        </template>
+                        <ElInput
+                            v-else-if="d.type === 'secret'"
+                            :id="`config-${d.name}`"
+                            v-model="draft[d.name]"
+                            type="password"
+                            autocomplete="new-password"
+                            placeholder="未修改时保留原凭证；输入新值以替换"
+                            :disabled="busy"
+                        />
+                        <div v-else-if="d.type === 'agents'">
+                            <div v-for="(row, index) in draft[d.name]" :key="index" class="agent-row">
+                                <ElInput v-model="row.name" placeholder="节点名称（仅管理端）" :disabled="busy" />
+                                <ElInput v-model="row.nodeId" placeholder="节点 ID" :disabled="busy" />
+                                <ElInput v-model="row.url" placeholder="https://agent.example.org" :disabled="busy" />
+                                <ElInput
+                                    v-model="row.token"
+                                    type="password"
+                                    autocomplete="new-password"
+                                    placeholder="Token；原节点留空保留"
+                                    :disabled="busy"
+                                />
+                                <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除节点</ElButton>
+                            </div>
+                            <ElButton
+                                :disabled="busy"
+                                @click="draft[d.name].push({ name: '', nodeId: '', url: '', token: '' })"
+                                >增加节点</ElButton
+                            >
+                            <p>{{ d.description }}</p>
+                        </div>
+                        <ElInput
+                            v-else-if="d.type === 'codes'"
+                            :id="`config-${d.name}`"
+                            v-model="draft[d.name]"
+                            placeholder="如 429,503；空值关闭"
+                            :disabled="busy"
+                        />
+                        <div v-else-if="d.type === 'transport'">
+                            <div class="model-columns"><span>真实上游模型 ID</span><span>调用通道</span></div>
+                            <div v-for="(row, index) in draft[d.name]" :key="index" class="model-row transport-row">
+                                <input
+                                    v-model="row.model"
+                                    :list="`models-${d.name}`"
+                                    aria-label="真实上游模型 ID"
+                                    :disabled="busy"
+                                    placeholder="可手动输入上游模型 ID"
+                                />
+                                <ElSelect v-model="row.transport" aria-label="调用通道" :disabled="busy">
+                                    <ElOption value="legacy" label="旧通道（legacy）" />
+                                    <ElOption value="makersuite" label="桥接通道（makersuite）" />
+                                </ElSelect>
+                                <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除</ElButton>
+                            </div>
+                            <datalist :id="`models-${d.name}`">
+                                <option v-for="model in models" :key="model" :value="model" />
+                            </datalist>
+                            <ElButton :disabled="busy" @click="draft[d.name].push({ model: '', transport: 'legacy' })"
+                                >增加模型</ElButton
+                            >
+                            <p>
+                                默认 Gemini 4 Argon
+                                使用桥接通道，其他模型使用旧通道。删除配置后恢复默认规则；桥接通道缓冲输出，不提供上游实时增量。保存后需重启生效。
+                            </p>
+                        </div>
+                        <div v-else-if="d.type === 'models'">
+                            <div class="model-columns">
+                                <span>真实上游模型 ID</span
+                                ><span>{{
+                                    d.name === "MODEL_WORKER_ALLOCATION" ? "最低保障 / 优先分配数量" : "并发上限"
+                                }}</span>
+                            </div>
+                            <div v-for="(row, index) in draft[d.name]" :key="index" class="model-row">
+                                <input
+                                    v-model="row.model"
+                                    :list="`models-${d.name}`"
+                                    aria-label="真实上游模型 ID"
+                                    :disabled="busy"
+                                    placeholder="可手动输入上游模型 ID"
+                                />
+                                <ElInputNumber
+                                    v-if="d.name === 'MODEL_WORKER_ALLOCATION'"
+                                    v-model="row.min_workers"
+                                    :min="0"
+                                    :precision="0"
+                                    aria-label="最低保障数量"
+                                    :disabled="busy"
+                                />
+                                <ElInputNumber
+                                    v-model="row.value"
+                                    :min="d.name === 'ACCOUNT_MODEL_MAX_CONCURRENCY' ? 0 : 1"
+                                    :precision="0"
+                                    :aria-label="d.name === 'MODEL_WORKER_ALLOCATION' ? '优先分配数量' : '并发上限'"
+                                    :disabled="busy"
+                                />
+                                <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除</ElButton>
+                            </div>
+                            <datalist :id="`models-${d.name}`">
+                                <option v-for="model in models" :key="model" :value="model" />
+                            </datalist>
+                            <ElButton
+                                :disabled="busy"
+                                @click="draft[d.name].push({ model: '', value: 1, min_workers: 0 })"
+                                >增加模型</ElButton
+                            >
+                            <p>删除单独配置后继承既有默认规则；不会禁用模型。资源分配数量并非独立浏览器进程数量。</p>
+                        </div>
+                        <p v-if="pending(d.name)">
+                            当前生效：{{ display(d.name, snapshot.running[d.name]) }}；已保存：{{
+                                display(d.name, snapshot.saved[d.name])
+                            }}
+                        </p>
+                        <p v-if="dirtyNames.includes(d.name) && !pending(d.name)">
+                            当前生效：{{ display(d.name, snapshot.running[d.name]) }}
+                        </p>
+                        <p v-if="dirtyNames.includes(d.name)">
+                            草稿尚未保存{{ resets.includes(d.name) ? "，保存时恢复环境值或默认值" : "" }}。
+                        </p>
+                        <p v-if="d.name === 'USAGE_LOG_RETENTION_DAYS'">
+                            按连续 24 小时计算，0 永久保留；已删除数据无法恢复。{{
+                                snapshot.usageEnabled ? "" : "统计未启用，暂不产生清理效果。"
+                            }}
+                        </p>
+                        <p v-if="d.name === 'SCHEDULER_DAILY_RESET_TIME'">每日重置不会恢复上游真实配额。</p>
+                        <ElButton
+                            v-if="d.resettable !== false && snapshot.overridden.includes(d.name)"
+                            size="small"
+                            :disabled="busy"
+                            @click="resetField(d)"
+                            >恢复环境值 / 默认值（保存后提交）</ElButton
+                        >
                     </div>
-                    <p v-if="pending(d.name)">
-                        当前生效：{{ display(d.name, snapshot.running[d.name]) }}；已保存：{{
-                            display(d.name, snapshot.saved[d.name])
-                        }}
-                    </p>
-                    <p v-if="dirtyNames.includes(d.name) && !pending(d.name)">
-                        当前生效：{{ display(d.name, snapshot.running[d.name]) }}
-                    </p>
-                    <p v-if="dirtyNames.includes(d.name)">
-                        草稿尚未保存{{ resets.includes(d.name) ? "，保存时恢复环境值或默认值" : "" }}。
-                    </p>
-                    <p v-if="d.name === 'USAGE_LOG_RETENTION_DAYS'">
-                        按连续 24 小时计算，0 永久保留；已删除数据无法恢复。{{
-                            snapshot.usageEnabled ? "" : "统计未启用，暂不产生清理效果。"
-                        }}
-                    </p>
-                    <p v-if="d.name === 'SCHEDULER_DAILY_RESET_TIME'">每日重置不会恢复上游真实配额。</p>
-                    <ElButton
-                        v-if="d.resettable !== false && snapshot.overridden.includes(d.name)"
-                        size="small"
-                        :disabled="busy"
-                        @click="resetField(d)"
-                        >恢复环境值 / 默认值（保存后提交）</ElButton
-                    >
-                </div>
-            </fieldset>
+                </fieldset>
+            </div>
         </div>
     </section>
 </template>
@@ -249,6 +269,10 @@
 <script setup>
 import { useI18n } from "../composables/useI18n";
 const { t } = useI18n();
+const activeGroup = ref("");
+const groupsContainer = ref(null);
+let groupObserver;
+
 import { useDraftGuard } from "../composables/useDraftGuard";
 import ModelAllowlistEditor from "./ModelAllowlistEditor.vue";
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from "vue";
@@ -286,6 +310,26 @@ const groups = computed(() => {
     }
     return [...result].map(([name, fields]) => ({ fields, name }));
 });
+watch(
+    groups,
+    () => {
+        groupObserver?.disconnect();
+        if (!groups.value.some(group => group.name === activeGroup.value))
+            activeGroup.value = groups.value[0]?.name || "";
+        if (!groupsContainer.value) return;
+        groupObserver = new IntersectionObserver(
+            entries => {
+                const visible = entries
+                    .filter(entry => entry.isIntersecting)
+                    .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+                if (visible.length) activeGroup.value = visible[0].target.dataset.group;
+            },
+            { rootMargin: "-96px 0px -60% 0px" }
+        );
+        groupsContainer.value.querySelectorAll("fieldset").forEach(el => groupObserver.observe(el));
+    },
+    { flush: "post" }
+);
 watch(
     draft,
     () => {
@@ -551,6 +595,7 @@ onMounted(async () => {
     }, 5000);
 });
 onBeforeUnmount(() => {
+    groupObserver?.disconnect();
     disposed = true;
     clearInterval(timer);
 });
@@ -559,15 +604,81 @@ useDraftGuard(() => dirtyNames.value.length > 0 || visibilityDirty.value);
 </script>
 
 <style scoped>
+.configuration-layout {
+    display: grid;
+    grid-template-columns: 200px minmax(0, 1fr);
+    align-items: start;
+    gap: 24px;
+    margin-top: 24px;
+}
 .configuration-directory {
+    position: sticky;
+    top: 88px;
+    display: grid;
+    gap: 4px;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-card);
+    max-height: calc(100dvh - 112px);
+    overflow: auto;
+}
+.directory-title {
+    padding: 4px 8px 12px;
+    margin: 0;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.configuration-directory a {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px 16px;
-    margin: 16px 0;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 8px;
+    border-radius: 6px;
+    text-decoration: none;
+    color: var(--text-secondary);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+.directory-index {
+    flex-shrink: 0;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+}
+.configuration-directory a:hover {
+    background: var(--bg-list-item-hover);
+}
+.configuration-directory a.is-active {
+    background: var(--color-primary-soft);
+    color: var(--color-primary);
+    font-weight: 600;
 }
 .configuration-groups fieldset {
-    scroll-margin-top: 16px;
+    scroll-margin-top: 88px;
     background: var(--bg-card);
+    margin: 0;
+}
+@media (max-width: 1199px) {
+    .configuration-layout {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 16px;
+    }
+    .configuration-directory {
+        position: static;
+        display: flex;
+        flex-wrap: wrap;
+        max-height: none;
+        gap: 8px;
+    }
+    .directory-title {
+        width: 100%;
+        padding-bottom: 4px;
+    }
+    .configuration-directory a {
+        border: 1px solid var(--border-color);
+    }
 }
 .configuration-actions {
     position: sticky;
@@ -589,7 +700,8 @@ useDraftGuard(() => dirtyNames.value.length > 0 || visibilityDirty.value);
 }
 .configuration-groups {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
+    align-items: start;
     gap: 16px;
 }
 .configuration-groups fieldset {
@@ -597,10 +709,6 @@ useDraftGuard(() => dirtyNames.value.length > 0 || visibilityDirty.value);
     border: 1px solid var(--el-border-color);
     border-radius: 8px;
     padding: 16px;
-}
-.model-settings-collapse > summary {
-    cursor: pointer;
-    padding: 8px 0;
 }
 .allowlist-group {
     grid-column: 1 / -1;

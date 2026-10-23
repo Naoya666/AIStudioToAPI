@@ -631,6 +631,7 @@ test(
         await page.locator(".el-message-box__btns button").last().click();
         // Also check the account-page parent container used by the existing sidebar flow.
         await page.goto(`${url}/accounts`);
+        await page.getByRole("heading", { level: 1 }).waitFor();
         if (await page.getByRole("button", { exact: true, name: /^(Navigation|导航)$/ }).isVisible())
             await page.getByRole("button", { exact: true, name: /^(Navigation|导航)$/ }).click();
         await page

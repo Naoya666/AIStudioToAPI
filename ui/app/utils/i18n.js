@@ -5,6 +5,11 @@
  * Author: iBenzene, bbbugg
  */
 
+import bundledEn from '../../locales/en.json';
+import bundledZh from '../../locales/zh.json';
+
+const bundledLocales = { en: bundledEn, zh: bundledZh };
+
 const supportedLangs = new Set(['en', 'zh']);
 const fallbackLang = 'en';
 const localesCache = {};
@@ -34,16 +39,17 @@ const loadLocale = async lang => {
         return localesCache[normalized];
     }
     try {
-        const res = await fetch(`/locales/${normalized}.json`);
+        const res = await fetch(`/locales/${normalized}.json`, { cache: 'no-cache' });
         if (!res.ok) {
             throw new Error(`Failed to load locale ${normalized}`);
         }
         const data = await res.json();
-        localesCache[normalized] = data;
-        return data;
+        // Older deployments or cached locale responses may lack newly bundled keys.
+        localesCache[normalized] = { ...bundledLocales[normalized], ...data };
+        return localesCache[normalized];
     } catch (err) {
         console.warn('[i18n] Locale load failed:', err);
-        localesCache[normalized] = {};
+        localesCache[normalized] = { ...bundledLocales[normalized] };
         return localesCache[normalized];
     }
 };

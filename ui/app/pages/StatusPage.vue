@@ -1554,7 +1554,7 @@ watchEffect(() => {
     margin-bottom: 16px;
 }
 .settings-view {
-    max-width: 1040px;
+    width: 100%;
 }
 .view-container {
     min-width: 0;

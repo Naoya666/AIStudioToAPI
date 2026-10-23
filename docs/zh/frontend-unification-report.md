@@ -84,3 +84,12 @@ FRONTEND_SCREENSHOT_DIR=/tmp/frontend-unification-screenshots node --test tests/
 - 原节点池和配置表单中已有的中文业务文案及后端配置描述仍需后续完整国际化；本轮新增公共框架、状态提示和描述均集中使用语言资源。
 - 用量专用表格、筛选与分页内部实现继续保留；后续可在相同行为测试下逐步迁移剩余原生控件。没有为每个表格或表单再建立一套包装框架。
 - 公开看板未整体改造，仍独立构建；未引入管理端导航或会话。构建产物由构建命令生成，未手工编辑。
+
+## 视觉反馈修订（2026-10-23）
+
+- 修复截图中的 `adminOverview`、`adminProxyPool` 等翻译键名泄露：中英文资源随前端打包，旧远程语言文件缺少键名或加载失败时使用内置文案，语言请求同时要求缓存重新验证。中文语言下标题、导航、描述和节点池设置正常显示中文，保留显式切换英文的能力。
+- 所有原生 `details/summary` 统一为浅灰整行标题栏、细线折叠箭头和悬停状态，与 Context 浏览器详情保持相同视觉方向；继续使用原生展开状态与键盘交互，不清除折叠内容里的草稿。
+- 设置页取消原 1040px 页面宽度限制，桌面端改为左侧固定分组导航与右侧自适应表单。分组导航增加序号、选中态及滚动位置提示；平板和手机改为顶部换行按钮。
+- 新增旧语言文件、语言文件不可用、分组导航、折叠键盘操作及 390 / 768 / 1440 / 2560px 布局回归。账号、配置与统一前端相关测试共 10 项通过，无失败或跳过；本次修改文件 ESLint、全仓库 CSS 检查及前端构建通过。全量 lint 仍受上文原有诊断 JSON 的 32 处排序错误阻断。
+
+修订截图：[桌面 1440px](fixtures/frontend-unification/settings-refined-1440.png)、[宽屏 2560px](fixtures/frontend-unification/settings-refined-2560.png)、[平板 768px](fixtures/frontend-unification/settings-refined-768.png)、[手机 390px](fixtures/frontend-unification/settings-refined-390.png)。截图使用合成数据。

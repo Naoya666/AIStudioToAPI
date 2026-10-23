@@ -396,3 +396,97 @@ test(
         }
     }
 );
+
+test(
+    "bundled Chinese survives stale or unavailable locale files; settings and disclosures share the admin layout",
+    {
+        skip: !fs.existsSync(chromium.executablePath()),
+        timeout: 45000,
+    },
+    async t => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "admin-visual-"));
+        t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+        const service = new ConfigurationService(
+            { logger: { debug() {}, error() {}, info() {}, warn() {} }, ready: true },
+            { env: {}, file: path.join(directory, "config.json") }
+        );
+        const server = await createServer({
+            configFile: path.resolve(__dirname, "../vite.config.js"),
+            logLevel: "error",
+            server: { host: "127.0.0.1", port: 0, strictPort: false },
+        });
+        await server.listen();
+        t.after(() => server.close());
+        const browser = await chromium.launch({ args: ["--no-sandbox"] });
+        t.after(() => browser.close());
+        for (const available of [true, false]) {
+            const page = await browser.newPage({ viewport: { height: 1000, width: 1440 } });
+            page.setDefaultTimeout(6000);
+            await page.addInitScript(() => localStorage.setItem("lang", "zh"));
+            await page.route("**/locales/*.json", route =>
+                route.fulfill({ json: available ? { settings: "设置" } : {}, status: available ? 200 : 503 })
+            );
+            await page.route("**/api/**", route => {
+                const url = new URL(route.request().url());
+                let data = {};
+                if (url.pathname.startsWith("/api/status"))
+                    data = { status: { accountDetails: [], currentAuthIndex: -1, schedulingMode: "legacy" } };
+                else if (url.pathname === "/api/configuration") data = service.snapshot();
+                return route.fulfill({ json: data });
+            });
+            await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/settings`);
+            await page.getByRole("heading", { exact: true, name: "设置" }).waitFor();
+            const navigation = page.getByRole("navigation", { name: "导航" });
+            await navigation.getByRole("button", { exact: true, name: "概览" }).waitFor();
+            assert.ok(await navigation.getByRole("button", { exact: true, name: "节点池" }).isVisible());
+            assert.equal(await page.evaluate(() => window.I18n.t("schedulerQuotaTotal")), "总基数");
+            assert.equal(await page.evaluate(() => window.I18n.t("adminProxySettings")), "节点池设置");
+            const panel = page.locator(".configuration-panel");
+            await panel.locator("fieldset").first().waitFor();
+            const workspace = await page.locator(".workspace").boundingBox();
+            const settings = await page.locator(".settings-view").boundingBox();
+            assert.ok(settings.width > workspace.width * 0.94);
+            const menu = page.getByRole("navigation", { name: "配置分组" });
+            const firstLink = menu.getByRole("link").first();
+            const secondLink = menu.getByRole("link").nth(1);
+            assert.ok((await secondLink.boundingBox()).y > (await firstLink.boundingBox()).y);
+            assert.equal(await firstLink.evaluate(el => getComputedStyle(el).textDecorationLine), "none");
+            await secondLink.click();
+            assert.equal(new URL(page.url()).hash, "#configuration-group-1");
+            const details = panel.locator(".model-settings-collapse");
+            const summary = details.locator("summary");
+            await summary.scrollIntoViewIfNeeded();
+            assert.equal(await summary.evaluate(el => getComputedStyle(el).listStyleType), "none");
+            assert.equal(await summary.evaluate(el => getComputedStyle(el, "::before").content), '""');
+            await summary.focus();
+            await page.keyboard.press("Enter");
+            assert.equal(await details.getAttribute("open"), "");
+            await page.keyboard.press("Enter");
+            assert.equal(await details.getAttribute("open"), null);
+            if (available && process.env.FRONTEND_SCREENSHOT_DIR) {
+                fs.mkdirSync(process.env.FRONTEND_SCREENSHOT_DIR, { recursive: true });
+                await page.evaluate(() => {
+                    document.activeElement?.blur();
+                    window.scrollTo({ behavior: "instant", top: 0 });
+                });
+                await page.screenshot({
+                    fullPage: false,
+                    path: path.join(process.env.FRONTEND_SCREENSHOT_DIR, "settings-refined-1440.png"),
+                });
+            }
+            for (const width of [390, 768, 2560]) {
+                await page.setViewportSize({ height: 1000, width });
+                assert.ok(
+                    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+                    `settings overflow at ${width}`
+                );
+                if (available && process.env.FRONTEND_SCREENSHOT_DIR)
+                    await page.screenshot({
+                        fullPage: false,
+                        path: path.join(process.env.FRONTEND_SCREENSHOT_DIR, `settings-refined-${width}.png`),
+                    });
+            }
+            await page.close();
+        }
+    }
+);
