@@ -1,0 +1,75 @@
+// Element Plus and legacy styles share the same semantic tokens.
+:root {
+    --el-color-primary: var(--color-primary);
+    --el-color-primary-dark-2: var(--color-primary-hover);
+    --el-color-primary-light-3: #6790f1;
+    --el-color-primary-light-5: #93b1f5;
+    --el-color-primary-light-7: #bed0f9;
+    --el-color-primary-light-8: #d3e0fb;
+    --el-color-primary-light-9: var(--color-primary-soft);
+    --el-color-success: var(--color-success);
+    --el-color-success-light-9: var(--color-success-soft);
+    --el-color-warning: var(--color-warning);
+    --el-color-warning-light-9: var(--color-warning-soft);
+    --el-color-danger: var(--color-error);
+    --el-color-danger-light-9: var(--color-error-soft);
+    --el-bg-color: var(--bg-card);
+    --el-bg-color-page: var(--bg-body);
+    --el-fill-color-blank: var(--bg-card);
+    --el-fill-color-light: var(--bg-list-item-hover);
+    --el-border-color: var(--border-color);
+    --el-border-color-light: var(--border-light);
+    --el-border-color-lighter: var(--border-light);
+    --el-text-color-primary: var(--text-primary);
+    --el-text-color-regular: var(--text-secondary);
+    --el-text-color-secondary: var(--text-muted);
+    --el-font-family: -apple-system, blinkmacsystemfont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --el-font-size-base: 14px;
+    --el-component-size: var(--control-height);
+    --el-component-size-small: 32px;
+    --el-border-radius-base: var(--control-radius);
+    --el-border-radius-small: var(--control-radius);
+    --el-box-shadow-light: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.el-table {
+    --el-table-header-bg-color: var(--bg-list-item-hover);
+    --el-table-row-hover-bg-color: var(--bg-list-item-hover);
+}
+
+.el-table .el-table__cell {
+    height: 44px;
+}
+
+.el-card {
+    --el-card-border-radius: var(--panel-radius);
+
+    box-shadow: none;
+}
+
+.el-card.is-always-shadow,
+.el-card.is-hover-shadow:hover {
+    box-shadow: none;
+}
+
+.el-dialog,
+.el-message-box {
+    border-radius: var(--panel-radius);
+    max-width: calc(100vw - 32px);
+}
+
+.el-dialog__body {
+    max-height: 70dvh;
+    overflow: auto;
+    overflow-wrap: anywhere;
+}
+
+.el-button + .el-button {
+    margin-left: 0;
+}
+
+@media (width <= 767px) {
+    .el-button {
+        min-height: 44px;
+    }
+}

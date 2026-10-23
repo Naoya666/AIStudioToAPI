@@ -33,11 +33,23 @@
                     {{ requirePassword ? t("loginHeadingAuth") : t("loginHeading") }}
                 </h2>
                 <div v-if="requireUsername">
-                    <input type="text" name="username" :placeholder="t('usernamePlaceholder')" required autofocus />
+                    <el-input
+                        v-model="username"
+                        type="text"
+                        name="username"
+                        :aria-label="t('usernamePlaceholder')"
+                        :placeholder="t('usernamePlaceholder')"
+                        autocomplete="username"
+                        required
+                        autofocus
+                    />
                 </div>
                 <div>
-                    <input
+                    <el-input
+                        v-model="credential"
                         type="password"
+                        :aria-label="requirePassword ? t('passwordPlaceholder') : t('apiKeyPlaceholder')"
+                        autocomplete="current-password"
                         :name="requirePassword ? 'password' : 'apiKey'"
                         :placeholder="requirePassword ? t('passwordPlaceholder') : t('apiKeyPlaceholder')"
                         required
@@ -45,9 +57,9 @@
                     />
                 </div>
                 <div>
-                    <button type="submit">
+                    <el-button type="primary" native-type="submit">
                         {{ t("loginBtn") }}
-                    </button>
+                    </el-button>
                 </div>
             </div>
             <p v-if="errorText" class="error">
@@ -58,7 +70,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useRoute } from "vue-router";
 import I18n from "../utils/i18n";
 import { useTheme } from "../utils/useTheme";
@@ -70,6 +82,9 @@ const langVersion = ref(0);
 const requireUsername = ref(false);
 const requirePassword = ref(false);
 const configLoaded = ref(false);
+const username = ref(""),
+    credential = ref("");
+let unsubscribeLanguage;
 
 // Listen for language changes
 const onLangChange = () => {
@@ -80,7 +95,7 @@ const onLangChange = () => {
 useTheme();
 
 onMounted(async () => {
-    I18n.onChange(onLangChange);
+    unsubscribeLanguage = I18n.onChange(onLangChange);
     try {
         const res = await fetch("/api/auth/config");
         if (res.ok) {
@@ -94,6 +109,8 @@ onMounted(async () => {
         configLoaded.value = true;
     }
 });
+
+onBeforeUnmount(() => unsubscribeLanguage?.());
 
 const t = (key, options) => {
     langVersion.value; // Access to track changes
@@ -127,14 +144,16 @@ watchEffect(() => {
     display: flex;
     justify-content: center;
     align-items: center;
-    height: 100vh;
+    min-height: 100dvh;
+    padding: 16px;
 }
 
 .login-content {
-    width: 300px;
+    width: 100%;
 }
 
 form {
+    width: min(400px, 100%);
     background: @background-white;
     border-radius: @border-radius-lg;
     box-shadow: @shadow-medium;
@@ -143,7 +162,7 @@ form {
     text-align: center;
 }
 
-input {
+.login-content :deep(.el-input) {
     border: 1px solid @border-color;
     border-radius: @border-radius-sm;
     box-sizing: border-box;
@@ -159,7 +178,7 @@ input {
     }
 }
 
-button {
+.login-content .el-button {
     align-items: center;
     background-color: @primary-color;
     border: none;
@@ -184,6 +203,7 @@ button {
 }
 
 .lang-switcher {
+    min-height: 44px;
     align-items: center;
     background: transparent;
     border: none;

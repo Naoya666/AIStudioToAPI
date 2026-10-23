@@ -203,7 +203,13 @@ test(
         await waitRows(3);
         assert.ok((await rows.allTextContents()).some(text => text.includes("uploaded@example.com")));
 
-        await page.locator('button[title="节点池"]').click();
+        if (await page.getByRole("button", { exact: true, name: /^(Navigation|导航)$/ }).isVisible())
+            await page.getByRole("button", { exact: true, name: /^(Navigation|导航)$/ }).click();
+        await page
+            .getByRole("navigation")
+            .filter({ visible: true })
+            .getByRole("button", { exact: true, name: /^(Proxy pool|节点池)$/ })
+            .click();
         const proxySection = page
             .locator(".pool-card")
             .filter({ has: page.getByRole("heading", { name: "账号出口" }) });
@@ -615,6 +621,7 @@ test(
         assert.equal(await bindings.getByRole("button", { exact: true, name: "保存选中绑定" }).isEnabled(), true);
         await bindings.locator(".mobile-item").getByRole("button", { exact: true, name: "保存绑定" }).click();
         await bindings.locator(".mobile-item").getByRole("button", { exact: true, name: "应用" }).click();
+        await pool.locator(".pool-settings > summary").click();
         await pool.getByRole("button", { exact: true, name: "保存节点池设置" }).click();
         await nodes.locator(".mobile-item .el-checkbox").click();
         await nodes.getByRole("button", { exact: true, name: "删除选中" }).click();
@@ -624,7 +631,13 @@ test(
         await page.locator(".el-message-box__btns button").last().click();
         // Also check the account-page parent container used by the existing sidebar flow.
         await page.goto(`${url}/accounts`);
-        await page.locator('button[title="节点池"]').click();
+        if (await page.getByRole("button", { exact: true, name: /^(Navigation|导航)$/ }).isVisible())
+            await page.getByRole("button", { exact: true, name: /^(Navigation|导航)$/ }).click();
+        await page
+            .getByRole("navigation")
+            .filter({ visible: true })
+            .getByRole("button", { exact: true, name: /^(Proxy pool|节点池)$/ })
+            .click();
         await pool.waitFor();
         await assertFits();
         await page.screenshot({ fullPage: true, path: "/tmp/proxy-pool-mobile.png" });

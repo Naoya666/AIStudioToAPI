@@ -126,7 +126,12 @@ const toggleLang = () => setLang(currentLang === 'en' ? 'zh' : 'en');
 const onChange = cb => {
     if (typeof cb === 'function') {
         listeners.push(cb);
+        return () => {
+            const index = listeners.indexOf(cb);
+            if (index >= 0) listeners.splice(index, 1);
+        };
     }
+    return () => {};
 };
 
 const I18n = {

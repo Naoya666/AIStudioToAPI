@@ -629,6 +629,7 @@ const startVncIfNeeded = () => {
     initializeVnc();
 };
 
+let unsubscribeLanguage;
 onMounted(async () => {
     try {
         const response = await fetch("/api/proxy-pool/nodes");
@@ -642,7 +643,7 @@ onMounted(async () => {
     document.title = t("authPageTitle");
 
     // Listen for language changes
-    I18n.onChange(() => {
+    unsubscribeLanguage = I18n.onChange(() => {
         langVersion.value++;
         document.title = t("authPageTitle");
     });
@@ -656,6 +657,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+    unsubscribeLanguage?.();
     window.removeEventListener("unload", cleanupSession);
 });
 </script>

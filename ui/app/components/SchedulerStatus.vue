@@ -1384,12 +1384,12 @@ async function sendReset(url, body) {
 <style scoped>
 .scheduler-status {
     margin-bottom: 24px;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
     padding: 20px 24px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-    color: #0f172a;
+    box-shadow: none;
+    color: var(--text-primary);
 }
 
 /* 1. Header */
@@ -1412,7 +1412,7 @@ async function sendReset(url, body) {
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: #10b981;
+    background: var(--color-success);
     box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
 }
 
@@ -1420,13 +1420,13 @@ async function sendReset(url, body) {
     margin: 0;
     font-size: 1.15rem;
     font-weight: 700;
-    color: #0f172a;
+    color: var(--text-primary);
 }
 
 .header-sub {
     margin: 4px 0 0;
     font-size: 0.8rem;
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 .header-chips {
@@ -1441,32 +1441,32 @@ async function sendReset(url, body) {
     align-items: center;
     gap: 8px;
     padding: 6px 12px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-body);
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     font-size: 0.75rem;
 }
 
 .meter-label {
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 .meter-val {
     font-weight: 700;
-    color: #1e293b;
+    color: var(--text-primary);
 }
 
 .mini-progress-track {
     width: 48px;
     height: 6px;
-    background: #e2e8f0;
+    background: var(--border-color);
     border-radius: 999px;
     overflow: hidden;
 }
 
 .mini-progress-fill {
     height: 100%;
-    background: #2563eb;
+    background: var(--color-primary);
     border-radius: 999px;
     transition: width 0.3s ease;
 }
@@ -1504,7 +1504,7 @@ async function sendReset(url, body) {
     margin: 16px 0;
     border: 1px solid #dbeafe;
     border-radius: 12px;
-    background: linear-gradient(180deg, rgba(239, 246, 255, 0.7) 0%, rgba(239, 246, 255, 0.15) 100%);
+    background: var(--color-primary-soft);
 }
 
 .quota-header {
@@ -1527,7 +1527,7 @@ async function sendReset(url, body) {
 .quota-icon {
     width: 16px;
     height: 16px;
-    color: #2563eb;
+    color: var(--color-primary);
 }
 
 .date-badge {
@@ -1542,7 +1542,7 @@ async function sendReset(url, body) {
 
 .quota-hint {
     font-size: 0.75rem;
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 .quota-grid {
@@ -1557,8 +1557,8 @@ async function sendReset(url, body) {
     justify-content: space-between;
     gap: 8px;
     padding: 12px 14px;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
@@ -1583,7 +1583,7 @@ async function sendReset(url, body) {
 }
 
 .model-type-tag {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     font-weight: 700;
     padding: 1px 6px;
     border-radius: 4px;
@@ -1601,15 +1601,15 @@ async function sendReset(url, body) {
 }
 
 .tag-default {
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--bg-list-item-hover);
+    color: var(--text-secondary);
 }
 
 .quota-model-name {
     font-family: monospace;
     font-size: 0.85rem;
     font-weight: 700;
-    color: #0f172a;
+    color: var(--text-primary);
     word-break: break-all;
 }
 
@@ -1621,30 +1621,30 @@ async function sendReset(url, body) {
     font-family: monospace;
     font-size: 1.25rem;
     font-weight: 800;
-    color: #0f172a;
+    color: var(--text-primary);
 }
 
 .quota-unit {
     font-size: 0.75rem;
-    color: #64748b;
+    color: var(--text-muted);
     margin-left: 2px;
 }
 
 .quota-warning-text {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     font-weight: 700;
-    color: #d97706;
+    color: var(--color-warning);
 }
 
 .quota-percent-text {
-    font-size: 0.68rem;
-    color: #64748b;
+    font-size: 0.75rem;
+    color: var(--text-muted);
 }
 
 .quota-progress-track {
     width: 100%;
     height: 6px;
-    background: #f1f5f9;
+    background: var(--bg-list-item-hover);
     border-radius: 999px;
     overflow: hidden;
 }
@@ -1656,7 +1656,7 @@ async function sendReset(url, body) {
 }
 
 .bar-normal {
-    background: #2563eb;
+    background: var(--color-primary);
 }
 
 .bar-alert {
@@ -1667,8 +1667,8 @@ async function sendReset(url, body) {
     display: flex;
     justify-content: space-between;
     font-size: 0.7rem;
-    color: #64748b;
-    border-top: 1px solid #f8fafc;
+    color: var(--text-muted);
+    border-top: 1px solid var(--bg-body);
     padding-top: 6px;
 }
 
@@ -1709,8 +1709,8 @@ async function sendReset(url, body) {
 }
 
 .btn-primary {
-    background: #2563eb;
-    color: #ffffff;
+    background: var(--color-primary);
+    color: var(--bg-card);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -1718,26 +1718,26 @@ async function sendReset(url, body) {
 }
 
 .btn-default {
-    background: #ffffff;
+    background: var(--bg-card);
     border-color: #cbd5e1;
     color: #334155;
 }
 
 .btn-default:hover:not(:disabled) {
-    background: #f8fafc;
+    background: var(--bg-body);
     border-color: #94a3b8;
 }
 
 .btn-dashed {
-    background: #ffffff;
+    background: var(--bg-card);
     border: 1px dashed #cbd5e1;
-    color: #475569;
+    color: var(--text-secondary);
 }
 
 .btn-dashed:hover:not(:disabled),
 .btn-dashed.active {
     border-color: #3b82f6;
-    color: #2563eb;
+    color: var(--color-primary);
 }
 
 .btn-sm {
@@ -1763,7 +1763,7 @@ async function sendReset(url, body) {
 .btn-table-action {
     background: transparent;
     border: none;
-    color: #64748b;
+    color: var(--text-muted);
     font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
@@ -1780,7 +1780,7 @@ async function sendReset(url, body) {
 .btn-text-action {
     background: transparent;
     border: none;
-    color: #2563eb;
+    color: var(--color-primary);
     font-size: 0.72rem;
     font-weight: 600;
     cursor: pointer;
@@ -1796,11 +1796,11 @@ async function sendReset(url, body) {
     align-items: center;
     gap: 8px;
     font-size: 0.75rem;
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 .error-metrics-strip b {
-    color: #1e293b;
+    color: var(--text-primary);
     font-family: monospace;
 }
 
@@ -1814,8 +1814,8 @@ async function sendReset(url, body) {
     left: 0;
     top: calc(100% + 8px);
     width: 320px;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 12px;
     padding: 14px;
     box-shadow:
@@ -1834,7 +1834,7 @@ async function sendReset(url, body) {
 .popover-title {
     font-size: 0.8rem;
     font-weight: 700;
-    color: #0f172a;
+    color: var(--text-primary);
 }
 
 .popover-close-btn {
@@ -1852,7 +1852,7 @@ async function sendReset(url, body) {
 
 .popover-tip {
     font-size: 0.7rem;
-    color: #64748b;
+    color: var(--text-muted);
     margin: 0 0 10px;
     line-height: 1.4;
 }
@@ -1874,8 +1874,8 @@ async function sendReset(url, body) {
     justify-content: space-between;
     gap: 8px;
     padding: 6px 8px;
-    background: #f8fafc;
-    border: 1px solid #f1f5f9;
+    background: var(--bg-body);
+    border: 1px solid var(--bg-list-item-hover);
     border-radius: 6px;
 }
 
@@ -1916,9 +1916,9 @@ async function sendReset(url, body) {
 
 /* 4. Collapsible Card Structure (Context Pool & Accounts Drilldown) */
 .collapsible-card {
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--border-color);
     border-radius: 12px;
-    background: #f8fafc;
+    background: var(--bg-body);
     overflow: hidden;
     margin: 14px 0;
     transition: border-color 0.2s;
@@ -1937,7 +1937,7 @@ async function sendReset(url, body) {
 }
 
 .collapsible-header:hover {
-    background: #f1f5f9;
+    background: var(--bg-list-item-hover);
 }
 
 .header-left {
@@ -1948,7 +1948,7 @@ async function sendReset(url, body) {
 
 .header-left strong {
     font-size: 0.85rem;
-    color: #1e293b;
+    color: var(--text-primary);
 }
 
 .chevron-icon {
@@ -1967,8 +1967,8 @@ async function sendReset(url, body) {
     font-weight: 700;
     padding: 2px 8px;
     border-radius: 999px;
-    background: #e2e8f0;
-    color: #475569;
+    background: var(--border-color);
+    color: var(--text-secondary);
 }
 
 .header-pills {
@@ -1989,8 +1989,8 @@ async function sendReset(url, body) {
 }
 
 .pill-ready {
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--bg-list-item-hover);
+    color: var(--text-secondary);
     border: 1px solid #cbd5e1;
 }
 
@@ -2007,8 +2007,8 @@ async function sendReset(url, body) {
 }
 
 .pill-closing {
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--bg-list-item-hover);
+    color: var(--text-secondary);
     border: 1px solid #cbd5e1;
 }
 
@@ -2037,8 +2037,8 @@ async function sendReset(url, body) {
 }
 
 .pill-slate {
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--bg-list-item-hover);
+    color: var(--text-secondary);
     border: 1px solid #cbd5e1;
 }
 
@@ -2053,7 +2053,7 @@ async function sendReset(url, body) {
 }
 
 .dot-busy {
-    background: #10b981;
+    background: var(--color-success);
 }
 
 .dot-draining,
@@ -2081,15 +2081,15 @@ async function sendReset(url, body) {
 
 .toggle-text {
     font-size: 0.75rem;
-    color: #2563eb;
+    color: var(--color-primary);
     margin-left: 6px;
     font-weight: 600;
 }
 
 .collapsible-body {
     padding: 14px 16px;
-    border-top: 1px solid #e2e8f0;
-    background: #ffffff;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-card);
 }
 
 /* Context Pool Progress Slot */
@@ -2100,7 +2100,7 @@ async function sendReset(url, body) {
 .context-slot-bar {
     width: 100%;
     height: 6px;
-    background: #e2e8f0;
+    background: var(--border-color);
     border-radius: 999px;
     display: flex;
     overflow: hidden;
@@ -2111,7 +2111,7 @@ async function sendReset(url, body) {
 }
 
 .slot-busy {
-    background: #10b981;
+    background: var(--color-success);
 }
 
 .slot-init {
@@ -2142,19 +2142,19 @@ async function sendReset(url, body) {
 
 .view-switch-tip {
     font-size: 0.72rem;
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 .context-ratio-hint {
     font-size: 0.72rem;
-    color: #64748b;
+    color: var(--text-muted);
     font-family: monospace;
 }
 
 .btn-inline-toggle {
     border: none;
     background: transparent;
-    color: #2563eb;
+    color: var(--color-primary);
     font-size: 0.72rem;
     font-weight: 600;
     cursor: pointer;
@@ -2169,7 +2169,7 @@ async function sendReset(url, body) {
 
 .switch-button-group {
     display: flex;
-    background: #f1f5f9;
+    background: var(--bg-list-item-hover);
     border-radius: 6px;
     padding: 2px;
 }
@@ -2180,14 +2180,14 @@ async function sendReset(url, body) {
     padding: 3px 10px;
     font-size: 0.7rem;
     font-weight: 600;
-    color: #64748b;
+    color: var(--text-muted);
     border-radius: 4px;
     cursor: pointer;
 }
 
 .switch-btn.active {
-    background: #ffffff;
-    color: #0f172a;
+    background: var(--bg-card);
+    color: var(--text-primary);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
@@ -2203,8 +2203,8 @@ async function sendReset(url, body) {
 }
 
 .node-card {
-    border: 1px solid #e2e8f0;
-    background: #ffffff;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
     border-radius: 8px;
     padding: 8px 10px;
     display: flex;
@@ -2225,7 +2225,7 @@ async function sendReset(url, body) {
 
 .node-closing {
     border-color: #cbd5e1;
-    background: #f8fafc;
+    background: var(--bg-body);
 }
 
 .node-busy,
@@ -2245,12 +2245,12 @@ async function sendReset(url, body) {
 }
 
 .node-state-tag {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     font-weight: 700;
     padding: 1px 5px;
     border-radius: 4px;
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--bg-list-item-hover);
+    color: var(--text-secondary);
 }
 
 .node-draining .node-state-tag {
@@ -2274,20 +2274,20 @@ async function sendReset(url, body) {
 }
 
 .node-error-text {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     color: #b91c1c;
     font-family: monospace;
 }
 
 .node-sub-text {
-    font-size: 0.68rem;
-    color: #64748b;
+    font-size: 0.75rem;
+    color: var(--text-muted);
 }
 
 .node-footer {
     display: flex;
     justify-content: space-between;
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     color: #94a3b8;
     border-top: 1px solid rgba(0, 0, 0, 0.04);
     padding-top: 4px;
@@ -2295,7 +2295,7 @@ async function sendReset(url, body) {
 
 .node-card.node-expand-toggle {
     border: 2px dashed #cbd5e1;
-    background: #f8fafc;
+    background: var(--bg-body);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -2326,7 +2326,7 @@ async function sendReset(url, body) {
 .expand-title {
     font-size: 0.75rem;
     font-weight: 600;
-    color: #475569;
+    color: var(--text-secondary);
 }
 
 .node-card.node-expand-toggle:hover .expand-title {
@@ -2335,7 +2335,7 @@ async function sendReset(url, body) {
 
 .expand-action {
     font-size: 0.7rem;
-    color: #2563eb;
+    color: var(--color-primary);
     font-weight: 500;
 }
 
@@ -2347,10 +2347,10 @@ async function sendReset(url, body) {
 
 /* 5. Modern Tables */
 .modern-table-wrap {
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     overflow-x: auto;
-    background: #ffffff;
+    background: var(--bg-card);
 }
 
 .model-summary-wrap {
@@ -2365,22 +2365,22 @@ async function sendReset(url, body) {
 }
 
 .modern-table th {
-    background: #f8fafc;
-    color: #475569;
+    background: var(--bg-body);
+    color: var(--text-secondary);
     font-weight: 600;
     padding: 10px 14px;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--border-color);
     white-space: nowrap;
 }
 
 .modern-table td {
     padding: 10px 14px;
-    border-bottom: 1px solid #f1f5f9;
-    color: #1e293b;
+    border-bottom: 1px solid var(--bg-list-item-hover);
+    color: var(--text-primary);
 }
 
 .modern-table tbody tr:hover {
-    background: #f8fafc;
+    background: var(--bg-body);
 }
 
 .modern-table tbody tr:last-child td {
@@ -2395,7 +2395,7 @@ async function sendReset(url, body) {
 
 .model-name {
     font-weight: 700;
-    color: #0f172a;
+    color: var(--text-primary);
 }
 
 .number-badge-429 {
@@ -2421,8 +2421,8 @@ async function sendReset(url, body) {
     justify-content: space-between;
     gap: 10px;
     padding: 10px 12px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-body);
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     margin-bottom: 12px;
 }
@@ -2436,8 +2436,8 @@ async function sendReset(url, body) {
 
 .filter-tab {
     border: 1px solid #cbd5e1;
-    background: #ffffff;
-    color: #475569;
+    background: var(--bg-card);
+    color: var(--text-secondary);
     padding: 4px 10px;
     border-radius: 6px;
     font-size: 0.72rem;
@@ -2447,7 +2447,7 @@ async function sendReset(url, body) {
 }
 
 .filter-tab:hover {
-    background: #f1f5f9;
+    background: var(--bg-list-item-hover);
 }
 
 .filter-tab.active {
@@ -2475,7 +2475,7 @@ async function sendReset(url, body) {
 }
 
 .filter-tab.tab-disabled.active {
-    background: #f1f5f9;
+    background: var(--bg-list-item-hover);
     color: #334155;
     border-color: #94a3b8;
 }
@@ -2507,8 +2507,8 @@ async function sendReset(url, body) {
     border: 1px solid #cbd5e1;
     border-radius: 6px;
     font-size: 0.75rem;
-    background: #ffffff;
-    color: #0f172a;
+    background: var(--bg-card);
+    color: var(--text-primary);
     outline: none;
 }
 
@@ -2528,9 +2528,9 @@ async function sendReset(url, body) {
 
 .account-row-card {
     flex-shrink: 0;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--border-color);
     border-radius: 10px;
-    background: #ffffff;
+    background: var(--bg-card);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
     overflow: hidden;
     transition: all 0.15s;
@@ -2562,7 +2562,7 @@ async function sendReset(url, body) {
 }
 
 .account-card-header:hover {
-    background: #f8fafc;
+    background: var(--bg-body);
 }
 
 .acc-header-left {
@@ -2590,7 +2590,7 @@ async function sendReset(url, body) {
 }
 
 .dot-healthy {
-    background: #10b981;
+    background: var(--color-success);
 }
 
 .dot-429 {
@@ -2602,7 +2602,7 @@ async function sendReset(url, body) {
 }
 
 .dot-disabled {
-    background: #64748b;
+    background: var(--text-muted);
 }
 
 .dot-unhealthy {
@@ -2612,16 +2612,16 @@ async function sendReset(url, body) {
 .acc-index {
     font-size: 0.78rem;
     font-weight: 700;
-    color: #0f172a;
+    color: var(--text-primary);
 }
 
 .acc-key {
     font-size: 0.78rem;
-    color: #1e293b;
+    color: var(--text-primary);
 }
 
 .acc-badge {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     font-weight: 700;
     padding: 1px 6px;
     border-radius: 4px;
@@ -2653,8 +2653,8 @@ async function sendReset(url, body) {
 }
 
 .badge-disabled {
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--bg-list-item-hover);
+    color: var(--text-secondary);
     border: 1px solid #cbd5e1;
 }
 
@@ -2666,14 +2666,14 @@ async function sendReset(url, body) {
 
 .acc-inflight-text {
     font-size: 0.72rem;
-    color: #64748b;
+    color: var(--text-muted);
     margin-right: 4px;
 }
 
 .account-card-body {
     padding: 10px 14px;
-    border-top: 1px solid #f1f5f9;
-    background: #f8fafc;
+    border-top: 1px solid var(--bg-list-item-hover);
+    background: var(--bg-body);
 }
 
 .model-slots-list {
@@ -2684,8 +2684,8 @@ async function sendReset(url, body) {
 
 .model-slot-row {
     padding: 8px 10px;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 6px;
     display: flex;
     flex-direction: column;
@@ -2712,11 +2712,11 @@ async function sendReset(url, body) {
 
 .slot-model-name {
     font-size: 0.75rem;
-    color: #1e293b;
+    color: var(--text-primary);
 }
 
 .slot-status-badge {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     font-weight: 700;
     padding: 1px 5px;
     border-radius: 4px;
@@ -2727,7 +2727,7 @@ async function sendReset(url, body) {
     align-items: center;
     gap: 10px;
     font-size: 0.72rem;
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 .slot-error-box {
@@ -2742,7 +2742,7 @@ async function sendReset(url, body) {
 }
 
 .error-tag {
-    color: #dc2626;
+    color: var(--color-error);
     flex-shrink: 0;
 }
 
@@ -2757,8 +2757,8 @@ async function sendReset(url, body) {
 .btn-expand-json {
     background: transparent;
     border: none;
-    color: #dc2626;
-    font-size: 0.65rem;
+    color: var(--color-error);
+    font-size: 0.75rem;
     font-weight: 700;
     cursor: pointer;
     flex-shrink: 0;
@@ -2766,11 +2766,11 @@ async function sendReset(url, body) {
 }
 
 .json-code-view {
-    background: #0f172a;
+    background: var(--text-primary);
     color: #34d399;
     padding: 8px;
     border-radius: 6px;
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     max-height: 140px;
     overflow: auto;
     margin: 4px 0 0;
@@ -2782,11 +2782,11 @@ async function sendReset(url, body) {
 }
 
 .text-warning {
-    color: #d97706;
+    color: var(--color-warning);
 }
 
 .text-error {
-    color: #dc2626;
+    color: var(--color-error);
 }
 
 .text-slate-400 {
@@ -2794,11 +2794,11 @@ async function sendReset(url, body) {
 }
 
 .text-slate-500 {
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 .text-slate-600 {
-    color: #475569;
+    color: var(--text-secondary);
 }
 
 .text-slate-700 {

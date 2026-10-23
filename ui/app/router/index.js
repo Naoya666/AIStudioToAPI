@@ -12,6 +12,7 @@ import AuthPage from '../pages/AuthPage.vue';
 import NotFound from '../pages/NotFound.vue';
 
 const routes = [
+    ...['usage', 'logs', 'settings'].map(name => ({ component: StatusPage, name, path: `/${name}` })),
     { component: StatusPage, name: 'proxy-pool', path: '/proxy-pool' },
     {
         component: StatusPage,
@@ -68,14 +69,16 @@ router.beforeEach(async (to, from, next) => {
                 isAuthenticated = true;
                 return next();
             } else {
-                // Handle other errors (401, 500, etc) if the server changes behavior to not redirect
-                isAuthenticated = false;
-                return next({ name: 'login' });
+                if (res.status === 401 || res.status === 403) {
+                    isAuthenticated = false;
+                    return next({ name: 'login' });
+                }
+                // Let the workspace show service failures, and retry authentication on the next navigation.
+                return next();
             }
         } catch (error) {
             console.error('Failed to check auth status:', error);
-            isAuthenticated = false;
-            return next({ name: 'login' });
+            return next();
         }
     }
 

@@ -6,6 +6,7 @@
  */
 
 @import "variables.less";
+@import "element-overrides.less";
 
 // Reset and base styles
 *,
@@ -21,9 +22,15 @@ body,
     background: @background-light;
     color: @text-primary;
     font-family: @font-family-sans;
+    font-size: 14px;
     height: 100%;
+    line-height: 1.5;
     margin: 0;
     overflow: visible;
+}
+
+html {
+    font-size: 16px;
 }
 
 // Vue cloak directive
@@ -40,5 +47,35 @@ body,
 @media (prefers-reduced-motion: no-preference) {
     html {
         scroll-behavior: smooth;
+    }
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+}
+
+:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 3px;
+}
+
+a {
+    color: var(--color-primary);
+}
+
+summary {
+    cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
     }
 }

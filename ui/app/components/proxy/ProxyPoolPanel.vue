@@ -1,410 +1,451 @@
 <template>
     <div class="proxy-pool">
-        <header class="page-header">
-            <h1>节点池</h1>
-            <el-button @click="loadAll">刷新</el-button>
-        </header>
-
-        <section class="pool-card">
-            <div class="section-title">
-                <h3>Mihomo 状态</h3>
-                <el-tag :type="status.mihomo?.ready ? 'success' : 'danger'">{{
-                    status.mihomo?.ready ? "就绪" : "未就绪"
-                }}</el-tag>
-            </div>
-            <div class="status-grid">
-                <span>节点池：{{ status.enabled ? "已启用" : "已停用" }}</span>
-                <span>二进制：{{ status.mihomo?.binaryFound ? "已找到" : "未找到" }}</span>
-                <span>版本：{{ status.mihomo?.version || "-" }}</span>
-                <span>节点 / 当前账号绑定：{{ status.nodeCount || 0 }} / {{ status.bindingCount || 0 }}</span>
-            </div>
-            <el-alert v-if="status.mihomo?.lastError" :title="status.mihomo.lastError" type="error" :closable="false" />
-            <div class="actions">
-                <el-switch v-model="settings.enabled" active-text="启用节点池" />
-                <el-input-number v-model="settings.basePort" :min="1024" :max="65535" controls-position="right" />
-                <span>起始端口</span>
-                <el-input-number v-model="settings.controllerPort" :min="1024" :max="65535" />
-                <span>控制端口</span>
-                <el-input v-model="settings.binaryPath" placeholder="Mihomo 程序路径（留空使用环境配置）" />
-                <el-button @click="mihomo('start')">启动</el-button>
-                <el-button @click="mihomo('stop')">停止</el-button>
-                <el-button @click="mihomo('reload')">重载</el-button>
-            </div>
-            <div class="actions">
-                <el-input v-model="settings.testUrl" placeholder="节点测试 URL" style="width: 360px" />
-                <el-input
-                    v-model="settings.exitIpUrl"
-                    clearable
-                    placeholder="出口 IP URL（可选）"
-                    style="width: 360px"
-                />
-                <el-input-number
-                    v-model="settings.healthTimeoutMs"
-                    :min="1000"
-                    :max="120000"
-                    :step="1000"
-                    controls-position="right"
-                />
-                <span>超时毫秒</span>
-                <el-button :disabled="settingsConflict" @click="saveSettings">保存节点池设置</el-button>
-            </div>
-            <p v-if="settingsDirty">节点池设置尚未保存，保存后会应用必要的 Mihomo 重载。</p>
-            <p v-if="settingsConflict">配置已被其他页面修改，请放弃草稿并刷新后处理差异。</p>
-            <el-button
-                @click="
-                    savedSettings = null;
-                    loadAll();
-                "
-                >放弃设置草稿 / 刷新</el-button
-            >
-        </section>
-
-        <section class="pool-card">
-            <div class="section-title">
-                <h3>代理节点</h3>
-                <div>
-                    <el-button type="danger" plain :disabled="!selectedNodes.length" @click="deleteSelectedNodes"
-                        >删除选中</el-button
-                    ><el-button @click="importVisible = true">批量导入</el-button
-                    ><el-button type="primary" @click="openNode()">添加节点</el-button>
-                </div>
-            </div>
-            <el-table
-                ref="nodeTable"
-                class="desktop-list"
-                :data="nodes"
-                empty-text="暂无节点"
-                @selection-change="selectedNodes = $event"
-            >
-                <el-table-column type="selection" width="45" />
-                <el-table-column prop="name" label="名称" min-width="130" />
-                <el-table-column label="类型" width="90">
-                    <template #default="{ row }">{{ row.type === "direct" ? "直连" : row.type }}</template>
-                </el-table-column>
-                <el-table-column label="远程地址" min-width="180"
-                    ><template #default="{ row }">{{
-                        row.type === "direct" ? "VPS 本机出口" : `${row.host}:${row.port}`
-                    }}</template></el-table-column
-                >
-                <el-table-column label="本地端口" width="100">
-                    <template #default="{ row }">{{
-                        row.type === "direct" ? "不经过 Mihomo" : row.localPort
-                    }}</template>
-                </el-table-column>
-                <el-table-column label="延迟" width="90">
-                    <template #default="{ row }">{{ row.latencyMs == null ? "-" : `${row.latencyMs} ms` }}</template>
-                </el-table-column>
-                <el-table-column prop="exitIp" label="出口 IP" min-width="130" />
-                <el-table-column prop="boundAccounts" label="绑定" width="70" />
-                <el-table-column label="状态" width="100"
-                    ><template #default="{ row }"
-                        ><el-tag :type="row.enabled && row.status !== 'missing' ? 'success' : 'info'">{{
-                            row.status === "missing" ? "订阅缺失" : row.enabled ? "启用" : "停用"
-                        }}</el-tag></template
-                    ></el-table-column
-                >
-                <el-table-column label="操作" width="220"
-                    ><template #default="{ row }"
-                        ><el-button link @click="testNode(row)">测试</el-button
-                        ><el-button link @click="openNode(row)">编辑</el-button
-                        ><el-button link type="danger" @click="removeNode(row)">删除</el-button></template
-                    ></el-table-column
-                >
-            </el-table>
-            <div class="mobile-list">
-                <p v-if="!nodes.length">暂无节点</p>
-                <article v-for="row in nodes" :key="row.id" class="mobile-item">
-                    <el-checkbox
-                        :model-value="selectedNodes.some(item => item.id === row.id)"
-                        @change="value => nodeTable?.toggleRowSelection(row, value)"
-                        >{{ row.name }}</el-checkbox
-                    >
-                    <p>
-                        {{ row.type === "direct" ? "直连" : row.type }} ·
-                        {{ row.status === "missing" ? "订阅缺失" : row.enabled ? "启用" : "停用" }} ·
-                        {{ row.latencyMs == null ? "-" : `${row.latencyMs} ms` }}
-                    </p>
-                    <p>出口 IP：{{ row.exitIp || "-" }} · 绑定：{{ row.boundAccounts || 0 }}</p>
-                    <details>
-                        <summary>地址和本地端口</summary>
-                        <p>
-                            {{
-                                row.type === "direct"
-                                    ? "VPS 本机出口，不经过 Mihomo"
-                                    : `${row.host}:${row.port} / ${row.localPort || "-"}`
-                            }}
-                        </p>
-                    </details>
-                    <div class="actions">
-                        <el-button @click="testNode(row)">测试</el-button
-                        ><el-button @click="openNode(row)">编辑</el-button
-                        ><el-button type="danger" plain @click="removeNode(row)">删除</el-button>
-                    </div>
-                </article>
-            </div>
-        </section>
-
-        <section class="pool-card">
-            <div class="section-title">
-                <h3>订阅（手动刷新）</h3>
-                <div>
-                    <el-button
-                        type="danger"
-                        plain
-                        :disabled="!selectedSubscriptions.length"
-                        @click="deleteSelectedSubscriptions"
-                        >删除选中</el-button
-                    >
-                    <el-button type="primary" @click="subscriptionVisible = true">添加订阅</el-button>
-                </div>
-            </div>
-            <el-table
-                ref="subscriptionTable"
-                class="desktop-list"
-                :data="subscriptions"
-                empty-text="暂无订阅"
-                @selection-change="selectedSubscriptions = $event"
-            >
-                <el-table-column type="selection" width="45" />
-                <el-table-column prop="name" label="名称" />
-                <el-table-column prop="url" label="地址（已脱敏）" min-width="220" />
-                <el-table-column prop="nodeCount" label="节点" width="70" />
-                <el-table-column prop="lastRefreshedAt" label="最近刷新" min-width="170" />
-                <el-table-column label="操作" width="140"
-                    ><template #default="{ row }"
-                        ><el-button link @click="refreshSubscription(row)">刷新</el-button
-                        ><el-button link type="danger" @click="removeSubscription(row)">删除</el-button></template
-                    ></el-table-column
-                >
-            </el-table>
-            <div class="mobile-list">
-                <p v-if="!subscriptions.length">暂无订阅</p>
-                <article v-for="row in subscriptions" :key="row.id" class="mobile-item">
-                    <el-checkbox
-                        :model-value="selectedSubscriptions.some(item => item.id === row.id)"
-                        @change="value => subscriptionTable?.toggleRowSelection(row, value)"
-                        >{{ row.name }}</el-checkbox
-                    >
-                    <p>地址（已脱敏）：{{ row.url }}</p>
-                    <p>节点：{{ row.nodeCount }} · 最近刷新：{{ row.lastRefreshedAt || "-" }}</p>
-                    <div class="actions">
-                        <el-button @click="refreshSubscription(row)">刷新</el-button
-                        ><el-button type="danger" plain @click="removeSubscription(row)">删除</el-button>
-                    </div>
-                </article>
-            </div>
-        </section>
-
-        <section class="pool-card">
-            <div class="section-title">
-                <h3>账号出口</h3>
-                <div>
-                    <el-button @click="applyIdle">应用空闲账号</el-button
-                    ><el-button @click="applyPending">排队应用全部</el-button>
-                </div>
-            </div>
-            <div class="actions">
-                <el-input v-model="accountSearch" clearable placeholder="搜索账号" style="width: 220px" />
-                <el-select v-model="stateFilter" clearable placeholder="全部状态" style="width: 140px">
-                    <el-option v-for="state in bindingStates" :key="state" :label="state" :value="state" />
-                </el-select>
-                <el-select v-model="nodeFilter" clearable placeholder="全部出口组" style="width: 180px">
-                    <el-option label="未绑定" value="__unbound__" />
-                    <el-option v-for="node in nodes" :key="node.id" :label="node.name" :value="node.id" />
-                </el-select>
-                <el-select v-model="batchNodeId" clearable placeholder="批量绑定节点" style="width: 180px">
-                    <el-option v-for="node in usableNodes" :key="node.id" :label="node.name" :value="node.id" />
-                </el-select>
-                <el-button :disabled="!selectedBindings.length" @click="saveBatchBinding">保存选中绑定</el-button>
-            </div>
-            <p>未登录账号可先保存出口绑定，首次登录及后续请求会沿用该节点，无需点击「应用」。</p>
-            <el-table
-                ref="bindingTable"
-                class="desktop-list"
-                :data="pagedBindings"
-                empty-text="暂无账号"
-                @selection-change="selectedBindings = $event"
-            >
-                <el-table-column type="selection" width="45" />
-                <el-table-column label="#" width="85"
-                    ><template #default="{ row }">{{ row.authIndex === null ? "未登录" : row.authIndex }}</template>
-                </el-table-column>
-                <el-table-column prop="accountName" label="账号" min-width="180" />
-                <el-table-column prop="proxySource" label="当前来源" width="145" />
-                <el-table-column label="期望节点" min-width="170"
-                    ><template #default="{ row }"
-                        ><el-select
-                            v-model="row.desiredNodeId"
-                            clearable
-                            placeholder="未绑定"
-                            @change="saveBinding(row)"
-                            ><el-option
-                                v-for="node in usableNodes"
-                                :key="node.id"
-                                :label="node.name"
-                                :value="node.id" /></el-select></template
-                ></el-table-column>
-                <el-table-column label="状态" width="110"
-                    ><template #default="{ row }"
-                        ><el-tag :type="stateType(row.state)">{{ row.state }}</el-tag></template
-                    ></el-table-column
-                >
-                <el-table-column prop="inflight" label="在途" width="70" />
-                <el-table-column label="操作" width="90"
-                    ><template #default="{ row }"
-                        ><el-button
-                            link
-                            :disabled="row.authIndex === null || row.state === 'applied'"
-                            @click="applyOne(row)"
-                            >应用</el-button
-                        ></template
-                    ></el-table-column
-                >
-            </el-table>
-            <div class="mobile-list">
-                <p v-if="!pagedBindings.length">暂无账号</p>
-                <article v-for="row in pagedBindings" :key="row.accountKey" class="mobile-item">
-                    <el-checkbox
-                        :model-value="selectedBindings.some(item => item.accountKey === row.accountKey)"
-                        @change="value => bindingTable?.toggleRowSelection(row, value)"
-                        >{{ row.accountName }}</el-checkbox
-                    >
-                    <p>
-                        {{ row.authIndex === null ? "未登录" : `#${row.authIndex}` }} · 当前来源：{{
-                            row.proxySource || "-"
-                        }}
-                    </p>
-                    <p>状态：{{ row.state }} · 在途：{{ row.inflight || 0 }}</p>
-                    <label
-                        >期望节点<el-select v-model="row.desiredNodeId" clearable placeholder="未绑定"
-                            ><el-option
-                                v-for="node in usableNodes"
-                                :key="node.id"
-                                :label="node.name"
-                                :value="node.id" /></el-select
-                    ></label>
-                    <div class="actions">
-                        <el-button @click="saveBinding(row)">保存绑定</el-button
-                        ><el-button :disabled="row.authIndex === null || row.state === 'applied'" @click="applyOne(row)"
-                            >应用</el-button
-                        >
-                    </div>
-                </article>
-            </div>
-            <el-pagination
-                v-model:current-page="accountPage"
-                v-model:page-size="accountPageSize"
-                class="pagination desktop-list"
-                layout="total, sizes, prev, pager, next"
-                :page-sizes="[20, 50, 100]"
-                :total="filteredBindings.length"
-            />
-            <div class="mobile-list mobile-pagination">
-                <span>共 {{ filteredBindings.length }} 个账号</span>
-                <el-select v-model="accountPageSize" aria-label="每页账号数"
-                    ><el-option v-for="size in [20, 50, 100]" :key="size" :label="`每页 ${size} 条`" :value="size"
-                /></el-select>
-                <div class="actions">
-                    <el-button :disabled="accountPage <= 1" @click="accountPage--">上一页</el-button
-                    ><span
-                        >{{ accountPage }} /
-                        {{ Math.max(1, Math.ceil(filteredBindings.length / accountPageSize)) }}</span
-                    ><el-button
-                        :disabled="accountPage * accountPageSize >= filteredBindings.length"
-                        @click="accountPage++"
-                        >下一页</el-button
-                    >
-                </div>
-            </div>
-        </section>
-
-        <el-dialog
-            v-model="nodeVisible"
-            :title="editingId ? '编辑节点' : '添加节点'"
-            width="min(520px, calc(100vw - 24px))"
-            class="proxy-dialog"
+        <PageHeader :title="t('adminProxyPool')" :description="t('adminProxyDescription')"
+            ><template #actions
+                ><el-button @click="loadAll">{{ t("adminRefresh") }}</el-button></template
+            ></PageHeader
         >
-            <el-form label-position="top">
-                <el-form-item label="类型"
-                    ><el-select v-model="nodeForm.type"
-                        ><el-option
-                            v-for="type in ['direct', 'ss', 'socks5', 'trojan', 'vless', 'vmess']"
-                            :key="type"
-                            :label="type === 'direct' ? '直连（VPS 出口）' : type"
-                            :value="type" /></el-select
-                ></el-form-item>
-                <el-form-item label="名称"><el-input v-model="nodeForm.name" /></el-form-item>
+        <PageState
+            v-if="loadError"
+            :error="true"
+            :message="t('adminRefreshFailed')"
+            :retry-label="t('adminRetry')"
+            @retry="loadAll"
+        />
+        <PageState v-else-if="!loaded" :loading="true" :message="t('loading')" />
+        <template v-if="loaded">
+            <section class="pool-card">
+                <div class="section-title">
+                    <h3>Mihomo 状态</h3>
+                    <el-tag :type="status.mihomo?.ready ? 'success' : 'danger'">{{
+                        status.mihomo?.ready ? "就绪" : "未就绪"
+                    }}</el-tag>
+                </div>
+                <div class="status-grid">
+                    <span>节点池：{{ status.enabled ? "已启用" : "已停用" }}</span>
+                    <span>二进制：{{ status.mihomo?.binaryFound ? "已找到" : "未找到" }}</span>
+                    <span>版本：{{ status.mihomo?.version || "-" }}</span>
+                    <span>节点 / 当前账号绑定：{{ status.nodeCount || 0 }} / {{ status.bindingCount || 0 }}</span>
+                </div>
                 <el-alert
-                    v-if="nodeForm.type === 'direct'"
-                    title="直连节点使用 VPS 自身出口，不启动 Mihomo listener，也不继承环境代理。"
-                    type="info"
+                    v-if="status.mihomo?.lastError"
+                    :title="status.mihomo.lastError"
+                    type="error"
                     :closable="false"
                 />
-                <el-form-item v-if="nodeForm.type !== 'direct'" label="主机"
-                    ><el-input v-model="nodeForm.host"
-                /></el-form-item>
-                <el-form-item v-if="nodeForm.type !== 'direct'" label="端口"
-                    ><el-input-number v-model="nodeForm.port" :min="1" :max="65535"
-                /></el-form-item>
-                <el-form-item v-if="nodeForm.type === 'ss'" label="加密"
-                    ><el-input v-model="nodeForm.cipher"
-                /></el-form-item>
-                <el-form-item v-if="nodeForm.type === 'socks5'" label="用户名"
-                    ><el-input v-model="nodeForm.username"
-                /></el-form-item>
-                <el-form-item v-if="['vless', 'vmess'].includes(nodeForm.type)" label="UUID"
-                    ><el-input v-model="nodeForm.uuid"
-                /></el-form-item>
-                <el-form-item v-if="!['direct', 'vless', 'vmess'].includes(nodeForm.type)" label="密码"
-                    ><el-input
-                        v-model="nodeForm.password"
-                        show-password
-                        :placeholder="editingId ? '留空保留原密码' : ''"
-                /></el-form-item>
-                <el-form-item label="启用"><el-switch v-model="nodeForm.enabled" /></el-form-item>
-            </el-form>
-            <template #footer
-                ><el-button @click="nodeVisible = false">取消</el-button
-                ><el-button type="primary" @click="saveNode">保存</el-button></template
-            >
-        </el-dialog>
+                <div class="actions">
+                    <el-button @click="mihomo('start')">启动</el-button
+                    ><el-button @click="mihomo('stop')">停止</el-button
+                    ><el-button @click="mihomo('reload')">重载</el-button>
+                </div>
+                <details class="pool-settings">
+                    <summary>{{ t("adminProxySettings") }}</summary>
+                    <div class="actions">
+                        <el-switch v-model="settings.enabled" active-text="启用节点池" />
+                        <el-input-number
+                            v-model="settings.basePort"
+                            :min="1024"
+                            :max="65535"
+                            controls-position="right"
+                        />
+                        <span>起始端口</span>
+                        <el-input-number v-model="settings.controllerPort" :min="1024" :max="65535" />
+                        <span>控制端口</span>
+                        <el-input v-model="settings.binaryPath" placeholder="Mihomo 程序路径（留空使用环境配置）" />
+                    </div>
+                    <div class="actions">
+                        <el-input v-model="settings.testUrl" placeholder="节点测试 URL" style="width: 360px" />
+                        <el-input
+                            v-model="settings.exitIpUrl"
+                            clearable
+                            placeholder="出口 IP URL（可选）"
+                            style="width: 360px"
+                        />
+                        <el-input-number
+                            v-model="settings.healthTimeoutMs"
+                            :min="1000"
+                            :max="120000"
+                            :step="1000"
+                            controls-position="right"
+                        />
+                        <span>超时毫秒</span>
+                        <el-button :disabled="settingsConflict" @click="saveSettings">保存节点池设置</el-button>
+                    </div>
+                    <p v-if="settingsDirty">节点池设置尚未保存，保存后会应用必要的 Mihomo 重载。</p>
+                    <p v-if="settingsConflict">配置已被其他页面修改，请放弃草稿并刷新后处理差异。</p>
+                    <el-button
+                        @click="
+                            savedSettings = null;
+                            loadAll();
+                        "
+                        >放弃设置草稿 / 刷新</el-button
+                    >
+                </details>
+            </section>
 
-        <el-dialog
-            v-model="importVisible"
-            title="批量导入分享链接 / Clash / Base64"
-            width="min(650px, calc(100vw - 24px))"
-            class="proxy-dialog"
-        >
-            <el-radio-group v-model="importFormat"
-                ><el-radio-button value="links">分享链接</el-radio-button
-                ><el-radio-button value="subscription">Clash / Base64</el-radio-button></el-radio-group
-            >
-            <el-input v-model="importText" type="textarea" :rows="10" placeholder="粘贴订阅内容，或每行一个分享链接" />
-            <template #footer
-                ><el-button @click="previewImport">预览</el-button
-                ><el-button type="primary" @click="commitImport">导入</el-button></template
-            >
-        </el-dialog>
+            <section class="pool-card">
+                <div class="section-title">
+                    <h3>代理节点</h3>
+                    <div>
+                        <el-button type="danger" plain :disabled="!selectedNodes.length" @click="deleteSelectedNodes"
+                            >删除选中</el-button
+                        ><el-button @click="importVisible = true">批量导入</el-button
+                        ><el-button type="primary" @click="openNode()">添加节点</el-button>
+                    </div>
+                </div>
+                <el-table
+                    ref="nodeTable"
+                    class="desktop-list"
+                    :data="nodes"
+                    empty-text="暂无节点"
+                    @selection-change="selectedNodes = $event"
+                >
+                    <el-table-column type="selection" width="45" />
+                    <el-table-column prop="name" label="名称" min-width="130" />
+                    <el-table-column label="类型" width="90">
+                        <template #default="{ row }">{{ row.type === "direct" ? "直连" : row.type }}</template>
+                    </el-table-column>
+                    <el-table-column label="远程地址" min-width="180"
+                        ><template #default="{ row }">{{
+                            row.type === "direct" ? "VPS 本机出口" : `${row.host}:${row.port}`
+                        }}</template></el-table-column
+                    >
+                    <el-table-column label="本地端口" width="100">
+                        <template #default="{ row }">{{
+                            row.type === "direct" ? "不经过 Mihomo" : row.localPort
+                        }}</template>
+                    </el-table-column>
+                    <el-table-column label="延迟" width="90">
+                        <template #default="{ row }">{{
+                            row.latencyMs == null ? "-" : `${row.latencyMs} ms`
+                        }}</template>
+                    </el-table-column>
+                    <el-table-column prop="exitIp" label="出口 IP" min-width="130" />
+                    <el-table-column prop="boundAccounts" label="绑定" width="70" />
+                    <el-table-column label="状态" width="100"
+                        ><template #default="{ row }"
+                            ><el-tag :type="row.enabled && row.status !== 'missing' ? 'success' : 'info'">{{
+                                row.status === "missing" ? "订阅缺失" : row.enabled ? "启用" : "停用"
+                            }}</el-tag></template
+                        ></el-table-column
+                    >
+                    <el-table-column label="操作" width="220"
+                        ><template #default="{ row }"
+                            ><el-button link @click="testNode(row)">测试</el-button
+                            ><el-button link @click="openNode(row)">编辑</el-button
+                            ><el-button link type="danger" @click="removeNode(row)">删除</el-button></template
+                        ></el-table-column
+                    >
+                </el-table>
+                <div class="mobile-list">
+                    <p v-if="!nodes.length">暂无节点</p>
+                    <article v-for="row in nodes" :key="row.id" class="mobile-item">
+                        <el-checkbox
+                            :model-value="selectedNodes.some(item => item.id === row.id)"
+                            @change="value => nodeTable?.toggleRowSelection(row, value)"
+                            >{{ row.name }}</el-checkbox
+                        >
+                        <p>
+                            {{ row.type === "direct" ? "直连" : row.type }} ·
+                            {{ row.status === "missing" ? "订阅缺失" : row.enabled ? "启用" : "停用" }} ·
+                            {{ row.latencyMs == null ? "-" : `${row.latencyMs} ms` }}
+                        </p>
+                        <p>出口 IP：{{ row.exitIp || "-" }} · 绑定：{{ row.boundAccounts || 0 }}</p>
+                        <details>
+                            <summary>地址和本地端口</summary>
+                            <p>
+                                {{
+                                    row.type === "direct"
+                                        ? "VPS 本机出口，不经过 Mihomo"
+                                        : `${row.host}:${row.port} / ${row.localPort || "-"}`
+                                }}
+                            </p>
+                        </details>
+                        <div class="actions">
+                            <el-button @click="testNode(row)">测试</el-button
+                            ><el-button @click="openNode(row)">编辑</el-button
+                            ><el-button type="danger" plain @click="removeNode(row)">删除</el-button>
+                        </div>
+                    </article>
+                </div>
+            </section>
 
-        <el-dialog
-            v-model="subscriptionVisible"
-            title="添加订阅"
-            width="min(520px, calc(100vw - 24px))"
-            class="proxy-dialog"
-        >
-            <el-input v-model="subscriptionForm.name" placeholder="名称" /><el-input
-                v-model="subscriptionForm.url"
-                placeholder="https://..."
-            />
-            <template #footer
-                ><el-button @click="subscriptionVisible = false">取消</el-button
-                ><el-button type="primary" @click="addSubscription">保存</el-button></template
+            <section class="pool-card">
+                <div class="section-title">
+                    <h3>订阅（手动刷新）</h3>
+                    <div>
+                        <el-button
+                            type="danger"
+                            plain
+                            :disabled="!selectedSubscriptions.length"
+                            @click="deleteSelectedSubscriptions"
+                            >删除选中</el-button
+                        >
+                        <el-button type="primary" @click="subscriptionVisible = true">添加订阅</el-button>
+                    </div>
+                </div>
+                <el-table
+                    ref="subscriptionTable"
+                    class="desktop-list"
+                    :data="subscriptions"
+                    empty-text="暂无订阅"
+                    @selection-change="selectedSubscriptions = $event"
+                >
+                    <el-table-column type="selection" width="45" />
+                    <el-table-column prop="name" label="名称" />
+                    <el-table-column prop="url" label="地址（已脱敏）" min-width="220" />
+                    <el-table-column prop="nodeCount" label="节点" width="70" />
+                    <el-table-column prop="lastRefreshedAt" label="最近刷新" min-width="170" />
+                    <el-table-column label="操作" width="140"
+                        ><template #default="{ row }"
+                            ><el-button link @click="refreshSubscription(row)">刷新</el-button
+                            ><el-button link type="danger" @click="removeSubscription(row)">删除</el-button></template
+                        ></el-table-column
+                    >
+                </el-table>
+                <div class="mobile-list">
+                    <p v-if="!subscriptions.length">暂无订阅</p>
+                    <article v-for="row in subscriptions" :key="row.id" class="mobile-item">
+                        <el-checkbox
+                            :model-value="selectedSubscriptions.some(item => item.id === row.id)"
+                            @change="value => subscriptionTable?.toggleRowSelection(row, value)"
+                            >{{ row.name }}</el-checkbox
+                        >
+                        <p>地址（已脱敏）：{{ row.url }}</p>
+                        <p>节点：{{ row.nodeCount }} · 最近刷新：{{ row.lastRefreshedAt || "-" }}</p>
+                        <div class="actions">
+                            <el-button @click="refreshSubscription(row)">刷新</el-button
+                            ><el-button type="danger" plain @click="removeSubscription(row)">删除</el-button>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section class="pool-card">
+                <div class="section-title">
+                    <h3>账号出口</h3>
+                    <div>
+                        <el-button @click="applyIdle">应用空闲账号</el-button
+                        ><el-button @click="applyPending">排队应用全部</el-button>
+                    </div>
+                </div>
+                <div class="actions">
+                    <el-input v-model="accountSearch" clearable placeholder="搜索账号" style="width: 220px" />
+                    <el-select v-model="stateFilter" clearable placeholder="全部状态" style="width: 140px">
+                        <el-option v-for="state in bindingStates" :key="state" :label="state" :value="state" />
+                    </el-select>
+                    <el-select v-model="nodeFilter" clearable placeholder="全部出口组" style="width: 180px">
+                        <el-option label="未绑定" value="__unbound__" />
+                        <el-option v-for="node in nodes" :key="node.id" :label="node.name" :value="node.id" />
+                    </el-select>
+                    <el-select v-model="batchNodeId" clearable placeholder="批量绑定节点" style="width: 180px">
+                        <el-option v-for="node in usableNodes" :key="node.id" :label="node.name" :value="node.id" />
+                    </el-select>
+                    <el-button :disabled="!selectedBindings.length" @click="saveBatchBinding">保存选中绑定</el-button>
+                </div>
+                <p>未登录账号可先保存出口绑定，首次登录及后续请求会沿用该节点，无需点击「应用」。</p>
+                <el-table
+                    ref="bindingTable"
+                    class="desktop-list"
+                    :data="pagedBindings"
+                    empty-text="暂无账号"
+                    @selection-change="selectedBindings = $event"
+                >
+                    <el-table-column type="selection" width="45" />
+                    <el-table-column label="#" width="85"
+                        ><template #default="{ row }">{{ row.authIndex === null ? "未登录" : row.authIndex }}</template>
+                    </el-table-column>
+                    <el-table-column prop="accountName" label="账号" min-width="180" />
+                    <el-table-column prop="proxySource" label="当前来源" width="145" />
+                    <el-table-column label="期望节点" min-width="170"
+                        ><template #default="{ row }"
+                            ><el-select
+                                v-model="row.desiredNodeId"
+                                clearable
+                                placeholder="未绑定"
+                                @change="saveBinding(row)"
+                                ><el-option
+                                    v-for="node in usableNodes"
+                                    :key="node.id"
+                                    :label="node.name"
+                                    :value="node.id" /></el-select></template
+                    ></el-table-column>
+                    <el-table-column label="状态" width="110"
+                        ><template #default="{ row }"
+                            ><el-tag :type="stateType(row.state)">{{ row.state }}</el-tag></template
+                        ></el-table-column
+                    >
+                    <el-table-column prop="inflight" label="在途" width="70" />
+                    <el-table-column label="操作" width="90"
+                        ><template #default="{ row }"
+                            ><el-button
+                                link
+                                :disabled="row.authIndex === null || row.state === 'applied'"
+                                @click="applyOne(row)"
+                                >应用</el-button
+                            ></template
+                        ></el-table-column
+                    >
+                </el-table>
+                <div class="mobile-list">
+                    <p v-if="!pagedBindings.length">暂无账号</p>
+                    <article v-for="row in pagedBindings" :key="row.accountKey" class="mobile-item">
+                        <el-checkbox
+                            :model-value="selectedBindings.some(item => item.accountKey === row.accountKey)"
+                            @change="value => bindingTable?.toggleRowSelection(row, value)"
+                            >{{ row.accountName }}</el-checkbox
+                        >
+                        <p>
+                            {{ row.authIndex === null ? "未登录" : `#${row.authIndex}` }} · 当前来源：{{
+                                row.proxySource || "-"
+                            }}
+                        </p>
+                        <p>状态：{{ row.state }} · 在途：{{ row.inflight || 0 }}</p>
+                        <label
+                            >期望节点<el-select v-model="row.desiredNodeId" clearable placeholder="未绑定"
+                                ><el-option
+                                    v-for="node in usableNodes"
+                                    :key="node.id"
+                                    :label="node.name"
+                                    :value="node.id" /></el-select
+                        ></label>
+                        <div class="actions">
+                            <el-button @click="saveBinding(row)">保存绑定</el-button
+                            ><el-button
+                                :disabled="row.authIndex === null || row.state === 'applied'"
+                                @click="applyOne(row)"
+                                >应用</el-button
+                            >
+                        </div>
+                    </article>
+                </div>
+                <el-pagination
+                    v-model:current-page="accountPage"
+                    v-model:page-size="accountPageSize"
+                    class="pagination desktop-list"
+                    layout="total, sizes, prev, pager, next"
+                    :page-sizes="[20, 50, 100]"
+                    :total="filteredBindings.length"
+                />
+                <div class="mobile-list mobile-pagination">
+                    <span>共 {{ filteredBindings.length }} 个账号</span>
+                    <el-select v-model="accountPageSize" aria-label="每页账号数"
+                        ><el-option v-for="size in [20, 50, 100]" :key="size" :label="`每页 ${size} 条`" :value="size"
+                    /></el-select>
+                    <div class="actions">
+                        <el-button :disabled="accountPage <= 1" @click="accountPage--">上一页</el-button
+                        ><span
+                            >{{ accountPage }} /
+                            {{ Math.max(1, Math.ceil(filteredBindings.length / accountPageSize)) }}</span
+                        ><el-button
+                            :disabled="accountPage * accountPageSize >= filteredBindings.length"
+                            @click="accountPage++"
+                            >下一页</el-button
+                        >
+                    </div>
+                </div>
+            </section>
+
+            <el-dialog
+                v-model="nodeVisible"
+                :title="editingId ? '编辑节点' : '添加节点'"
+                width="min(520px, calc(100vw - 24px))"
+                class="proxy-dialog"
             >
-        </el-dialog>
+                <el-form label-position="top">
+                    <el-form-item label="类型"
+                        ><el-select v-model="nodeForm.type"
+                            ><el-option
+                                v-for="type in ['direct', 'ss', 'socks5', 'trojan', 'vless', 'vmess']"
+                                :key="type"
+                                :label="type === 'direct' ? '直连（VPS 出口）' : type"
+                                :value="type" /></el-select
+                    ></el-form-item>
+                    <el-form-item label="名称"><el-input v-model="nodeForm.name" /></el-form-item>
+                    <el-alert
+                        v-if="nodeForm.type === 'direct'"
+                        title="直连节点使用 VPS 自身出口，不启动 Mihomo listener，也不继承环境代理。"
+                        type="info"
+                        :closable="false"
+                    />
+                    <el-form-item v-if="nodeForm.type !== 'direct'" label="主机"
+                        ><el-input v-model="nodeForm.host"
+                    /></el-form-item>
+                    <el-form-item v-if="nodeForm.type !== 'direct'" label="端口"
+                        ><el-input-number v-model="nodeForm.port" :min="1" :max="65535"
+                    /></el-form-item>
+                    <el-form-item v-if="nodeForm.type === 'ss'" label="加密"
+                        ><el-input v-model="nodeForm.cipher"
+                    /></el-form-item>
+                    <el-form-item v-if="nodeForm.type === 'socks5'" label="用户名"
+                        ><el-input v-model="nodeForm.username"
+                    /></el-form-item>
+                    <el-form-item v-if="['vless', 'vmess'].includes(nodeForm.type)" label="UUID"
+                        ><el-input v-model="nodeForm.uuid"
+                    /></el-form-item>
+                    <el-form-item v-if="!['direct', 'vless', 'vmess'].includes(nodeForm.type)" label="密码"
+                        ><el-input
+                            v-model="nodeForm.password"
+                            show-password
+                            :placeholder="editingId ? '留空保留原密码' : ''"
+                    /></el-form-item>
+                    <el-form-item label="启用"><el-switch v-model="nodeForm.enabled" /></el-form-item>
+                </el-form>
+                <template #footer
+                    ><el-button @click="nodeVisible = false">取消</el-button
+                    ><el-button type="primary" @click="saveNode">保存</el-button></template
+                >
+            </el-dialog>
+
+            <el-dialog
+                v-model="importVisible"
+                title="批量导入分享链接 / Clash / Base64"
+                width="min(650px, calc(100vw - 24px))"
+                class="proxy-dialog"
+            >
+                <el-radio-group v-model="importFormat"
+                    ><el-radio-button value="links">分享链接</el-radio-button
+                    ><el-radio-button value="subscription">Clash / Base64</el-radio-button></el-radio-group
+                >
+                <el-input
+                    v-model="importText"
+                    type="textarea"
+                    :rows="10"
+                    placeholder="粘贴订阅内容，或每行一个分享链接"
+                />
+                <template #footer
+                    ><el-button @click="previewImport">预览</el-button
+                    ><el-button type="primary" @click="commitImport">导入</el-button></template
+                >
+            </el-dialog>
+
+            <el-dialog
+                v-model="subscriptionVisible"
+                title="添加订阅"
+                width="min(520px, calc(100vw - 24px))"
+                class="proxy-dialog"
+            >
+                <el-input v-model="subscriptionForm.name" placeholder="名称" /><el-input
+                    v-model="subscriptionForm.url"
+                    placeholder="https://..."
+                />
+                <template #footer
+                    ><el-button @click="subscriptionVisible = false">取消</el-button
+                    ><el-button type="primary" @click="addSubscription">保存</el-button></template
+                >
+            </el-dialog>
+        </template>
     </div>
 </template>
 
 <script setup>
+import PageHeader from "../common/PageHeader.vue";
+import PageState from "../common/PageState.vue";
+import { useI18n } from "../../composables/useI18n";
+const { t } = useI18n();
+const loaded = ref(false),
+    loadError = ref(false);
+import { useDraftGuard } from "../../composables/useDraftGuard";
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
@@ -496,6 +537,8 @@ const loadAll = async () => {
             request("/api/proxy-pool/bindings"),
             request("/api/proxy-pool/subscriptions"),
         ]);
+        loaded.value = true;
+        loadError.value = false;
         Object.assign(status, s);
         if (!settingsDirty.value) {
             Object.assign(settings, cfg);
@@ -506,6 +549,7 @@ const loadAll = async () => {
         bindings.value = b.bindings;
         subscriptions.value = sub.subscriptions;
     } catch (error) {
+        loadError.value = true;
         ElMessage.error(error.message);
     }
 };
@@ -725,6 +769,8 @@ const stateType = state =>
     ({ applied: "success", draining: "warning", error: "danger", pending: "warning", rebuilding: "warning" })[state] ||
     "info";
 onMounted(loadAll);
+
+useDraftGuard(() => settingsDirty.value);
 </script>
 
 <style scoped lang="less">
@@ -751,7 +797,7 @@ onMounted(loadAll);
     padding: 20px;
     min-width: 0;
     border: 1px solid var(--el-border-color-light);
-    border-radius: 12px;
+    border-radius: 10px;
     background: var(--el-bg-color);
 }
 .status-grid {

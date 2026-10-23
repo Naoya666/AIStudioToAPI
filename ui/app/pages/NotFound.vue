@@ -7,33 +7,22 @@
 
 <template>
     <div class="not-found">
-        <h1>Page not found</h1>
-        <p>The page you requested does not exist.</p>
-        <a href="/">Return to status</a>
+        <PageState :message="t('adminNotFoundDescription')">
+            <h1>{{ t("adminNotFound") }}</h1>
+            <router-link to="/">{{ t("adminOverview") }}</router-link>
+        </PageState>
     </div>
 </template>
-
+<script setup>
+import PageState from "../components/common/PageState.vue";
+import { useI18n } from "../composables/useI18n";
+const { t } = useI18n();
+</script>
 <style scoped>
 .not-found {
-    align-items: center;
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    justify-content: center;
-}
-
-.not-found h1 {
-    font-size: 2rem;
-    margin-bottom: 1rem;
-}
-
-.not-found a {
-    color: #007bff;
-    margin-top: 1rem;
-    text-decoration: none;
-}
-
-.not-found a:hover {
-    text-decoration: underline;
+    min-height: 100vh;
+    display: grid;
+    place-content: center;
+    padding: 16px;
 }
 </style>

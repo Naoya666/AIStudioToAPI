@@ -242,6 +242,7 @@ npm run build:ui
 - [模型调度](docs/zh/model-aware-scheduling.md)
 - [Nginx 反向代理](docs/zh/nginx-setup.md)
 - [公开用量看板](docs/zh/public-dashboard-design.md)
+- [管理端前端统一改造方案（待实施）](docs/zh/frontend-unification-plan.md)
 
 ## 来源、致谢与许可证
 

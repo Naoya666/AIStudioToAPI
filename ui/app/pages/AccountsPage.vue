@@ -1,7 +1,19 @@
 <template>
     <section class="accounts-panel">
+        <PageHeader :title="t('accountManagement')" :description="t('adminAccountsDescription')"
+            ><template #actions
+                ><ElButton type="primary" @click="openNew">{{ l("新增账号", "Add account") }}</ElButton></template
+            ></PageHeader
+        >
+        <PageState
+            v-if="loadError"
+            :error="true"
+            :message="t('adminRefreshFailed')"
+            :retry-label="t('adminRetry')"
+            @retry="refresh"
+        />
+        <PageState v-else-if="!loaded" :loading="true" :message="t('loading')" />
         <div class="account-toolbar page-actions">
-            <ElButton type="primary" @click="openNew">{{ l("新增账号", "Add account") }}</ElButton>
             <ElButton :disabled="isBusy" @click="legacyActions.uploadAuth?.()">{{
                 l("上传 Auth", "Upload Auth")
             }}</ElButton>
@@ -21,690 +33,655 @@
             </ElTooltip>
             <ElButton @click="router.push('/auth')">{{ l("VNC 人工登录", "Manual VNC login") }}</ElButton>
         </div>
-        <ElCard class="queue-card">
-            <div class="account-toolbar">
-                <strong>{{ l("登录队列", "Login queue") }}</strong>
-                <ElTooltip
-                    :content="
-                        l(
-                            '控制新增账号自动登录及会话过期后的自动恢复；关闭后可先保存账密和验证器，再手动批量登录。运行中的任务会继续完成。',
-                            'Controls new-account login and expired-session recovery. Turn off to save credentials and authenticators before manual batch login. Running tasks continue.'
-                        )
+        <template v-if="loaded">
+            <ElCard class="queue-card">
+                <div class="account-toolbar">
+                    <strong>{{ l("登录队列", "Login queue") }}</strong>
+                    <ElTooltip
+                        :content="
+                            l(
+                                '控制新增账号自动登录及会话过期后的自动恢复；关闭后可先保存账密和验证器，再手动批量登录。运行中的任务会继续完成。',
+                                'Controls new-account login and expired-session recovery. Turn off to save credentials and authenticators before manual batch login. Running tasks continue.'
+                            )
+                        "
+                    >
+                        <label class="queue-toggle"
+                            >{{ l("全局自动登录", "Automatic login") }}
+                            <ElSwitch v-model="autoRecoveryDraft" :disabled="busy" />
+                        </label>
+                    </ElTooltip>
+                    <span
+                        >{{ queue.running || 0 }} {{ l("运行", "running") }} / {{ queue.queued || 0 }}
+                        {{ l("排队", "queued") }} / {{ queue.retryWait || 0 }} {{ l("退避", "retrying") }} /
+                        {{ queue.faultSlots || 0 }} {{ l("故障槽", "fault slots") }}</span
+                    >
+                    <ElInputNumber v-model="concurrency" :min="1" :max="32" size="small" />
+                    <ElButton size="small" @click="saveQueueConfiguration">{{
+                        l("保存登录配置", "Save login settings")
+                    }}</ElButton>
+                    <ElButton size="small" @click="discardQueueDraft">{{
+                        l("放弃草稿 / 刷新", "Discard draft / refresh")
+                    }}</ElButton>
+                    <span v-if="queueConfigConflict">{{
+                        l("配置有并发修改，请处理草稿差异", "Settings changed elsewhere")
+                    }}</span>
+                    <ElButton size="small" @click="configure({ paused: !queue.paused })">{{
+                        queue.paused ? l("恢复队列", "Resume queue") : l("暂停队列", "Pause queue")
+                    }}</ElButton>
+                </div>
+                <p
+                    v-if="
+                        queueConfigBase &&
+                        (autoRecoveryDraft !== queueConfigBase.autoRecovery ||
+                            concurrency !== queueConfigBase.concurrency)
                     "
                 >
-                    <label class="queue-toggle"
-                        >{{ l("全局自动登录", "Automatic login") }}
-                        <ElSwitch v-model="autoRecoveryDraft" :disabled="busy" />
-                    </label>
-                </ElTooltip>
-                <span
-                    >{{ queue.running || 0 }} {{ l("运行", "running") }} / {{ queue.queued || 0 }}
-                    {{ l("排队", "queued") }} / {{ queue.retryWait || 0 }} {{ l("退避", "retrying") }} /
-                    {{ queue.faultSlots || 0 }} {{ l("故障槽", "fault slots") }}</span
+                    {{ l("登录配置草稿尚未保存；当前生效自动登录：", "Unsaved login draft; active automatic login: ") }}
+                    {{ queue.autoRecovery ? l("开启", "on") : l("关闭", "off") }}；{{
+                        l("当前并发：", "active concurrency: ")
+                    }}{{ queue.concurrency }}
+                </p>
+                <small
+                    >{{ queue.source }} · {{ l("单次超时", "Attempt timeout") }}
+                    {{ queue.attemptTimeout / 1000 }}s</small
                 >
-                <ElInputNumber v-model="concurrency" :min="1" :max="32" size="small" />
-                <ElButton size="small" @click="saveQueueConfiguration">{{
-                    l("保存登录配置", "Save login settings")
-                }}</ElButton>
-                <ElButton size="small" @click="discardQueueDraft">{{
-                    l("放弃草稿 / 刷新", "Discard draft / refresh")
-                }}</ElButton>
-                <span v-if="queueConfigConflict">{{
-                    l("配置有并发修改，请处理草稿差异", "Settings changed elsewhere")
-                }}</span>
-                <ElButton size="small" @click="configure({ paused: !queue.paused })">{{
-                    queue.paused ? l("恢复队列", "Resume queue") : l("暂停队列", "Pause queue")
+                <p v-for="execution in queue.executions || []" :key="execution.taskId">
+                    {{ execution.taskId }} · {{ execution.phase }} · {{ Math.round(execution.elapsedMs / 1000) }}s
+                    <span v-if="execution.fault">{{ l("执行器清理故障", "Executor cleanup fault") }}</span>
+                </p>
+            </ElCard>
+            <div class="account-toolbar">
+                <ElInput
+                    v-model="search"
+                    :placeholder="l('搜索邮箱 / 账号编号', 'Search email / account index')"
+                    clearable
+                />
+                <ElSelect v-model="filter" clearable :placeholder="l('全部状态', 'All states')">
+                    <ElOption
+                        v-for="value in [
+                            'valid',
+                            'not_logged_in',
+                            'credentials_missing',
+                            'expired',
+                            'queued',
+                            'running',
+                            'retry_wait',
+                            'manual_required',
+                            'duplicate',
+                        ]"
+                        :key="value"
+                        :value="value"
+                        :label="stateLabel(value)"
+                    />
+                </ElSelect>
+                <ElButton :disabled="isBusy" @click="legacyActions.deduplicate?.()">{{
+                    l("去重清理", "Clean duplicates")
                 }}</ElButton>
             </div>
-            <p
-                v-if="
-                    queueConfigBase &&
-                    (autoRecoveryDraft !== queueConfigBase.autoRecovery || concurrency !== queueConfigBase.concurrency)
-                "
-            >
-                {{ l("登录配置草稿尚未保存；当前生效自动登录：", "Unsaved login draft; active automatic login: ") }}
-                {{ queue.autoRecovery ? l("开启", "on") : l("关闭", "off") }}；{{
-                    l("当前并发：", "active concurrency: ")
-                }}{{ queue.concurrency }}
-            </p>
-            <small
-                >{{ queue.source }} · {{ l("单次超时", "Attempt timeout") }} {{ queue.attemptTimeout / 1000 }}s</small
-            >
-            <p v-for="execution in queue.executions || []" :key="execution.taskId">
-                {{ execution.taskId }} · {{ execution.phase }} · {{ Math.round(execution.elapsedMs / 1000) }}s
-                <span v-if="execution.fault">{{ l("执行器清理故障", "Executor cleanup fault") }}</span>
-            </p>
-        </ElCard>
-        <div class="account-toolbar">
-            <ElInput
-                v-model="search"
-                :placeholder="l('搜索邮箱 / 账号编号', 'Search email / account index')"
-                clearable
-            />
-            <ElSelect v-model="filter" clearable :placeholder="l('全部状态', 'All states')">
-                <ElOption
-                    v-for="value in [
-                        'valid',
-                        'not_logged_in',
-                        'credentials_missing',
-                        'expired',
-                        'queued',
-                        'running',
-                        'retry_wait',
-                        'manual_required',
-                        'duplicate',
-                    ]"
-                    :key="value"
-                    :value="value"
-                    :label="stateLabel(value)"
-                />
-            </ElSelect>
-            <ElButton :disabled="isBusy" @click="legacyActions.deduplicate?.()">{{
-                l("去重清理", "Clean duplicates")
-            }}</ElButton>
-        </div>
-        <ElCard>
-            <strong>{{ l("付费权限检测", "Benefit checks") }}</strong>
-            <span>
-                · {{ benefitTasks.filter(task => ["queued", "waiting", "running"].includes(task.status)).length }}
-                {{ l("进行中", "pending") }} / {{ benefitTasks.length }} {{ l("任务", "tasks") }}</span
-            >
-            <small>
-                ·
-                {{
-                    l(
-                        "仅查询权益，不生成内容；额度为本地预估。",
-                        "Queries benefits only, without generating content. Quotas are local estimates."
-                    )
-                }}</small
-            >
-            <details v-if="benefitTasks.length">
-                <summary>{{ l("逐账号结果与进度", "Per-account results and progress") }}</summary>
-                <p v-for="task in benefitTasks.slice().reverse().slice(0, 100)" :key="task.taskId">
-                    {{ task.authIndex === null ? task.accountId : "#" + task.authIndex }} ·
-                    {{ benefitState(task.status) }}
-                    <span v-if="task.reason"> · {{ task.reason }}</span>
-                    <ElButton
-                        v-if="['queued', 'waiting', 'running'].includes(task.status)"
-                        size="small"
-                        @click="cancelBenefits([task.accountId])"
-                        >{{ l("取消", "Cancel") }}</ElButton
-                    >
-                </p>
-            </details>
-        </ElCard>
-        <div class="account-toolbar batch-toolbar">
-            <span
-                >{{ l("已选", "Selected") }} {{ selected.length }}
-                {{ text("accountSelectedAcrossPages", "个（含其他页）", "(including other pages)") }}</span
-            >
-            <ElButton
-                size="small"
-                :title="l('选择当前筛选结果中的全部账号（含其他页）', 'Select all matching accounts across pages')"
-                :loading="selectingAll"
-                :disabled="selectingAll"
-                @click="selectAll"
-                >{{ text("accountSelectAll", "全选", "Select all") }}</ElButton
-            >
-            <ElButton size="small" @click="clearSelection">{{
-                text("accountClearSelection", "取消全选", "Clear selection")
-            }}</ElButton>
-            <ElButton
-                size="small"
-                :disabled="!selected.length || cancelling"
-                :loading="cancelling"
-                @click="batchCancelLogin"
-                >{{ text("accountCancelSelectedLogins", "批量取消登录", "Cancel selected logins") }}</ElButton
-            >
-            <ElButton
-                size="small"
-                :disabled="!selected.length || busy || loginSubmitting || cancelling"
-                :loading="loginSubmitting"
-                @click="batchLogin"
-                >{{ l("批量重新登录", "Log in selected") }}</ElButton
-            >
-            <ElButton size="small" :disabled="!selected.length || busy" @click="checkBenefits(selected)">{{
-                l("批量检测付费权限", "Check selected benefits")
-            }}</ElButton>
-            <ElButton
-                size="small"
-                :disabled="!selected.length || busy"
-                @click="cancelBenefits(selected.map(row => row.accountId))"
-                >{{ l("取消选中检测", "Cancel selected checks") }}</ElButton
-            >
-            <ElButton size="small" :disabled="!selected.length || busy" @click="batchRecovery(true)">{{
-                l("启用自动恢复", "Enable auto recovery")
-            }}</ElButton>
-            <ElButton size="small" :disabled="!selected.length || busy" @click="batchRecovery(false)">{{
-                l("取消自动恢复", "Disable auto recovery")
-            }}</ElButton>
-            <ElTooltip
-                :content="l('下载选中账号的 Cookie 和账密 CSV', 'Download selected Cookies and credentials CSV')"
-            >
-                <ElButton size="small" :disabled="!selected.length || busy" @click="downloadBundle">{{
-                    l("批量下载", "Download selected")
-                }}</ElButton>
-            </ElTooltip>
-            <ElButton
-                size="small"
-                type="danger"
-                plain
-                :disabled="!selected.length || isBusy || busy"
-                @click="deleteRows(selected)"
-                >{{ l("批量删除", "Delete selected") }}</ElButton
-            >
-        </div>
-        <p v-if="cancelResult" class="cancel-result">
-            {{ text("accountLoginCancelled", "取消成功", "Cancelled") }}
-            {{ cancelResult.cancelled + cancelResult.stopping - stoppingIds.length }} ·
-            {{ text("accountLoginCancelUnnecessary", "无需取消", "No cancellation needed") }}
-            {{ cancelResult.unnecessary }} · {{ text("accountLoginStopping", "执行器仍在停止", "Executors stopping") }}
-            {{ stoppingIds.length }} · {{ l("失败", "Failed") }}
-            {{ cancelResult.failed }}
-        </p>
-        <p v-for="result in cancelResult?.results.filter(item => item.error) || []" :key="result.accountId">
-            {{ result.accountId }}: {{ result.error }}
-        </p>
-        <div class="account-mobile-list">
-            <label class="mobile-page-selection">
-                <ElCheckbox
-                    :model-value="pageSelected"
-                    :indeterminate="pagePartial"
-                    :disabled="!accounts.length"
-                    @change="togglePage"
-                    >{{ l("选择本页", "Select this page") }}</ElCheckbox
+            <ElCard>
+                <strong>{{ l("付费权限检测", "Benefit checks") }}</strong>
+                <span>
+                    · {{ benefitTasks.filter(task => ["queued", "waiting", "running"].includes(task.status)).length }}
+                    {{ l("进行中", "pending") }} / {{ benefitTasks.length }} {{ l("任务", "tasks") }}</span
                 >
-            </label>
-            <article v-for="row in accounts" :key="row.accountId" class="account-mobile-card">
-                <div class="mobile-account-heading">
+                <small>
+                    ·
+                    {{
+                        l(
+                            "仅查询权益，不生成内容；额度为本地预估。",
+                            "Queries benefits only, without generating content. Quotas are local estimates."
+                        )
+                    }}</small
+                >
+                <details v-if="benefitTasks.length">
+                    <summary>{{ l("逐账号结果与进度", "Per-account results and progress") }}</summary>
+                    <p v-for="task in benefitTasks.slice().reverse().slice(0, 100)" :key="task.taskId">
+                        {{ task.authIndex === null ? task.accountId : "#" + task.authIndex }} ·
+                        {{ benefitState(task.status) }}
+                        <span v-if="task.reason"> · {{ task.reason }}</span>
+                        <ElButton
+                            v-if="['queued', 'waiting', 'running'].includes(task.status)"
+                            size="small"
+                            @click="cancelBenefits([task.accountId])"
+                            >{{ l("取消", "Cancel") }}</ElButton
+                        >
+                    </p>
+                </details>
+            </ElCard>
+            <div class="account-toolbar batch-toolbar">
+                <span
+                    >{{ l("已选", "Selected") }} {{ selected.length }}
+                    {{ text("accountSelectedAcrossPages", "个（含其他页）", "(including other pages)") }}</span
+                >
+                <ElButton
+                    size="small"
+                    :title="l('选择当前筛选结果中的全部账号（含其他页）', 'Select all matching accounts across pages')"
+                    :loading="selectingAll"
+                    :disabled="selectingAll || !total"
+                    @click="selectAll"
+                    >{{ text("accountSelectAll", "全选", "Select all") }}</ElButton
+                >
+                <ElButton size="small" @click="clearSelection">{{
+                    text("accountClearSelection", "取消全选", "Clear selection")
+                }}</ElButton>
+                <template v-if="selected.length">
+                    <ElButton
+                        size="small"
+                        :disabled="!selected.length || cancelling"
+                        :loading="cancelling"
+                        @click="batchCancelLogin"
+                        >{{ text("accountCancelSelectedLogins", "批量取消登录", "Cancel selected logins") }}</ElButton
+                    >
+                    <ElButton
+                        size="small"
+                        :disabled="!selected.length || busy || loginSubmitting || cancelling"
+                        :loading="loginSubmitting"
+                        @click="batchLogin"
+                        >{{ l("批量重新登录", "Log in selected") }}</ElButton
+                    >
+                    <ElButton size="small" :disabled="!selected.length || busy" @click="checkBenefits(selected)">{{
+                        l("批量检测付费权限", "Check selected benefits")
+                    }}</ElButton>
+                    <ElButton
+                        size="small"
+                        :disabled="!selected.length || busy"
+                        @click="cancelBenefits(selected.map(row => row.accountId))"
+                        >{{ l("取消选中检测", "Cancel selected checks") }}</ElButton
+                    >
+                    <ElButton size="small" :disabled="!selected.length || busy" @click="batchRecovery(true)">{{
+                        l("启用自动恢复", "Enable auto recovery")
+                    }}</ElButton>
+                    <ElButton size="small" :disabled="!selected.length || busy" @click="batchRecovery(false)">{{
+                        l("取消自动恢复", "Disable auto recovery")
+                    }}</ElButton>
+                    <ElTooltip
+                        :content="
+                            l('下载选中账号的 Cookie 和账密 CSV', 'Download selected Cookies and credentials CSV')
+                        "
+                    >
+                        <ElButton size="small" :disabled="!selected.length || busy" @click="downloadBundle">{{
+                            l("批量下载", "Download selected")
+                        }}</ElButton>
+                    </ElTooltip>
+                    <ElButton
+                        size="small"
+                        type="danger"
+                        plain
+                        :disabled="!selected.length || isBusy || busy"
+                        @click="deleteRows(selected)"
+                        >{{ l("批量删除", "Delete selected") }}</ElButton
+                    >
+                </template>
+            </div>
+            <p v-if="cancelResult" class="cancel-result">
+                {{ text("accountLoginCancelled", "取消成功", "Cancelled") }}
+                {{ cancelResult.cancelled + cancelResult.stopping - stoppingIds.length }} ·
+                {{ text("accountLoginCancelUnnecessary", "无需取消", "No cancellation needed") }}
+                {{ cancelResult.unnecessary }} ·
+                {{ text("accountLoginStopping", "执行器仍在停止", "Executors stopping") }} {{ stoppingIds.length }} ·
+                {{ l("失败", "Failed") }}
+                {{ cancelResult.failed }}
+            </p>
+            <p v-for="result in cancelResult?.results.filter(item => item.error) || []" :key="result.accountId">
+                {{ result.accountId }}: {{ result.error }}
+            </p>
+            <div class="account-mobile-list">
+                <label class="mobile-page-selection">
                     <ElCheckbox
-                        :model-value="isSelected(row)"
-                        :aria-label="l('选择账号', 'Select account') + ' ' + (row.email || row.displayName)"
-                        @change="value => toggleAccount(row, value)"
-                    />
-                    <span class="account-name"
-                        >{{ row.authIndex === null ? "—" : `#${row.authIndex}` }}
-                        {{ row.email || row.displayName }}</span
+                        :model-value="pageSelected"
+                        :indeterminate="pagePartial"
+                        :disabled="!accounts.length"
+                        @change="togglePage"
+                        >{{ l("选择本页", "Select this page") }}</ElCheckbox
                     >
-                </div>
-                <div class="account-badges">
-                    <ElTag
-                        v-if="
-                            schedulingMode === 'legacy' && row.authIndex !== null && row.authIndex === currentAuthIndex
-                        "
-                        size="small"
-                        >{{ l("当前", "Current") }}</ElTag
-                    >
-                    <ElTag v-if="row.isDuplicate" size="small" type="warning">{{ l("重复", "Duplicate") }}</ElTag>
-                    <ElTag v-if="row.disabled" size="small" type="danger">{{
-                        l("人工禁用", "Manually disabled")
-                    }}</ElTag>
-                </div>
-                <p><AccountTierBadge :account="row" /></p>
-                <p>
-                    {{ l("会话 / 恢复", "Session / recovery") }}：
-                    <span :class="['state-text', 'state-' + row.sessionState]">{{ stateLabel(row.sessionState) }}</span>
-                    /
-                    <span :class="['state-text', 'state-' + row.recoveryState]">{{
-                        stateLabel(row.recoveryState)
-                    }}</span>
-                </p>
-                <small v-if="row.loginStopping">{{
-                    text("accountLoginStopping", "执行器仍在停止", "Executors stopping")
-                }}</small>
-                <small v-if="row.lastFailure?.error" class="failure-reason">{{ row.lastFailure.error }}</small>
-                <p class="mobile-credentials">
-                    <span>{{ row.hasPassword ? "✓" : "—" }} Password</span
-                    ><span>{{ row.hasTotpSecret ? "✓" : "—" }} TOTP</span
-                    ><span>{{ row.hasRecoveryEmail ? "✓" : "—" }} {{ l("恢复邮箱", "Recovery email") }}</span>
-                </p>
-                <label class="queue-toggle"
-                    >{{ l("自动恢复", "Auto recovery") }}
-                    <ElSwitch
-                        :model-value="row.autoRecovery"
-                        :disabled="busy"
-                        @change="value => toggleRecovery(row, value)"
-                /></label>
-                <div class="row-actions">
-                    <ElButton size="small" @click="openEdit(row)">{{ l("编辑凭据", "Edit credentials") }}</ElButton>
-                    <ElButton
-                        size="small"
-                        :disabled="['queued', 'waiting', 'running'].includes(row.benefitTask?.status)"
-                        @click="checkBenefits([row])"
-                        >{{
-                            ["queued", "waiting", "running"].includes(row.benefitTask?.status)
-                                ? benefitState(row.benefitTask.status)
-                                : l("检测付费权限", "Check paid benefits")
-                        }}</ElButton
-                    >
-                    <ElButton size="small" @click="login(row)">{{ l("重新登录", "Log in") }}</ElButton>
-                    <ElButton
-                        v-if="schedulingMode === 'legacy' && row.authIndex !== null"
-                        size="small"
-                        :disabled="
-                            isBusy ||
-                            row.disabled ||
-                            row.sessionState !== 'valid' ||
-                            row.isDuplicate ||
-                            row.authIndex === currentAuthIndex
-                        "
-                        @click="legacyActions.switchAccount?.(row.authIndex)"
-                        >{{
-                            row.authIndex === currentAuthIndex
-                                ? l("当前账号", "Current")
-                                : accountDetails.find(item => item.index === row.authIndex)?.hasContext
-                                  ? l("快速切换", "Quick switch")
-                                  : l("切换", "Switch")
-                        }}</ElButton
-                    >
-                    <ElButton v-if="row.authIndex !== null" size="small" @click="downloadCookie(row)">{{
-                        l("下载", "Download")
-                    }}</ElButton>
-                    <ElButton v-if="row.currentTaskId" size="small" @click="cancel(row.currentTaskId)">{{
-                        l("取消", "Cancel")
-                    }}</ElButton>
-                    <ElButton size="small" @click="viewHistory(row)">{{ l("任务 / 日志", "Tasks / logs") }}</ElButton>
-                    <ElButton size="small" type="danger" plain :disabled="isBusy || busy" @click="deleteRows([row])">{{
-                        l("删除", "Delete")
-                    }}</ElButton>
-                </div>
-            </article>
-            <p v-if="!accounts.length">{{ l("暂无账号", "No accounts") }}</p>
-        </div>
-        <div class="account-table-scroll">
-            <ElTable ref="accountTable" :data="accounts" row-key="accountId" @selection-change="updatePageSelection">
-                <ElTableColumn type="selection" width="45" reserve-selection />
-                <ElTableColumn :label="l('账号', 'Account')" min-width="210">
-                    <template #default="{ row }">
+                </label>
+                <article v-for="row in accounts" :key="row.accountId" class="account-mobile-card">
+                    <div class="mobile-account-heading">
+                        <ElCheckbox
+                            :model-value="isSelected(row)"
+                            :aria-label="l('选择账号', 'Select account') + ' ' + (row.email || row.displayName)"
+                            @change="value => toggleAccount(row, value)"
+                        />
                         <span class="account-name"
                             >{{ row.authIndex === null ? "—" : `#${row.authIndex}` }}
                             {{ row.email || row.displayName }}</span
                         >
-                        <div class="account-badges">
-                            <ElTag
-                                v-if="
-                                    schedulingMode === 'legacy' &&
-                                    row.authIndex !== null &&
-                                    row.authIndex === currentAuthIndex
-                                "
-                                size="small"
-                                >{{ l("当前", "Current") }}</ElTag
-                            >
-                            <ElTag v-if="row.isDuplicate" size="small" type="warning">{{
-                                l("重复", "Duplicate")
-                            }}</ElTag>
-                            <ElTag v-if="row.disabled" size="small" type="danger">{{
-                                l("人工禁用", "Manually disabled")
-                            }}</ElTag>
-                        </div>
-                    </template>
-                </ElTableColumn>
-                <ElTableColumn :label="l('账号层级', 'Account tier')" min-width="160">
-                    <template #default="{ row }"><AccountTierBadge :account="row" /></template>
-                </ElTableColumn>
-                <ElTableColumn :label="l('会话 / 恢复', 'Session / recovery')" width="150">
-                    <template #default="{ row }">
+                    </div>
+                    <div class="account-badges">
+                        <ElTag
+                            v-if="
+                                schedulingMode === 'legacy' &&
+                                row.authIndex !== null &&
+                                row.authIndex === currentAuthIndex
+                            "
+                            size="small"
+                            >{{ l("当前", "Current") }}</ElTag
+                        >
+                        <ElTag v-if="row.isDuplicate" size="small" type="warning">{{ l("重复", "Duplicate") }}</ElTag>
+                        <ElTag v-if="row.disabled" size="small" type="danger">{{
+                            l("人工禁用", "Manually disabled")
+                        }}</ElTag>
+                    </div>
+                    <p><AccountTierBadge :account="row" /></p>
+                    <p>
+                        {{ l("会话 / 恢复", "Session / recovery") }}：
                         <span :class="['state-text', 'state-' + row.sessionState]">{{
                             stateLabel(row.sessionState)
-                        }}</span
-                        ><br />
+                        }}</span>
+                        /
                         <span :class="['state-text', 'state-' + row.recoveryState]">{{
                             stateLabel(row.recoveryState)
                         }}</span>
-                        <small v-if="row.loginStopping">{{
-                            text("accountLoginStopping", "执行器仍在停止", "Executors stopping")
-                        }}</small>
-                        <small v-if="row.lastFailure?.error" class="failure-reason">{{ row.lastFailure.error }}</small>
-                    </template>
-                </ElTableColumn>
-                <ElTableColumn :label="l('凭据', 'Credentials')" width="95">
-                    <template #default="{ row }"
-                        >{{ row.hasPassword ? "✓" : "—" }} Password<br />{{
-                            row.hasTotpSecret ? "✓" : "—"
-                        }}
-                        TOTP<br />{{ row.hasRecoveryEmail ? "✓" : "—" }} {{ l("恢复邮箱", "Recovery email") }}</template
-                    >
-                </ElTableColumn>
-                <ElTableColumn :label="l('自动恢复', 'Auto recovery')" width="95">
-                    <template #default="{ row }"
-                        ><ElSwitch
+                    </p>
+                    <small v-if="row.loginStopping">{{
+                        text("accountLoginStopping", "执行器仍在停止", "Executors stopping")
+                    }}</small>
+                    <small v-if="row.lastFailure?.error" class="failure-reason">{{ row.lastFailure.error }}</small>
+                    <p class="mobile-credentials">
+                        <span>{{ row.hasPassword ? "✓" : "—" }} Password</span
+                        ><span>{{ row.hasTotpSecret ? "✓" : "—" }} TOTP</span
+                        ><span>{{ row.hasRecoveryEmail ? "✓" : "—" }} {{ l("恢复邮箱", "Recovery email") }}</span>
+                    </p>
+                    <label class="queue-toggle"
+                        >{{ l("自动恢复", "Auto recovery") }}
+                        <ElSwitch
                             :model-value="row.autoRecovery"
                             :disabled="busy"
                             @change="value => toggleRecovery(row, value)"
-                    /></template>
-                </ElTableColumn>
-                <ElTableColumn :label="l('操作', 'Actions')" min-width="400">
-                    <template #default="{ row }">
-                        <div class="row-actions">
-                            <ElButton size="small" @click="openEdit(row)">{{
-                                l("编辑凭据", "Edit credentials")
-                            }}</ElButton>
-                            <ElButton
-                                size="small"
-                                :disabled="['queued', 'waiting', 'running'].includes(row.benefitTask?.status)"
-                                @click="checkBenefits([row])"
-                                >{{
-                                    ["queued", "waiting", "running"].includes(row.benefitTask?.status)
-                                        ? benefitState(row.benefitTask.status)
-                                        : l("检测付费权限", "Check paid benefits")
-                                }}</ElButton
-                            >
-                            <ElButton size="small" @click="login(row)">{{ l("重新登录", "Log in") }}</ElButton>
-                            <ElButton
-                                v-if="schedulingMode === 'legacy' && row.authIndex !== null"
-                                size="small"
-                                :disabled="
-                                    isBusy ||
-                                    row.disabled ||
-                                    row.sessionState !== 'valid' ||
-                                    row.isDuplicate ||
-                                    row.authIndex === currentAuthIndex
-                                "
-                                @click="legacyActions.switchAccount?.(row.authIndex)"
-                                >{{
-                                    row.authIndex === currentAuthIndex
-                                        ? l("当前账号", "Current")
-                                        : accountDetails.find(item => item.index === row.authIndex)?.hasContext
-                                          ? l("快速切换", "Quick switch")
-                                          : l("切换", "Switch")
-                                }}</ElButton
-                            >
-                            <ElButton v-if="row.authIndex !== null" size="small" @click="downloadCookie(row)">{{
-                                l("下载", "Download")
-                            }}</ElButton>
-                            <ElButton v-if="row.currentTaskId" size="small" @click="cancel(row.currentTaskId)">{{
-                                l("取消", "Cancel")
-                            }}</ElButton>
-                            <ElButton size="small" @click="viewHistory(row)">{{
-                                l("任务 / 日志", "Tasks / logs")
-                            }}</ElButton>
-                            <ElButton
-                                size="small"
-                                type="danger"
-                                plain
-                                :disabled="isBusy || busy"
-                                @click="deleteRows([row])"
-                                >{{ l("删除", "Delete") }}</ElButton
-                            >
-                        </div>
-                    </template>
-                </ElTableColumn>
-            </ElTable>
-        </div>
-        <ElPagination
-            v-model:current-page="page"
-            v-model:page-size="pageSize"
-            :page-sizes="[20, 50, 100]"
-            :total="total"
-            :layout="mobile ? 'total, sizes, prev, next' : 'total, sizes, prev, pager, next'"
-        />
-        <ElDialog
-            v-model="editVisible"
-            class="account-dialog"
-            :width="mobile ? 'calc(100vw - 24px)' : '50%'"
-            :title="editing ? l('编辑凭据', 'Edit credentials') : l('新增账号', 'Add account')"
-            @closed="clearForm"
-        >
-            <ElForm label-position="top">
-                <ElFormItem :label="l('手动层级', 'Manual tier')">
-                    <ElSelect v-model="form.manualTier">
-                        <ElOption
-                            :value="''"
-                            :label="l('未设置（跟随检测结果）', 'Unset (follow detected benefits)')"
-                        />
-                        <ElOption v-for="(name, tier) in tierNames" :key="tier" :value="tier" :label="name" />
-                    </ElSelect>
-                </ElFormItem>
-                <div v-if="editing" aria-live="polite">
-                    <p>
-                        {{ l("当前有效层级", "Effective tier") }}:
-                        {{ tierNames[form.manualTier || editing.tier?.detectedTier] || l("未知", "Unknown") }}
-                    </p>
-                    <p
-                        v-if="
-                            ['pro', 'ultra', 'ultra20'].includes(form.manualTier) &&
-                            editing.tier?.detectedTier === 'free'
-                        "
-                    >
-                        ⚠
-                        {{
-                            l(
-                                "手动设置为付费账号，但最近一次有效检测为 Free，请检查订阅或账号会话。",
-                                "Manually marked as paid, but the latest valid observation is Free. Check the subscription or session."
-                            )
-                        }}
-                    </p>
-                    <p>
-                        {{ l("原始权益（只读）", "Raw benefits (read-only)") }}:
-                        {{
-                            editing.benefitObservation?.state === "ready-free"
-                                ? "Free"
-                                : editing.benefitObservation?.rawTier || l("未检测", "Not checked")
-                        }}
-                    </p>
-                    <p>
-                        {{ l("来源 / 成功观察时间", "Source / observed at") }}:
-                        {{ editing.benefitObservation?.source || "—" }} /
-                        {{
-                            editing.benefitObservation?.observedAt
-                                ? new Date(editing.benefitObservation.observedAt).toLocaleString()
-                                : "—"
-                        }}
-                    </p>
-                    <p>
-                        {{
-                            editing.tier?.observationCurrent
-                                ? l("当前会话", "Current session")
-                                : l("无当前会话检测，待复检", "No current session observation; recheck needed")
-                        }}
-                    </p>
-                    <p>
-                        {{ l("最近检测", "Last check") }}: {{ benefitState(editing.benefitLastCheck?.status) }} ·
-                        {{ editing.benefitLastCheck?.reason || "—" }} ·
-                        {{
-                            editing.benefitLastCheck?.checkedAt
-                                ? new Date(editing.benefitLastCheck.checkedAt).toLocaleString()
-                                : "—"
-                        }}
-                    </p>
-                </div>
-                <ElFormItem label="Email"><ElInput v-model="form.email" autocomplete="off" /></ElFormItem>
-                <ElFormItem label="Password"
-                    ><ElInput
-                        v-model="form.password"
-                        type="password"
-                        show-password
-                        autocomplete="new-password"
-                        :placeholder="editing ? l('留空不修改', 'Leave empty to preserve') : ''"
-                /></ElFormItem>
-                <ElFormItem :label="l('恢复邮箱（可选）', 'Recovery email (optional)')"
-                    ><ElInput
-                        v-model="form.recoveryEmail"
-                        autocomplete="off"
-                        :placeholder="l('留空不修改', 'Empty preserves existing')"
-                /></ElFormItem>
-                <ElFormItem label="TOTP / otpauth://"
-                    ><ElInput
-                        v-model="form.totpSecret"
-                        type="password"
-                        show-password
-                        autocomplete="off"
-                        :placeholder="l('可选；留空不修改', 'Optional; empty preserves existing')"
-                /></ElFormItem>
-                <ElButton v-if="editing" @click="reveal">{{
-                    l("显示已保存凭据", "Reveal saved credentials")
-                }}</ElButton>
-                <template v-if="editing"
-                    ><ElCheckbox v-model="form.clearPassword">{{ l("清除密码", "Clear password") }}</ElCheckbox
-                    ><ElCheckbox v-model="form.clearRecoveryEmail">{{
-                        l("清除恢复邮箱", "Clear recovery email")
-                    }}</ElCheckbox
-                    ><ElCheckbox v-model="form.clearTotpSecret">{{
-                        l("清除验证器密钥", "Clear TOTP secret")
-                    }}</ElCheckbox
-                    ><ElCheckbox v-model="form.loginNow">{{
-                        l("保存后重新登录", "Log in after saving")
-                    }}</ElCheckbox></template
-                >
-            </ElForm>
-            <template #footer
-                ><ElButton type="primary" :loading="busy" @click="save">{{ l("保存", "Save") }}</ElButton></template
-            >
-        </ElDialog>
-        <ElDialog
-            v-model="importVisible"
-            class="account-dialog account-import-dialog"
-            :title="l('导入预览', 'Import preview')"
-            :width="mobile ? 'calc(100vw - 24px)' : '85%'"
-            @closed="clearImport"
-        >
-            <div class="import-settings">
-                <ElCheckbox v-model="skipExisting" :disabled="importLocked">{{
-                    text("accountImportSkipExisting", "跳过已有账号", "Skip existing accounts")
-                }}</ElCheckbox>
-                <small>{{
-                    text(
-                        "accountImportSkipExistingHint",
-                        "仅导入新账号；已有账号不更新密码、验证器或恢复邮箱。",
-                        "Import new accounts only; preserve existing passwords, authenticators and recovery emails."
-                    )
-                }}</small>
-            </div>
-            <ElSelect v-model="importKind" :disabled="importBusy"
-                ><ElOption
-                    label="CSV: email,password,recovery_email,totp_secret (兼容 totpSecret)"
-                    value="csv" /><ElOption label="Authenticator / otpauth-migration / Base32" value="authenticator"
-            /></ElSelect>
-            <input type="file" :disabled="importBusy" accept=".csv,.txt" @change="readImportFile" />
-            <ElInput
-                v-model="importContent"
-                :disabled="importBusy"
-                type="textarea"
-                :rows="5"
-                :placeholder="l('粘贴 CSV 或验证器链接 / 密钥', 'Paste CSV or authenticator links / secrets')"
-            />
-            <ElButton :disabled="importBusy" @click="previewImport">{{ l("解析预览", "Preview") }}</ElButton>
-            <p v-if="preview && !preview.complete">
-                {{
-                    l(
-                        "迁移批次缺失，补全后才能提交。",
-                        "Migration batches are incomplete. Add missing batches before committing."
-                    )
-                }}
-            </p>
-            <div v-if="preview" class="account-toolbar">
-                <span>{{
-                    queue.autoRecovery
-                        ? text(
-                              "accountImportAutoLogin",
-                              "新账号导入后将自动登录",
-                              "New accounts will queue for automatic login"
-                          )
-                        : text("accountImportSaveOnly", "新账号仅创建记录", "New accounts will only be saved")
-                }}</span>
-                <ElCheckbox
-                    :model-value="skipState.checked"
-                    :indeterminate="skipState.partial"
-                    :disabled="importLocked || !actionableRows.length"
-                    @change="value => bulkChoice(unprotectedRows, 'skip', value)"
-                    >{{ text("accountImportSkipAll", "全部跳过", "Skip all") }}</ElCheckbox
-                >
-                <ElCheckbox
-                    :model-value="overwriteState.checked"
-                    :indeterminate="overwriteState.partial"
-                    :disabled="importLocked || !overwriteRows.length"
-                    @change="value => bulkChoice(overwriteRows, 'overwrite', value)"
-                    >{{ text("accountImportOverwriteAll", "全部覆盖", "Overwrite all") }}</ElCheckbox
-                >
-            </div>
-            <div v-if="preview" class="import-mobile-list">
-                <article v-for="row in preview.rows" :key="row.index" class="account-mobile-card">
-                    <strong class="account-name">{{ row.email || l("未命名导入项", "Unnamed import entry") }}</strong>
-                    <p v-if="row.error" class="state-failed">{{ row.error }}</p>
-                    <div class="import-mapping">
-                        <ElSelect
-                            v-if="importKind === 'authenticator'"
-                            v-model="choices[row.index].accountId"
-                            :disabled="importLocked || !!row.error || row.unchanged"
-                            clearable
-                            :placeholder="l('选择账号或跳过', 'Select account or skip')"
-                            ><ElOption
-                                v-for="account in mappingAccounts"
-                                :key="account.accountId"
-                                :value="account.accountId"
-                                :label="account.email || account.displayName"
-                        /></ElSelect>
-                        <span v-else-if="!row.accountId">{{
-                            text("accountImportNewRecord", "将创建新账号", "New account will be created")
-                        }}</span>
-                        <span v-else>{{ l("匹配已有账号", "Existing account matched") }}</span>
-                    </div>
-                    <div class="import-row-actions">
-                        <ElCheckbox
-                            v-model="choices[row.index].overwrite"
+                    /></label>
+                    <div class="row-actions">
+                        <ElButton size="small" @click="openEdit(row)">{{ l("编辑凭据", "Edit credentials") }}</ElButton>
+                        <ElButton
+                            size="small"
+                            :disabled="['queued', 'waiting', 'running'].includes(row.benefitTask?.status)"
+                            @click="checkBenefits([row])"
+                            >{{
+                                ["queued", "waiting", "running"].includes(row.benefitTask?.status)
+                                    ? benefitState(row.benefitTask.status)
+                                    : l("检测付费权限", "Check paid benefits")
+                            }}</ElButton
+                        >
+                        <ElButton size="small" @click="login(row)">{{ l("重新登录", "Log in") }}</ElButton>
+                        <ElButton
+                            v-if="schedulingMode === 'legacy' && row.authIndex !== null"
+                            size="small"
                             :disabled="
-                                importLocked ||
-                                protectedRow(row) ||
-                                !choices[row.index].accountId ||
-                                !!row.error ||
-                                row.unchanged
+                                isBusy ||
+                                row.disabled ||
+                                row.sessionState !== 'valid' ||
+                                row.isDuplicate ||
+                                row.authIndex === currentAuthIndex
                             "
-                            >{{ l("覆盖", "Overwrite") }}</ElCheckbox
+                            @click="legacyActions.switchAccount?.(row.authIndex)"
+                            >{{
+                                row.authIndex === currentAuthIndex
+                                    ? l("当前账号", "Current")
+                                    : accountDetails.find(item => item.index === row.authIndex)?.hasContext
+                                      ? l("快速切换", "Quick switch")
+                                      : l("切换", "Switch")
+                            }}</ElButton
                         >
-                        <ElCheckbox
-                            :model-value="effectiveSkip(row)"
-                            :disabled="importLocked || protectedRow(row) || !!row.error || row.unchanged"
-                            @change="value => (choices[row.index].skip = value)"
-                            >{{ l("跳过", "Skip") }}</ElCheckbox
-                        >
-                    </div>
-                    <div class="import-row-notes">
-                        <span v-if="protectedRow(row)">{{
-                            text("accountImportExistingSkipped", "已有账号，已跳过", "Existing account skipped")
-                        }}</span>
-                        <span v-if="row.hasRecoveryEmail">{{
-                            text(
-                                "accountImportRecoveryIncluded",
-                                "本次导入含恢复邮箱",
-                                "Import includes recovery email"
-                            )
-                        }}</span>
-                        <span v-if="row.conflict"
-                            >⚠
-                            {{
-                                row.recoveryEmailConflict
-                                    ? l("恢复邮箱冲突", "Recovery email conflict")
-                                    : l("凭据冲突", "Credential conflict")
-                            }}</span
+                        <ElButton v-if="row.authIndex !== null" size="small" @click="downloadCookie(row)">{{
+                            l("下载", "Download")
+                        }}</ElButton>
+                        <ElButton v-if="row.currentTaskId" size="small" @click="cancel(row.currentTaskId)">{{
+                            l("取消", "Cancel")
+                        }}</ElButton>
+                        <ElButton size="small" @click="viewHistory(row)">{{
+                            l("任务 / 日志", "Tasks / logs")
+                        }}</ElButton>
+                        <ElButton
+                            size="small"
+                            type="danger"
+                            plain
+                            :disabled="isBusy || busy"
+                            @click="deleteRows([row])"
+                            >{{ l("删除", "Delete") }}</ElButton
                         >
                     </div>
                 </article>
+                <p v-if="!accounts.length">{{ l("暂无账号", "No accounts") }}</p>
             </div>
-            <ElTable v-if="preview" class="import-preview-table" :data="preview.rows">
-                <ElTableColumn prop="email" label="Email" />
-                <ElTableColumn prop="error" :label="l('问题', 'Issue')" />
-                <ElTableColumn :label="l('映射 / 创建', 'Map / create')"
-                    ><template #default="{ row }">
-                        <ElSelect
-                            v-if="importKind === 'authenticator'"
-                            v-model="choices[row.index].accountId"
-                            :disabled="importLocked || !!row.error || row.unchanged"
-                            clearable
-                            :placeholder="l('选择账号或跳过', 'Select account or skip')"
-                            ><ElOption
-                                v-for="account in mappingAccounts"
-                                :key="account.accountId"
-                                :value="account.accountId"
-                                :label="account.email || account.displayName"
-                        /></ElSelect>
-                        <span v-else-if="!row.accountId">{{
-                            text("accountImportNewRecord", "将创建新账号", "New account will be created")
-                        }}</span>
-                        <span v-else>{{ l("匹配已有账号", "Existing account matched") }}</span>
-                    </template></ElTableColumn
+            <div class="account-table-scroll">
+                <ElTable
+                    ref="accountTable"
+                    :data="accounts"
+                    row-key="accountId"
+                    @selection-change="updatePageSelection"
                 >
-                <ElTableColumn :label="l('显式覆盖 / 跳过', 'Overwrite / skip')" min-width="240">
-                    <template #default="{ row }">
+                    <ElTableColumn type="selection" width="45" reserve-selection />
+                    <ElTableColumn :label="l('账号', 'Account')" min-width="210">
+                        <template #default="{ row }">
+                            <span class="account-name"
+                                >{{ row.authIndex === null ? "—" : `#${row.authIndex}` }}
+                                {{ row.email || row.displayName }}</span
+                            >
+                            <div class="account-badges">
+                                <ElTag
+                                    v-if="
+                                        schedulingMode === 'legacy' &&
+                                        row.authIndex !== null &&
+                                        row.authIndex === currentAuthIndex
+                                    "
+                                    size="small"
+                                    >{{ l("当前", "Current") }}</ElTag
+                                >
+                                <ElTag v-if="row.isDuplicate" size="small" type="warning">{{
+                                    l("重复", "Duplicate")
+                                }}</ElTag>
+                                <ElTag v-if="row.disabled" size="small" type="danger">{{
+                                    l("人工禁用", "Manually disabled")
+                                }}</ElTag>
+                            </div>
+                        </template>
+                    </ElTableColumn>
+                    <ElTableColumn :label="l('账号层级', 'Account tier')" min-width="160">
+                        <template #default="{ row }"><AccountTierBadge :account="row" /></template>
+                    </ElTableColumn>
+                    <ElTableColumn :label="l('会话 / 恢复', 'Session / recovery')" width="150">
+                        <template #default="{ row }">
+                            <span :class="['state-text', 'state-' + row.sessionState]">{{
+                                stateLabel(row.sessionState)
+                            }}</span
+                            ><br />
+                            <span :class="['state-text', 'state-' + row.recoveryState]">{{
+                                stateLabel(row.recoveryState)
+                            }}</span>
+                            <small v-if="row.loginStopping">{{
+                                text("accountLoginStopping", "执行器仍在停止", "Executors stopping")
+                            }}</small>
+                            <small v-if="row.lastFailure?.error" class="failure-reason">{{
+                                row.lastFailure.error
+                            }}</small>
+                        </template>
+                    </ElTableColumn>
+                    <ElTableColumn :label="l('凭据', 'Credentials')" width="95">
+                        <template #default="{ row }"
+                            >{{ row.hasPassword ? "✓" : "—" }} Password<br />{{
+                                row.hasTotpSecret ? "✓" : "—"
+                            }}
+                            TOTP<br />{{ row.hasRecoveryEmail ? "✓" : "—" }}
+                            {{ l("恢复邮箱", "Recovery email") }}</template
+                        >
+                    </ElTableColumn>
+                    <ElTableColumn :label="l('自动恢复', 'Auto recovery')" width="95">
+                        <template #default="{ row }"
+                            ><ElSwitch
+                                :model-value="row.autoRecovery"
+                                :disabled="busy"
+                                @change="value => toggleRecovery(row, value)"
+                        /></template>
+                    </ElTableColumn>
+                    <ElTableColumn :label="l('操作', 'Actions')" min-width="400">
+                        <template #default="{ row }">
+                            <div class="row-actions">
+                                <ElButton size="small" @click="openEdit(row)">{{
+                                    l("编辑凭据", "Edit credentials")
+                                }}</ElButton>
+                                <ElButton
+                                    size="small"
+                                    :disabled="['queued', 'waiting', 'running'].includes(row.benefitTask?.status)"
+                                    @click="checkBenefits([row])"
+                                    >{{
+                                        ["queued", "waiting", "running"].includes(row.benefitTask?.status)
+                                            ? benefitState(row.benefitTask.status)
+                                            : l("检测付费权限", "Check paid benefits")
+                                    }}</ElButton
+                                >
+                                <ElButton size="small" @click="login(row)">{{ l("重新登录", "Log in") }}</ElButton>
+                                <ElButton
+                                    v-if="schedulingMode === 'legacy' && row.authIndex !== null"
+                                    size="small"
+                                    :disabled="
+                                        isBusy ||
+                                        row.disabled ||
+                                        row.sessionState !== 'valid' ||
+                                        row.isDuplicate ||
+                                        row.authIndex === currentAuthIndex
+                                    "
+                                    @click="legacyActions.switchAccount?.(row.authIndex)"
+                                    >{{
+                                        row.authIndex === currentAuthIndex
+                                            ? l("当前账号", "Current")
+                                            : accountDetails.find(item => item.index === row.authIndex)?.hasContext
+                                              ? l("快速切换", "Quick switch")
+                                              : l("切换", "Switch")
+                                    }}</ElButton
+                                >
+                                <ElButton v-if="row.authIndex !== null" size="small" @click="downloadCookie(row)">{{
+                                    l("下载", "Download")
+                                }}</ElButton>
+                                <ElButton v-if="row.currentTaskId" size="small" @click="cancel(row.currentTaskId)">{{
+                                    l("取消", "Cancel")
+                                }}</ElButton>
+                                <ElButton size="small" @click="viewHistory(row)">{{
+                                    l("任务 / 日志", "Tasks / logs")
+                                }}</ElButton>
+                                <ElButton
+                                    size="small"
+                                    type="danger"
+                                    plain
+                                    :disabled="isBusy || busy"
+                                    @click="deleteRows([row])"
+                                    >{{ l("删除", "Delete") }}</ElButton
+                                >
+                            </div>
+                        </template>
+                    </ElTableColumn>
+                </ElTable>
+            </div>
+            <ElPagination
+                v-model:current-page="page"
+                v-model:page-size="pageSize"
+                :page-sizes="[20, 50, 100]"
+                :total="total"
+                :layout="mobile ? 'total, sizes, prev, next' : 'total, sizes, prev, pager, next'"
+            />
+            <ElDialog
+                v-model="editVisible"
+                class="account-dialog"
+                :width="mobile ? 'calc(100vw - 24px)' : '50%'"
+                :title="editing ? l('编辑凭据', 'Edit credentials') : l('新增账号', 'Add account')"
+                @closed="clearForm"
+            >
+                <ElForm label-position="top">
+                    <ElFormItem :label="l('手动层级', 'Manual tier')">
+                        <ElSelect v-model="form.manualTier">
+                            <ElOption
+                                :value="''"
+                                :label="l('未设置（跟随检测结果）', 'Unset (follow detected benefits)')"
+                            />
+                            <ElOption v-for="(name, tier) in tierNames" :key="tier" :value="tier" :label="name" />
+                        </ElSelect>
+                    </ElFormItem>
+                    <div v-if="editing" aria-live="polite">
+                        <p>
+                            {{ l("当前有效层级", "Effective tier") }}:
+                            {{ tierNames[form.manualTier || editing.tier?.detectedTier] || l("未知", "Unknown") }}
+                        </p>
+                        <p
+                            v-if="
+                                ['pro', 'ultra', 'ultra20'].includes(form.manualTier) &&
+                                editing.tier?.detectedTier === 'free'
+                            "
+                        >
+                            ⚠
+                            {{
+                                l(
+                                    "手动设置为付费账号，但最近一次有效检测为 Free，请检查订阅或账号会话。",
+                                    "Manually marked as paid, but the latest valid observation is Free. Check the subscription or session."
+                                )
+                            }}
+                        </p>
+                        <p>
+                            {{ l("原始权益（只读）", "Raw benefits (read-only)") }}:
+                            {{
+                                editing.benefitObservation?.state === "ready-free"
+                                    ? "Free"
+                                    : editing.benefitObservation?.rawTier || l("未检测", "Not checked")
+                            }}
+                        </p>
+                        <p>
+                            {{ l("来源 / 成功观察时间", "Source / observed at") }}:
+                            {{ editing.benefitObservation?.source || "—" }} /
+                            {{
+                                editing.benefitObservation?.observedAt
+                                    ? new Date(editing.benefitObservation.observedAt).toLocaleString()
+                                    : "—"
+                            }}
+                        </p>
+                        <p>
+                            {{
+                                editing.tier?.observationCurrent
+                                    ? l("当前会话", "Current session")
+                                    : l("无当前会话检测，待复检", "No current session observation; recheck needed")
+                            }}
+                        </p>
+                        <p>
+                            {{ l("最近检测", "Last check") }}: {{ benefitState(editing.benefitLastCheck?.status) }} ·
+                            {{ editing.benefitLastCheck?.reason || "—" }} ·
+                            {{
+                                editing.benefitLastCheck?.checkedAt
+                                    ? new Date(editing.benefitLastCheck.checkedAt).toLocaleString()
+                                    : "—"
+                            }}
+                        </p>
+                    </div>
+                    <ElFormItem label="Email"><ElInput v-model="form.email" autocomplete="off" /></ElFormItem>
+                    <ElFormItem label="Password"
+                        ><ElInput
+                            v-model="form.password"
+                            type="password"
+                            show-password
+                            autocomplete="new-password"
+                            :placeholder="editing ? l('留空不修改', 'Leave empty to preserve') : ''"
+                    /></ElFormItem>
+                    <ElFormItem :label="l('恢复邮箱（可选）', 'Recovery email (optional)')"
+                        ><ElInput
+                            v-model="form.recoveryEmail"
+                            autocomplete="off"
+                            :placeholder="l('留空不修改', 'Empty preserves existing')"
+                    /></ElFormItem>
+                    <ElFormItem label="TOTP / otpauth://"
+                        ><ElInput
+                            v-model="form.totpSecret"
+                            type="password"
+                            show-password
+                            autocomplete="off"
+                            :placeholder="l('可选；留空不修改', 'Optional; empty preserves existing')"
+                    /></ElFormItem>
+                    <ElButton v-if="editing" @click="reveal">{{
+                        l("显示已保存凭据", "Reveal saved credentials")
+                    }}</ElButton>
+                    <template v-if="editing"
+                        ><ElCheckbox v-model="form.clearPassword">{{ l("清除密码", "Clear password") }}</ElCheckbox
+                        ><ElCheckbox v-model="form.clearRecoveryEmail">{{
+                            l("清除恢复邮箱", "Clear recovery email")
+                        }}</ElCheckbox
+                        ><ElCheckbox v-model="form.clearTotpSecret">{{
+                            l("清除验证器密钥", "Clear TOTP secret")
+                        }}</ElCheckbox
+                        ><ElCheckbox v-model="form.loginNow">{{
+                            l("保存后重新登录", "Log in after saving")
+                        }}</ElCheckbox></template
+                    >
+                </ElForm>
+                <template #footer
+                    ><ElButton type="primary" :loading="busy" @click="save">{{ l("保存", "Save") }}</ElButton></template
+                >
+            </ElDialog>
+            <ElDialog
+                v-model="importVisible"
+                class="account-dialog account-import-dialog"
+                :title="l('导入预览', 'Import preview')"
+                :width="mobile ? 'calc(100vw - 24px)' : '85%'"
+                @closed="clearImport"
+            >
+                <div class="import-settings">
+                    <ElCheckbox v-model="skipExisting" :disabled="importLocked">{{
+                        text("accountImportSkipExisting", "跳过已有账号", "Skip existing accounts")
+                    }}</ElCheckbox>
+                    <small>{{
+                        text(
+                            "accountImportSkipExistingHint",
+                            "仅导入新账号；已有账号不更新密码、验证器或恢复邮箱。",
+                            "Import new accounts only; preserve existing passwords, authenticators and recovery emails."
+                        )
+                    }}</small>
+                </div>
+                <ElSelect v-model="importKind" :disabled="importBusy"
+                    ><ElOption
+                        label="CSV: email,password,recovery_email,totp_secret (兼容 totpSecret)"
+                        value="csv" /><ElOption
+                        label="Authenticator / otpauth-migration / Base32"
+                        value="authenticator"
+                /></ElSelect>
+                <input type="file" :disabled="importBusy" accept=".csv,.txt" @change="readImportFile" />
+                <ElInput
+                    v-model="importContent"
+                    :disabled="importBusy"
+                    type="textarea"
+                    :rows="5"
+                    :placeholder="l('粘贴 CSV 或验证器链接 / 密钥', 'Paste CSV or authenticator links / secrets')"
+                />
+                <ElButton :disabled="importBusy" @click="previewImport">{{ l("解析预览", "Preview") }}</ElButton>
+                <p v-if="preview && !preview.complete">
+                    {{
+                        l(
+                            "迁移批次缺失，补全后才能提交。",
+                            "Migration batches are incomplete. Add missing batches before committing."
+                        )
+                    }}
+                </p>
+                <div v-if="preview" class="account-toolbar">
+                    <span>{{
+                        queue.autoRecovery
+                            ? text(
+                                  "accountImportAutoLogin",
+                                  "新账号导入后将自动登录",
+                                  "New accounts will queue for automatic login"
+                              )
+                            : text("accountImportSaveOnly", "新账号仅创建记录", "New accounts will only be saved")
+                    }}</span>
+                    <ElCheckbox
+                        :model-value="skipState.checked"
+                        :indeterminate="skipState.partial"
+                        :disabled="importLocked || !actionableRows.length"
+                        @change="value => bulkChoice(unprotectedRows, 'skip', value)"
+                        >{{ text("accountImportSkipAll", "全部跳过", "Skip all") }}</ElCheckbox
+                    >
+                    <ElCheckbox
+                        :model-value="overwriteState.checked"
+                        :indeterminate="overwriteState.partial"
+                        :disabled="importLocked || !overwriteRows.length"
+                        @change="value => bulkChoice(overwriteRows, 'overwrite', value)"
+                        >{{ text("accountImportOverwriteAll", "全部覆盖", "Overwrite all") }}</ElCheckbox
+                    >
+                </div>
+                <div v-if="preview" class="import-mobile-list">
+                    <article v-for="row in preview.rows" :key="row.index" class="account-mobile-card">
+                        <strong class="account-name">{{
+                            row.email || l("未命名导入项", "Unnamed import entry")
+                        }}</strong>
+                        <p v-if="row.error" class="state-failed">{{ row.error }}</p>
+                        <div class="import-mapping">
+                            <ElSelect
+                                v-if="importKind === 'authenticator'"
+                                v-model="choices[row.index].accountId"
+                                :disabled="importLocked || !!row.error || row.unchanged"
+                                clearable
+                                :placeholder="l('选择账号或跳过', 'Select account or skip')"
+                                ><ElOption
+                                    v-for="account in mappingAccounts"
+                                    :key="account.accountId"
+                                    :value="account.accountId"
+                                    :label="account.email || account.displayName"
+                            /></ElSelect>
+                            <span v-else-if="!row.accountId">{{
+                                text("accountImportNewRecord", "将创建新账号", "New account will be created")
+                            }}</span>
+                            <span v-else>{{ l("匹配已有账号", "Existing account matched") }}</span>
+                        </div>
                         <div class="import-row-actions">
                             <ElCheckbox
                                 v-model="choices[row.index].overwrite"
@@ -744,100 +721,176 @@
                                 }}</span
                             >
                         </div>
-                    </template>
-                </ElTableColumn>
-            </ElTable>
-            <div v-if="importResult" class="import-result">
-                <p>
-                    {{ l("创建", "Created") }} {{ importResult.created }} · {{ l("更新", "Updated") }}
-                    {{ importResult.updated }} · {{ l("跳过", "Skipped") }} {{ importResult.skipped }} ·
-                    {{ l("失败", "Failed") }} {{ importResult.failed }} ·
-                    {{ text("accountImportLoginQueued", "自动登录已入队", "Automatic logins queued") }}
-                    {{ importResult.loginQueued || 0 }}
-                </p>
-                <p v-for="warning in importResult.loginWarnings || []" :key="warning.index">
-                    {{
-                        text(
-                            "accountImportLoginWarning",
-                            "记录已创建，自动登录未入队",
-                            "Record saved, automatic login not queued"
-                        )
-                    }}
-                    ({{ warning.index + 1 }}): {{ warning.error }}
-                </p>
-                <p v-for="issue in importResult.errors || []" :key="issue.index">
-                    {{ issue.index + 1 }}: {{ issue.error }}
-                </p>
-                <p>
-                    {{
-                        text(
-                            "accountImportCommitted",
-                            "此预览已提交，继续导入请重新解析预览",
-                            "This preview has been committed. Parse a new preview to continue importing"
-                        )
-                    }}
-                </p>
-            </div>
-            <template #footer
-                ><ElButton
-                    type="primary"
-                    :disabled="!preview?.complete || importLocked"
-                    :loading="importBusy"
-                    @click="commitImport"
-                    >{{ l("提交导入", "Commit import") }}</ElButton
-                ></template
+                    </article>
+                </div>
+                <ElTable v-if="preview" class="import-preview-table" :data="preview.rows">
+                    <ElTableColumn prop="email" label="Email" />
+                    <ElTableColumn prop="error" :label="l('问题', 'Issue')" />
+                    <ElTableColumn :label="l('映射 / 创建', 'Map / create')"
+                        ><template #default="{ row }">
+                            <ElSelect
+                                v-if="importKind === 'authenticator'"
+                                v-model="choices[row.index].accountId"
+                                :disabled="importLocked || !!row.error || row.unchanged"
+                                clearable
+                                :placeholder="l('选择账号或跳过', 'Select account or skip')"
+                                ><ElOption
+                                    v-for="account in mappingAccounts"
+                                    :key="account.accountId"
+                                    :value="account.accountId"
+                                    :label="account.email || account.displayName"
+                            /></ElSelect>
+                            <span v-else-if="!row.accountId">{{
+                                text("accountImportNewRecord", "将创建新账号", "New account will be created")
+                            }}</span>
+                            <span v-else>{{ l("匹配已有账号", "Existing account matched") }}</span>
+                        </template></ElTableColumn
+                    >
+                    <ElTableColumn :label="l('显式覆盖 / 跳过', 'Overwrite / skip')" min-width="240">
+                        <template #default="{ row }">
+                            <div class="import-row-actions">
+                                <ElCheckbox
+                                    v-model="choices[row.index].overwrite"
+                                    :disabled="
+                                        importLocked ||
+                                        protectedRow(row) ||
+                                        !choices[row.index].accountId ||
+                                        !!row.error ||
+                                        row.unchanged
+                                    "
+                                    >{{ l("覆盖", "Overwrite") }}</ElCheckbox
+                                >
+                                <ElCheckbox
+                                    :model-value="effectiveSkip(row)"
+                                    :disabled="importLocked || protectedRow(row) || !!row.error || row.unchanged"
+                                    @change="value => (choices[row.index].skip = value)"
+                                    >{{ l("跳过", "Skip") }}</ElCheckbox
+                                >
+                            </div>
+                            <div class="import-row-notes">
+                                <span v-if="protectedRow(row)">{{
+                                    text("accountImportExistingSkipped", "已有账号，已跳过", "Existing account skipped")
+                                }}</span>
+                                <span v-if="row.hasRecoveryEmail">{{
+                                    text(
+                                        "accountImportRecoveryIncluded",
+                                        "本次导入含恢复邮箱",
+                                        "Import includes recovery email"
+                                    )
+                                }}</span>
+                                <span v-if="row.conflict"
+                                    >⚠
+                                    {{
+                                        row.recoveryEmailConflict
+                                            ? l("恢复邮箱冲突", "Recovery email conflict")
+                                            : l("凭据冲突", "Credential conflict")
+                                    }}</span
+                                >
+                            </div>
+                        </template>
+                    </ElTableColumn>
+                </ElTable>
+                <div v-if="importResult" class="import-result">
+                    <p>
+                        {{ l("创建", "Created") }} {{ importResult.created }} · {{ l("更新", "Updated") }}
+                        {{ importResult.updated }} · {{ l("跳过", "Skipped") }} {{ importResult.skipped }} ·
+                        {{ l("失败", "Failed") }} {{ importResult.failed }} ·
+                        {{ text("accountImportLoginQueued", "自动登录已入队", "Automatic logins queued") }}
+                        {{ importResult.loginQueued || 0 }}
+                    </p>
+                    <p v-for="warning in importResult.loginWarnings || []" :key="warning.index">
+                        {{
+                            text(
+                                "accountImportLoginWarning",
+                                "记录已创建，自动登录未入队",
+                                "Record saved, automatic login not queued"
+                            )
+                        }}
+                        ({{ warning.index + 1 }}): {{ warning.error }}
+                    </p>
+                    <p v-for="issue in importResult.errors || []" :key="issue.index">
+                        {{ issue.index + 1 }}: {{ issue.error }}
+                    </p>
+                    <p>
+                        {{
+                            text(
+                                "accountImportCommitted",
+                                "此预览已提交，继续导入请重新解析预览",
+                                "This preview has been committed. Parse a new preview to continue importing"
+                            )
+                        }}
+                    </p>
+                </div>
+                <template #footer
+                    ><ElButton
+                        type="primary"
+                        :disabled="!preview?.complete || importLocked"
+                        :loading="importBusy"
+                        @click="commitImport"
+                        >{{ l("提交导入", "Commit import") }}</ElButton
+                    ></template
+                >
+            </ElDialog>
+            <ElDialog
+                v-model="historyVisible"
+                class="account-dialog"
+                :title="l('登录任务与尝试日志', 'Login tasks and attempts')"
+                :width="mobile ? 'calc(100vw - 24px)' : '85%'"
             >
-        </ElDialog>
-        <ElDialog
-            v-model="historyVisible"
-            class="account-dialog"
-            :title="l('登录任务与尝试日志', 'Login tasks and attempts')"
-            :width="mobile ? 'calc(100vw - 24px)' : '85%'"
-        >
-            <div v-for="task in tasks" :key="task.taskId">
-                <p>
-                    {{ task.taskId }} · {{ stateLabel(task.status) }} · {{ task.phase }} · {{ task.attempts }}
-                    {{ l("次尝试", "attempts") }} ·
-                    {{ task.startedAt ? Math.round(((task.finishedAt || now) - task.startedAt) / 1000) : 0 }}s
-                    <ElButton
-                        v-if="['queued', 'running', 'retry_wait'].includes(task.status)"
-                        @click="cancel(task.taskId)"
-                        >{{ l("取消", "Cancel") }}</ElButton
-                    >
-                </p>
-                <p v-for="(attempt, index) in task.history" :key="index">
-                    {{ attempt.phase }} · {{ attempt.error || "OK" }} · {{ new Date(attempt.endedAt).toISOString() }}
-                    <span v-if="attempt.diagnostics">
-                        · {{ l("操作诊断", "Operation diagnostics") }}: {{ JSON.stringify(attempt.diagnostics) }}</span
-                    >
-                    <span v-if="attempt.termsOutcome">
-                        · {{ l("协议状态", "Terms outcome") }}: {{ attempt.termsOutcome }}</span
-                    >
-                    <ElButton v-if="attempt.artifactId" @click="showArtifact(attempt.artifactId)">{{
-                        l("查看失败截图", "View failure screenshot")
-                    }}</ElButton
-                    ><span v-else>{{ attempt.screenshotReason || l("未生成截图", "No screenshot") }}</span>
-                </p>
-            </div>
-            <ElPagination
-                v-model:current-page="taskPage"
-                :page-size="25"
-                :total="taskTotal"
-                layout="prev, pager, next"
-                @current-change="loadHistory"
-            />
-        </ElDialog>
-        <ElDialog
-            v-model="imageVisible"
-            class="account-dialog"
-            :title="l('失败截图', 'Failure screenshot')"
-            :width="mobile ? 'calc(100vw - 24px)' : '85%'"
-            @closed="releaseImage"
-            ><img v-if="imageUrl" :src="imageUrl" style="width: 100%"
-        /></ElDialog>
+                <div v-for="task in tasks" :key="task.taskId">
+                    <p>
+                        {{ task.taskId }} · {{ stateLabel(task.status) }} · {{ task.phase }} · {{ task.attempts }}
+                        {{ l("次尝试", "attempts") }} ·
+                        {{ task.startedAt ? Math.round(((task.finishedAt || now) - task.startedAt) / 1000) : 0 }}s
+                        <ElButton
+                            v-if="['queued', 'running', 'retry_wait'].includes(task.status)"
+                            @click="cancel(task.taskId)"
+                            >{{ l("取消", "Cancel") }}</ElButton
+                        >
+                    </p>
+                    <p v-for="(attempt, index) in task.history" :key="index">
+                        {{ attempt.phase }} · {{ attempt.error || "OK" }} ·
+                        {{ new Date(attempt.endedAt).toISOString() }}
+                        <span v-if="attempt.diagnostics">
+                            · {{ l("操作诊断", "Operation diagnostics") }}:
+                            {{ JSON.stringify(attempt.diagnostics) }}</span
+                        >
+                        <span v-if="attempt.termsOutcome">
+                            · {{ l("协议状态", "Terms outcome") }}: {{ attempt.termsOutcome }}</span
+                        >
+                        <ElButton v-if="attempt.artifactId" @click="showArtifact(attempt.artifactId)">{{
+                            l("查看失败截图", "View failure screenshot")
+                        }}</ElButton
+                        ><span v-else>{{ attempt.screenshotReason || l("未生成截图", "No screenshot") }}</span>
+                    </p>
+                </div>
+                <ElPagination
+                    v-model:current-page="taskPage"
+                    :page-size="25"
+                    :total="taskTotal"
+                    layout="prev, pager, next"
+                    @current-change="loadHistory"
+                />
+            </ElDialog>
+            <ElDialog
+                v-model="imageVisible"
+                class="account-dialog"
+                :title="l('失败截图', 'Failure screenshot')"
+                :width="mobile ? 'calc(100vw - 24px)' : '85%'"
+                @closed="releaseImage"
+                ><img v-if="imageUrl" :src="imageUrl" style="width: 100%"
+            /></ElDialog>
+        </template>
     </section>
 </template>
 <script setup>
+import PageHeader from "../components/common/PageHeader.vue";
+import PageState from "../components/common/PageState.vue";
+import { useI18n } from "../composables/useI18n";
+const { t } = useI18n();
+const loaded = ref(false),
+    loadError = ref(false);
+import { useDraftGuard } from "../composables/useDraftGuard";
 import { computed, nextTick, ref, reactive, watch, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -1061,55 +1114,63 @@ async function action(work) {
 async function refresh() {
     const sequence = ++refreshSequence;
     await action(async () => {
-        const selectionVersion = selectionSequence;
-        const [list, status, selection, benefits] = await Promise.all([
-            api(
-                `/accounts?page=${page.value}&pageSize=${pageSize.value}&search=${encodeURIComponent(search.value || "")}&state=${encodeURIComponent(filter.value || "")}`
-            ),
-            api("/login-queue"),
-            selected.value.length ? api("/accounts/selection") : null,
-            api("/benefit-checks"),
-        ]);
-        if (disposed || sequence !== refreshSequence) return;
-        const lastPage = Math.max(1, Math.ceil(list.total / pageSize.value));
-        if (page.value > lastPage) {
-            page.value = lastPage;
-            return;
+        try {
+            const selectionVersion = selectionSequence;
+            const [list, status, selection, benefits] = await Promise.all([
+                api(
+                    `/accounts?page=${page.value}&pageSize=${pageSize.value}&search=${encodeURIComponent(search.value || "")}&state=${encodeURIComponent(filter.value || "")}`
+                ),
+                api("/login-queue"),
+                selected.value.length ? api("/accounts/selection") : null,
+                api("/benefit-checks"),
+            ]);
+            if (disposed || sequence !== refreshSequence) return;
+            const lastPage = Math.max(1, Math.ceil(list.total / pageSize.value));
+            if (page.value > lastPage) {
+                page.value = lastPage;
+                return;
+            }
+            syncingSelection = true;
+            accounts.value = list.accounts;
+            benefitTasks.value = benefits.tasks || [];
+            const edited = list.accounts.find(account => account.accountId === editing.value?.accountId);
+            if (edited)
+                for (const key of ["benefitObservation", "benefitLastCheck", "tier", "benefitTask"])
+                    editing.value[key] = edited[key];
+            const refreshed = new Map(list.accounts.map(account => [account.accountId, account]));
+            if (selection && selectionVersion === selectionSequence) {
+                const existing = new Map(selection.accounts.map(account => [account.accountId, account]));
+                selected.value = selected.value
+                    .filter(account => existing.has(account.accountId))
+                    .map(account => existing.get(account.accountId));
+            } else selected.value = selected.value.map(account => refreshed.get(account.accountId) || account);
+            await syncSelection();
+            total.value = list.total;
+            stoppingIds.value = stoppingIds.value.filter(
+                id =>
+                    list.accounts.find(row => row.accountId === id)?.loginStopping ||
+                    status.executions?.some(execution => execution.accountId === id)
+            );
+            loaded.value = true;
+            loadError.value = false;
+            queue.value = status;
+            const base = queueConfigBase.value;
+            const dirty =
+                base && (autoRecoveryDraft.value !== base.autoRecovery || concurrency.value !== base.concurrency);
+            if (!dirty) {
+                concurrency.value = status.concurrency;
+                autoRecoveryDraft.value = status.autoRecovery;
+                queueConfigBase.value = {
+                    autoRecovery: status.autoRecovery,
+                    concurrency: status.concurrency,
+                    version: status.configurationVersion,
+                };
+                queueConfigConflict.value = false;
+            } else if (base.version !== status.configurationVersion) queueConfigConflict.value = true;
+        } catch (error) {
+            if (!disposed && sequence === refreshSequence) loadError.value = true;
+            throw error;
         }
-        syncingSelection = true;
-        accounts.value = list.accounts;
-        benefitTasks.value = benefits.tasks || [];
-        const edited = list.accounts.find(account => account.accountId === editing.value?.accountId);
-        if (edited)
-            for (const key of ["benefitObservation", "benefitLastCheck", "tier", "benefitTask"])
-                editing.value[key] = edited[key];
-        const refreshed = new Map(list.accounts.map(account => [account.accountId, account]));
-        if (selection && selectionVersion === selectionSequence) {
-            const existing = new Map(selection.accounts.map(account => [account.accountId, account]));
-            selected.value = selected.value
-                .filter(account => existing.has(account.accountId))
-                .map(account => existing.get(account.accountId));
-        } else selected.value = selected.value.map(account => refreshed.get(account.accountId) || account);
-        await syncSelection();
-        total.value = list.total;
-        stoppingIds.value = stoppingIds.value.filter(
-            id =>
-                list.accounts.find(row => row.accountId === id)?.loginStopping ||
-                status.executions?.some(execution => execution.accountId === id)
-        );
-        queue.value = status;
-        const base = queueConfigBase.value;
-        const dirty = base && (autoRecoveryDraft.value !== base.autoRecovery || concurrency.value !== base.concurrency);
-        if (!dirty) {
-            concurrency.value = status.concurrency;
-            autoRecoveryDraft.value = status.autoRecovery;
-            queueConfigBase.value = {
-                autoRecovery: status.autoRecovery,
-                concurrency: status.concurrency,
-                version: status.configurationVersion,
-            };
-            queueConfigConflict.value = false;
-        } else if (base.version !== status.configurationVersion) queueConfigConflict.value = true;
     });
 }
 watch([search, filter, pageSize, page], (values, previous) => {
@@ -1459,6 +1520,7 @@ async function showArtifact(id) {
 onMounted(async () => {
     mobileQuery.addEventListener("change", updateMobile);
     await refresh();
+    if (disposed) return;
     timer = setInterval(async () => {
         if (polling) return;
         polling = true;
@@ -1480,6 +1542,13 @@ onBeforeUnmount(() => {
     clearForm();
     clearImport();
 });
+
+useDraftGuard(
+    () =>
+        queueConfigBase.value &&
+        (autoRecoveryDraft.value !== queueConfigBase.value.autoRecovery ||
+            concurrency.value !== queueConfigBase.value.concurrency)
+);
 </script>
 <style scoped>
 .accounts-panel {
@@ -1551,7 +1620,7 @@ onBeforeUnmount(() => {
 }
 small {
     overflow-wrap: anywhere;
-    opacity: 0.7;
+    color: var(--text-muted);
 }
 
 .account-table-scroll {

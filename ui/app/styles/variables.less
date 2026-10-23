@@ -7,24 +7,35 @@
 
 // ========== CSS Variables System ==========
 :root {
+    --color-primary-soft: #eff6ff;
+    --color-success-soft: #f0fdf4;
+    --color-warning-soft: #fffbeb;
+    --color-error-soft: #fef2f2;
+    --bg-light: var(--bg-list-item-hover);
+    --bg-hover: var(--bg-list-item-hover);
+    --text-muted: #64748b;
+    --control-height: 36px;
+    --control-radius: 6px;
+    --panel-radius: 10px;
+    --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.25);
     // Light theme (Default)
-    --color-primary: #007bff;
-    --color-primary-rgb: 0, 123, 255;
-    --color-primary-hover: #0069d9;
-    --color-primary-active: #0056b3;
-    --color-success: #2ecc71;
-    --color-success-rgb: 46, 204, 113;
-    --color-warning: #f39c12;
-    --color-warning-rgb: 243, 156, 18;
-    --color-error: #e74c3c;
-    --color-error-rgb: 231, 76, 60;
-    --bg-body: #f0f2f5;
+    --color-primary: #2563eb;
+    --color-primary-rgb: 37, 99, 235;
+    --color-primary-hover: #1d4ed8;
+    --color-primary-active: #1e40af;
+    --color-success: #15803d;
+    --color-success-rgb: 21, 128, 61;
+    --color-warning: #b45309;
+    --color-warning-rgb: 180, 83, 9;
+    --color-error: #b91c1c;
+    --color-error-rgb: 185, 28, 28;
+    --bg-body: #f6f8fb;
     --bg-card: #fff;
-    --bg-list-item-hover: #e1e6eb; // darken #f0f2f5 by ~3%
-    --text-primary: #333;
-    --text-secondary: #666;
-    --border-color: #ccc;
-    --border-light: #eee;
+    --bg-list-item-hover: #f1f5f9; // darken #f6f8fb by ~3%
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --border-color: #e2e8f0;
+    --border-light: #e2e8f0;
 
     // Affix
     --affix-bg: rgba(255, 255, 255, 0.95);
@@ -35,8 +46,8 @@
     --vnc-overlay-bg: rgba(10, 12, 16, 0.7);
     --vnc-overlay-card-bg: rgba(255, 255, 255, 0.95);
     --vnc-overlay-border: rgba(0, 0, 0, 0.1);
-    --vnc-overlay-text: #333;
-    --vnc-overlay-muted: #666;
+    --vnc-overlay-text: #0f172a;
+    --vnc-overlay-muted: #475569;
     --vnc-overlay-code-bg: rgba(0, 0, 0, 0.08);
     --vnc-overlay-shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
     --vnc-surface-gradient: radial-gradient(1200px 800px at 15% 10%, #1d2129 0%, #11141a 45%, #0b0d12 100%);
@@ -61,7 +72,7 @@
     --text-primary: #f0f0f0;
     --text-secondary: #aaa;
     --border-color: #444;
-    --border-light: #333;
+    --border-light: #0f172a;
 
     // Adjust brand colors for dark mode if needed
     --color-primary: #339aff;
@@ -119,30 +130,30 @@
 @dark-text: #f0f0f0;
 
 // ========== Typography ==========
-@font-family-sans: sans-serif;
+@font-family-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 @font-family-mono: "SF Mono", Consolas, Menlo, monospace;
-@font-size-base: 1em;
+@font-size-base: 14px;
 @font-size-small: 0.9em;
 @font-size-large: 1.1em;
 
 // ========== Spacing ==========
 @spacing-xs: 8px;
-@spacing-sm: 10px;
-@spacing-md: 15px;
+@spacing-sm: 12px;
+@spacing-md: 16px;
 @spacing-lg: 20px;
-@spacing-xl: 40px;
+@spacing-xl: 32px;
 
 // ========== Border Radius ==========
-@border-radius-sm: 5px;
-@border-radius-md: 8px;
+@border-radius-sm: 6px;
+@border-radius-md: 10px;
 @border-radius-lg: 10px;
 @border-radius-xl: 12px;
 @border-radius-circle: 50%;
 
 // ========== Shadows ==========
-@shadow-light: 0 4px 6px rgba(0, 0, 0, 0.1);
-@shadow-medium: 0 4px 8px rgba(0, 0, 0, 0.1);
-@shadow-focus: 0 0 0 3px rgba(0, 123, 255, 0.25);
+@shadow-light: none;
+@shadow-medium: 0 8px 24px rgba(15, 23, 42, 0.08);
+@shadow-focus: 0 0 0 3px rgba(37, 99, 235, 0.25);
 
 // ========== Transitions ==========
 @transition-fast: 0.2s ease;
@@ -186,4 +197,4 @@
 @vnc-icon-size: 22px;
 @vnc-bar-padding: 8px;
 @vnc-bar-gap: 10px;
-@vnc-bar-radius: 999px;
+@vnc-bar-radius: 10px;

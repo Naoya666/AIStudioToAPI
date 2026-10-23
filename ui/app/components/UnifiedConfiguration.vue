@@ -27,9 +27,15 @@
                 {{ display(item.name, snapshot.saved[item.name]) }}（{{ item.reason }}）
             </p>
         </details>
+        <nav v-if="snapshot" class="configuration-directory" :aria-label="t('adminConfigGroups')">
+            <a v-for="(group, groupIndex) in groups" :key="group.name" :href="`#configuration-group-${groupIndex}`">{{
+                group.name
+            }}</a>
+        </nav>
         <div v-if="snapshot" class="configuration-groups">
             <fieldset
-                v-for="group in groups"
+                v-for="(group, groupIndex) in groups"
+                :id="`configuration-group-${groupIndex}`"
                 :key="group.name"
                 :class="{ 'allowlist-group': group.fields.some(d => d.type === 'modelAllowlist') }"
             >
@@ -240,6 +246,9 @@
 </template>
 
 <script setup>
+import { useI18n } from "../composables/useI18n";
+const { t } = useI18n();
+import { useDraftGuard } from "../composables/useDraftGuard";
 import ModelAllowlistEditor from "./ModelAllowlistEditor.vue";
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { ElButton, ElSwitch, ElSelect, ElOption, ElInputNumber, ElInput, ElPopover, ElMessageBox } from "element-plus";
@@ -543,9 +552,30 @@ onBeforeUnmount(() => {
     disposed = true;
     clearInterval(timer);
 });
+
+useDraftGuard(() => dirtyNames.value.length > 0);
 </script>
 
 <style scoped>
+.configuration-directory {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin: 16px 0;
+}
+.configuration-groups fieldset {
+    scroll-margin-top: 16px;
+    background: var(--bg-card);
+}
+.configuration-actions {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-card);
+}
 .configuration-actions,
 .configuration-label,
 .model-row,

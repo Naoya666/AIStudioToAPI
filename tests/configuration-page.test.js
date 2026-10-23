@@ -34,7 +34,7 @@ test(
         const server = await createServer({
             configFile: path.resolve(__dirname, "../vite.config.js"),
             logLevel: "error",
-            server: { host: "127.0.0.1", port: 0 },
+            server: { host: "127.0.0.1", port: 0, strictPort: false },
         });
         t.after(() => server.close());
         await server.listen();
@@ -95,7 +95,7 @@ test(
             await route.fulfill({ json: result, status });
         });
         await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/`);
-        await page.locator(".sidebar-menu button").nth(2).click();
+        await page.getByRole("navigation").getByRole("button", { exact: true, name: "设置" }).click();
         const panel = page.locator(".configuration-panel");
         await panel.getByRole("button", { exact: true, name: "保存" }).waitFor();
         await panel.locator("#config-FORCE_THINKING").locator("..").click();
@@ -281,7 +281,7 @@ test(
         await panel.getByText("查看待重启变更").waitFor();
         assert.equal(service.running.publicDashboard.enabled, false);
         await page.reload();
-        await page.locator(".sidebar-menu button").nth(2).click();
+        await page.getByRole("navigation").getByRole("button", { exact: true, name: "设置" }).click();
         await panel.getByText("查看待重启变更").waitFor();
         await panel.locator("#config-FORCE_URL_CONTEXT").locator("..").click();
         const writesBeforeRestart = writes.length;
