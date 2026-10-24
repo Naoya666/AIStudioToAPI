@@ -75,6 +75,28 @@
             }}
         </p>
 
+        <details v-if="data.strategy === 'different_proxy_first' && data.egress" class="quota-section">
+            <summary>{{ t("schedulerEgressTitle") }}</summary>
+            <p class="header-sub">{{ t("schedulerEgressTip") }}</p>
+            <p class="header-sub">
+                {{
+                    t("schedulerEgressCounters", {
+                        fallbacks: data.metrics?.single_egress_fallbacks || 0,
+                        replacements: data.metrics?.egress_diversity_replacements || 0,
+                    })
+                }}
+            </p>
+            <el-table :data="data.egress.groups" size="small">
+                <el-table-column prop="key" :label="t('schedulerEgressGroup')" min-width="180" />
+                <el-table-column prop="inflight" :label="t('schedulerEgressInflight')" min-width="100" />
+                <el-table-column prop="ready_accounts" :label="t('schedulerEgressReady')" min-width="140" />
+                <el-table-column prop="lastSelectedSequence" :label="t('schedulerEgressSequence')" min-width="120" />
+            </el-table>
+            <p v-for="model in data.models" :key="model.model" class="header-sub">
+                {{ model.model }} · {{ t("schedulerEgressModelCount", { count: model.ready_egress_groups ?? 0 }) }}
+            </p>
+        </details>
+
         <!-- 2. Quota Section -->
         <div class="quota-section" :title="t('schedulerEstimatedQuotaTooltip')">
             <div class="quota-header">

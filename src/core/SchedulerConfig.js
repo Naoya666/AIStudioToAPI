@@ -13,7 +13,7 @@ function loadSchedulerConfig(env = process.env) {
         return Object.assign(Object.create(null), value);
     };
     const strategy = env.ACCOUNT_ROTATION_STRATEGY || "least_recently_used";
-    if (!["least_recently_used", "least_used", "legacy"].includes(strategy)) {
+    if (!["least_recently_used", "least_used", "different_proxy_first", "legacy"].includes(strategy)) {
         throw new Error("Invalid ACCOUNT_ROTATION_STRATEGY");
     }
     const dailyResetTime = env.SCHEDULER_DAILY_RESET_TIME === undefined ? "00:00" : env.SCHEDULER_DAILY_RESET_TIME;

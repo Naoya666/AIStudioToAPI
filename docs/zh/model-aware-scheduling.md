@@ -47,7 +47,7 @@ SCHEDULER_STATE_PATH=data/scheduler-state.json
 
 | 配置                               | 语义                                                                                                |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `ACCOUNT_ROTATION_STRATEGY`        | `least_recently_used` 默认；`least_used` 按调用次数优先；`legacy` 恢复原账号轮换                    |
+| `ACCOUNT_ROTATION_STRATEGY`        | `least_recently_used` 默认；`least_used` 按调用次数优先；`different_proxy_first` 不同代理优先；`legacy` 恢复原账号轮换                    |
 | `MAX_BROWSER_WORKERS`              | 最大缓存 context/page 数量                                                                          |
 | `GLOBAL_MAX_CONCURRENCY`           | 最大执行租约数，默认等于 context 上限，可以大于它                                                   |
 | `CONTEXT_POOL_MIN_READY`           | 后台最少就绪目标，只对具备驻留资格的账号生效；可用账号不足或全部显示模型处于实际 429 冷却时可低于目标（含 0），不得超过 `MAX_BROWSER_WORKERS`                                     |
@@ -76,6 +76,12 @@ SCHEDULER_STATE_PATH=data/scheduler-state.json
 `MODEL_WORKER_ALLOCATION={}` 表示共享池。动态模式下，未配置模型的默认 min=0、preferred=1；静态模式下，未配置模型使用剩余共享容量（至少允许一个槽位竞争）。静态模式限制每模型并发，但不绑定具体 worker ID。
 
 账号选择先过滤 ready context，再比较账号×模型 inflight、context 总 inflight和近期本地传输失败，最后以 LRU / Least Used 打破平局。租约选择和 inflight 预留同步完成。若排队模型必须使用尚未驻留的账号，后台等待空闲 context 后换入，不在 HTTP 请求热路径初始化。429 停止该资源槽的新租约，已开始的其他请求继续执行，成功响应不会清除其他并发请求设置的冷却。
+
+`different_proxy_first` 模式优先比较出口跨模型总在途租约数，再比较出口最近选择顺序，最后在同出口内沿用上述 LRU 规则。只有一个出口可立即调度时直接使用该出口，不等待其他代理启动。后台热池优先覆盖不同出口，可用空闲 Context 修正重复出口，不为轮换中断忙 Context，也不在出口数超过容量时持续换入换出。
+
+出口按 Context 实际应用的代理识别。节点可设置可选“出口组”，账号可设置“出口组覆盖”（也适用于旧代理文件及环境变量代理），共用公网出口的代理可填相同组名；直连统一归组。修改组名后，需要在代理池账号列表执行应用，重建后的 Context 才使用新分组。测试节点得到的公网 IP 仅供参考，不会自动修改分组。重试优先尚未尝试的出口，没有其他出口时仍可选择同出口其他账号，所有原有冷却、并发和文件归属规则继续生效。
+
+管理调度面板提供出口在途数、可租用账号数、各模型可调度出口数量及回退/置换计数。配置新模式后重启生效，默认模式保持不变。完整设计与验收条件见 [不同代理优先调度改造方案](./different-proxy-first-scheduling-design.md)。
 
 每次有空闲逻辑 worker 时，调度顺序是：低于 min 的等待模型、低于 preferred 的等待模型、其他等待模型；同级按入队顺序。热门模型不能绕过更早入队的同级请求。借用不会中断正在输出的流，低流量模型的最低配额在下一次 worker 释放时满足，还受可用账号数和 context 初始化时间约束。这里的 min 是调度优先级保证，不是可抢占的独立进程保留。
 

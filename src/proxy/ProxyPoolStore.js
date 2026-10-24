@@ -1,3 +1,4 @@
+const { normalizeGroup } = require("./ProxyEgressIdentity");
 const fs = require("fs");
 const path = require("path");
 
@@ -76,6 +77,7 @@ class ProxyPoolStore {
         for (const node of candidate.nodes) {
             if (!node.id || ids.has(node.id)) throw new Error(`Duplicate or missing node id: ${node.id || "(empty)"}`);
             ids.add(node.id);
+            node.egressGroup = normalizeGroup(node.egressGroup);
             if (node.type === "direct") {
                 directNodeCount++;
                 if (directNodeCount > 1) throw new Error("Only one direct node can be configured");
@@ -89,6 +91,7 @@ class ProxyPoolStore {
             ports.add(node.localPort);
         }
         for (const binding of Object.values(candidate.bindings)) {
+            binding.egressGroup = normalizeGroup(binding.egressGroup);
             if (binding.desiredNodeId && !ids.has(binding.desiredNodeId))
                 throw new Error(`Binding references missing node: ${binding.desiredNodeId}`);
         }

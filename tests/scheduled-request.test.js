@@ -1976,3 +1976,26 @@ test("anti guards retain conservative no-replay behavior for incomplete frames o
     assert.equal(res.writableEnded, true);
     assert.equal(fixture.registry.messageQueues.size, 0);
 });
+
+test("different proxy retries use a new exit before a same-exit account", async () => {
+    const fixture = setup(index => (index === 0 ? [{ event_type: "error", message: "quota", status: 429 }] : success), {
+        scheduler: { strategy: "different_proxy_first" },
+    });
+    Object.assign(fixture.browser, {
+        getAccountEgressKey: index => ["P1", "P1", "P2", "P3"][index],
+        isContextReady: () => true,
+    });
+    fixture.scheduler.browserManager = fixture.browser;
+    const res = new Response();
+    try {
+        await fixture.handler.processOpenAIRequest(request(), res);
+        assert.equal(res.statusCode, 200, res.body);
+        assert.deepEqual(
+            fixture.sent.map(entry => entry.index),
+            [0, 2]
+        );
+        assert.ok([...fixture.scheduler.egress.values()].every(group => group.inflight === 0));
+    } finally {
+        fixture.scheduler.close();
+    }
+});

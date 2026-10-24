@@ -50,6 +50,7 @@ test(
             { enabled: true, id: "direct-node", name: "VPS Direct", type: "direct" },
         ];
         const proxyBindings = new Map();
+        const proxyGroups = new Map();
         const bindingWrites = [];
         let releaseOld;
         await page.route("**/locales/*.json", route =>
@@ -112,6 +113,7 @@ test(
                         accountName: row.email,
                         authIndex: null,
                         desiredNodeId: proxyBindings.get(row.email) || null,
+                        egressGroup: proxyGroups.get(row.email) || "",
                         inflight: 0,
                         state: proxyBindings.has(row.email) ? "offline" : "unbound",
                     })),
@@ -122,7 +124,10 @@ test(
                     { accountKey: decodeURIComponent(url.pathname.split("/").at(-1)), ...body },
                 ];
                 bindingWrites.push(...entries);
-                for (const entry of entries) proxyBindings.set(entry.accountKey, entry.desiredNodeId);
+                for (const entry of entries) {
+                    proxyBindings.set(entry.accountKey, entry.desiredNodeId);
+                    if (entry.egressGroup !== undefined) proxyGroups.set(entry.accountKey, entry.egressGroup);
+                }
             }
             await route.fulfill({ json: result });
         });
@@ -227,7 +232,28 @@ test(
         await page.getByRole("option", { exact: true, name: "Login node" }).click();
         await saved;
         await bindingsRefreshed;
-        assert.deepEqual(bindingWrites.at(-1), { accountKey: "uploaded@example.com", desiredNodeId: "login-node" });
+        assert.deepEqual(bindingWrites.at(-1), {
+            accountKey: "uploaded@example.com",
+            desiredNodeId: "login-node",
+            egressGroup: "",
+        });
+        const groupSaved = page.waitForResponse(
+            response => response.request().method() === "PUT" && response.url().includes("/api/proxy-pool/bindings/")
+        );
+        const groupRefreshed = page.waitForResponse(
+            response => response.request().method() === "GET" && response.url().endsWith("/api/proxy-pool/bindings")
+        );
+        const groupInput = uploaded.getByPlaceholder("可选，覆盖节点默认组");
+        await groupInput.fill("shared-exit");
+        await groupInput.press("Tab");
+        await groupSaved;
+        await groupRefreshed;
+        assert.deepEqual(bindingWrites.at(-1), {
+            accountKey: "uploaded@example.com",
+            desiredNodeId: "login-node",
+            egressGroup: "shared-exit",
+        });
+        assert.equal(await uploaded.getByPlaceholder("可选，覆盖节点默认组").inputValue(), "shared-exit");
         await page.waitForFunction(() => document.querySelector(".proxy-pool")?.textContent.includes("Login node"));
 
         await uploaded.locator(".el-checkbox").click();

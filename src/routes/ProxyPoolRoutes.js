@@ -98,7 +98,13 @@ class ProxyPoolRoutes {
         app.put(
             "/api/proxy-pool/bindings/:accountKey",
             route(async (req, res) =>
-                res.json(await this.service.setBinding(req.params.accountKey, req.body?.desiredNodeId || null))
+                res.json(
+                    await this.service.setBinding(
+                        req.params.accountKey,
+                        req.body?.desiredNodeId || null,
+                        req.body?.egressGroup
+                    )
+                )
             )
         );
         app.post(

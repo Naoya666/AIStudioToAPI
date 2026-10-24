@@ -102,6 +102,7 @@
                 >
                     <el-table-column type="selection" width="45" />
                     <el-table-column prop="name" label="名称" min-width="130" />
+                    <el-table-column prop="egressGroup" label="出口组" min-width="110" />
                     <el-table-column label="类型" width="90">
                         <template #default="{ row }">{{ row.type === "direct" ? "直连" : row.type }}</template>
                     </el-table-column>
@@ -150,7 +151,11 @@
                             {{ row.status === "missing" ? "订阅缺失" : row.enabled ? "启用" : "停用" }} ·
                             {{ row.latencyMs == null ? "-" : `${row.latencyMs} ms` }}
                         </p>
-                        <p>出口 IP：{{ row.exitIp || "-" }} · 绑定：{{ row.boundAccounts || 0 }}</p>
+                        <p>
+                            出口 IP：{{ row.exitIp || "-" }} · 绑定：{{ row.boundAccounts || 0 }} · 出口组：{{
+                                row.egressGroup || "默认"
+                            }}
+                        </p>
                         <details>
                             <summary>地址和本地端口</summary>
                             <p>
@@ -270,6 +275,16 @@
                                     :label="node.name"
                                     :value="node.id" /></el-select></template
                     ></el-table-column>
+                    <el-table-column label="出口组覆盖" min-width="170">
+                        <template #default="{ row }">
+                            <el-input
+                                v-model="row.egressGroup"
+                                maxlength="80"
+                                placeholder="可选，覆盖节点默认组"
+                                @change="saveBinding(row)"
+                            />
+                        </template>
+                    </el-table-column>
                     <el-table-column label="状态" width="110"
                         ><template #default="{ row }"
                             ><el-tag :type="stateType(row.state)">{{ row.state }}</el-tag></template
@@ -309,6 +324,12 @@
                                     :label="node.name"
                                     :value="node.id" /></el-select
                         ></label>
+                        <label
+                            >出口组覆盖<el-input
+                                v-model="row.egressGroup"
+                                maxlength="80"
+                                placeholder="可选，覆盖节点默认组"
+                        /></label>
                         <div class="actions">
                             <el-button @click="saveBinding(row)">保存绑定</el-button
                             ><el-button
@@ -389,6 +410,14 @@
                             show-password
                             :placeholder="editingId ? '留空保留原密码' : ''"
                     /></el-form-item>
+                    <el-form-item v-if="nodeForm.type !== 'direct'" label="出口组">
+                        <el-input
+                            v-model="nodeForm.egressGroup"
+                            maxlength="80"
+                            placeholder="可选，同公网出口填写相同组名"
+                        />
+                    </el-form-item>
+                    <p>出口组修改需对账号应用后生效；直连统一归组。分组不会改变代理连接。</p>
                     <el-form-item label="启用"><el-switch v-model="nodeForm.enabled" /></el-form-item>
                 </el-form>
                 <template #footer
@@ -478,6 +507,7 @@ const importText = ref("");
 const importFormat = ref("links");
 const nodeForm = reactive({
     cipher: "aes-256-gcm",
+    egressGroup: "",
     enabled: true,
     host: "",
     name: "",
@@ -586,6 +616,7 @@ const openNode = row => {
         nodeForm,
         {
             cipher: "aes-256-gcm",
+            egressGroup: "",
             enabled: true,
             host: "",
             name: "",
@@ -675,7 +706,7 @@ const commitImport = async () => {
 const saveBinding = async row => {
     try {
         await request(`/api/proxy-pool/bindings/${encodeURIComponent(row.accountKey)}`, {
-            body: JSON.stringify({ desiredNodeId: row.desiredNodeId || null }),
+            body: JSON.stringify({ desiredNodeId: row.desiredNodeId || null, egressGroup: row.egressGroup || "" }),
             method: "PUT",
         });
         await loadAll();

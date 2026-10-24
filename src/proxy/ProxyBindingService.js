@@ -1,3 +1,4 @@
+const { egressKey, snapshotEgress } = require("./ProxyEgressIdentity");
 const { getProxySummaryFromEnv, parseProxyFromEnv } = require("../utils/ProxyUtils");
 
 class ProxyBindingService {
@@ -23,8 +24,13 @@ class ProxyBindingService {
     }
 
     resolveKey(accountKey, authIndex) {
+        return snapshotEgress(this._resolveKey(accountKey, authIndex));
+    }
+
+    _resolveKey(accountKey, authIndex) {
         const snapshot = this.store.snapshot();
         const desiredNodeId = snapshot.bindings[accountKey]?.desiredNodeId || null;
+        const egressGroup = snapshot.bindings[accountKey]?.egressGroup || "";
         if (desiredNodeId) {
             const node = snapshot.nodes.find(entry => entry.id === desiredNodeId);
             if (!node)
@@ -56,6 +62,7 @@ class ProxyBindingService {
             return {
                 appliedNodeId: node.id,
                 display: `socks5://127.0.0.1:${node.localPort}`,
+                egressGroup: egressGroup || node.egressGroup || "",
                 proxy: {
                     bypass: "localhost,127.0.0.1,::1",
                     server: `socks5://127.0.0.1:${node.localPort}`,
@@ -64,12 +71,13 @@ class ProxyBindingService {
             };
         }
         const sticky = authIndex === null ? null : this.browserManager.stickyProxyManager.getProxyForAuth(authIndex);
-        if (sticky) return { ...sticky, appliedNodeId: null, source: "sticky_proxy_file" };
+        if (sticky) return { ...sticky, appliedNodeId: null, egressGroup, source: "sticky_proxy_file" };
         const environment = parseProxyFromEnv();
         if (environment)
             return {
                 appliedNodeId: null,
                 display: getProxySummaryFromEnv().server,
+                egressGroup,
                 proxy: environment,
                 source: "environment",
             };
@@ -121,6 +129,13 @@ class ProxyBindingService {
                     error ||= cause.message;
                 }
             }
+            let desiredEgressKey = null;
+            try {
+                desiredEgressKey = this.resolveKey(accountKey, authIndex).egressKey;
+            } catch {
+                // Unavailable configured routes retain their existing error state.
+            }
+            const appliedEgressKey = data?.proxyInfo ? egressKey(data.proxyInfo) : null;
             const inflight = authIndex === null ? 0 : this.browserManager.scheduler?.account(authIndex).inflight || 0;
             let state = desiredNodeId
                 ? data
@@ -131,12 +146,14 @@ class ProxyBindingService {
                 : data && appliedNodeId
                   ? "pending"
                   : "unbound";
+            if (data && desiredEgressKey && desiredEgressKey !== appliedEgressKey) state = "pending";
             if (data?.proxyPoolState === "draining") state = "draining";
             if (data?.proxyPoolState === "rebuilding") state = "rebuilding";
             if (error && desiredNodeId) state = "error";
             return {
                 accountKey,
                 accountName,
+                appliedEgressKey,
                 appliedNodeId,
                 authIndex,
                 contextState:
@@ -144,7 +161,9 @@ class ProxyBindingService {
                         ? "NOT_LOGGED_IN"
                         : data?.state ||
                           (this.browserManager.initializingContexts.has(authIndex) ? "INITIALIZING" : "COLD"),
+                desiredEgressKey,
                 desiredNodeId,
+                egressGroup: snapshot.bindings[accountKey]?.egressGroup || "",
                 error,
                 inflight,
                 proxySource: source,

@@ -1702,3 +1702,35 @@ test("dashboard distinguishes draining and closing capacity from idle READY and 
     assert.equal(summary.contexts_summary.unavailable_occupied, 0);
     scheduler.close();
 });
+
+test("different proxy warm pool initializes distinct exits within the context limit", async t => {
+    const manager = browserFixture(2);
+    manager.authSource.accountNameMap = new Map();
+    const scheduler = new ModelScheduler(
+        {
+            ...loadSchedulerConfig({ ACCOUNT_ROTATION_STRATEGY: "different_proxy_first", MAX_BROWSER_WORKERS: "2" }),
+            dailyResetEnabled: false,
+            statePath: null,
+        },
+        manager.authSource,
+        logger
+    );
+    manager.scheduler = scheduler;
+    scheduler.browserManager = manager;
+    manager._proxyResolver = index => ({ egressKey: index < 2 ? "P1" : "P2" });
+    const initialize = manager._initializeContext;
+    manager._initializeContext = async index => {
+        await initialize.call(manager, index);
+        manager.contexts.get(index).proxyInfo = manager._proxyResolver(index);
+    };
+    t.after(() => scheduler.close());
+    manager.startContextPool();
+    await waitForPool(manager, 2);
+    assert.equal(manager.contexts.size, 2);
+    assert.deepEqual(
+        new Set([...manager.contexts.values()].map(context => context.proxyInfo.egressKey)),
+        new Set(["P1", "P2"])
+    );
+    assert.ok(manager.peak <= 2);
+    assert.ok(manager.peakInitializations <= 2);
+});

@@ -1,3 +1,4 @@
+const { normalizeGroup } = require("./ProxyEgressIdentity");
 const crypto = require("crypto");
 const axios = require("axios");
 const { SocksProxyAgent } = require("socks-proxy-agent");
@@ -128,6 +129,7 @@ class ProxyPoolService {
         return {
             ...parsed,
             createdAt: existing?.createdAt || now,
+            egressGroup: parsed.type === "direct" ? "" : normalizeGroup(input.egressGroup ?? existing?.egressGroup),
             enabled: input.enabled !== false,
             id: existing?.id || `node-${crypto.randomBytes(6).toString("hex")}`,
             localPort:
@@ -404,8 +406,8 @@ class ProxyPoolService {
         return { deletedNodes: ownedNodes.length, deletedSubscriptions: selected.length };
     }
 
-    async setBinding(accountKey, desiredNodeId) {
-        return this.setBindings([{ accountKey, desiredNodeId }]);
+    async setBinding(accountKey, desiredNodeId, egressGroup) {
+        return this.setBindings([{ accountKey, desiredNodeId, egressGroup }]);
     }
 
     async setBindings(items) {
@@ -416,8 +418,13 @@ class ProxyPoolService {
             if (!validAccounts.has(key)) throw Object.assign(new Error(`Unknown account: ${key}`), { status: 404 });
             if (item.desiredNodeId && !next.nodes.some(node => node.id === item.desiredNodeId))
                 throw Object.assign(new Error(`Unknown node: ${item.desiredNodeId}`), { status: 400 });
-            if (item.desiredNodeId)
-                next.bindings[key] = { desiredNodeId: item.desiredNodeId, updatedAt: new Date().toISOString() };
+            const egressGroup = normalizeGroup(item.egressGroup ?? next.bindings[key]?.egressGroup);
+            if (item.desiredNodeId || egressGroup)
+                next.bindings[key] = {
+                    desiredNodeId: item.desiredNodeId || null,
+                    egressGroup,
+                    updatedAt: new Date().toISOString(),
+                };
             else delete next.bindings[key];
         }
         await this.store.replace(next);

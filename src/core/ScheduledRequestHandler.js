@@ -19,6 +19,7 @@ class ScheduledRequestHandler extends RequestHandler {
         this.scheduler = parent.serverSystem.scheduler;
         this.acceptedSchedulerConfig = { ...this.scheduler.config };
         this.excluded = new Set();
+        this.attemptedEgress = new Set();
         this.controller = new AbortController();
         this.response = res;
         this.incomingRequest = req;
@@ -206,7 +207,9 @@ class ScheduledRequestHandler extends RequestHandler {
                     if (account.key !== this.affinity) excluded.add(account.key);
                 }
             }
-            this.lease = await this.scheduler.acquire(this.model, excluded, this.controller.signal);
+            this.lease = await this.scheduler.acquire(this.model, excluded, this.controller.signal, {
+                attemptedEgress: this.attemptedEgress,
+            });
             this.lease.abort = error => {
                 this.controller.abort(error);
                 if (this.proxyRequest)
@@ -291,6 +294,7 @@ class ScheduledRequestHandler extends RequestHandler {
             throw Object.assign(new Error("Client disconnected"), { reason: "client_disconnect" });
         this._assertModelPermission(proxyRequest, authIndex);
         this.scheduler.startAttempt(this.lease);
+        if (this.lease?.attempted && this.lease.egressKey) this.attemptedEgress.add(this.lease.egressKey);
         return super._forwardRequest(proxyRequest, authIndex);
     }
 
