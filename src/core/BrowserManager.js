@@ -2388,108 +2388,79 @@ class BrowserManager {
         }
     }
 
-    _egressPoolIndices() {
-        return [...new Set([...this.contexts.keys(), ...this.initializingContexts])].filter(
-            index =>
-                !this.contexts.get(index)?.draining &&
-                (this.isContextReady(index) || this.initializingContexts.has(index)) &&
-                this.scheduler.isAccountPoolResident(index)
-        );
-    }
-
     orderContextCandidates(indices, limit = indices.length) {
-        if (this.scheduler.config.strategy !== "different_proxy_first") return indices.slice(0, limit);
-        const covered = this._egressPoolIndices();
-        const models = [...new Set(this.scheduler.pending.map(item => item.model))];
-        // Resolve each route once per planning pass: legacy resolution may read files.
-        const keys = new Map(
-            [...new Set([...covered, ...indices])].map(index => [index, this._egressKeyForPool(index)])
-        );
-        const eligible = new Map(
-            models.map(model => [
-                model,
-                new Set(
-                    [...keys.keys()].filter(index =>
-                        this.scheduler.isResourceEligible(this.scheduler.account(index), model)
-                    )
-                ),
-            ])
-        );
-        const counts = new Map();
-        const modelCoverage = new Map(models.map(model => [model, new Set()]));
-        const include = index => {
-            const key = keys.get(index);
-            if (!key) return;
-            counts.set(key, (counts.get(key) || 0) + 1);
-            for (const model of models) if (eligible.get(model).has(index)) modelCoverage.get(model).add(key);
+        if (this.scheduler.config.strategy !== "different_proxy_first" || !limit || !indices.length)
+            return indices.slice(0, limit);
+        // This runs only when a new context is needed. One route lookup per
+        // account, with occupancy read from applied contexts and admitted inits.
+        const keys = new Map();
+        const keyFor = index => {
+            if (!keys.has(index)) keys.set(index, this._egressKeyForPool(index));
+            return keys.get(index);
         };
-        covered.forEach(include);
-        const remaining = indices.filter(index => keys.get(index));
+        const counts = new Map();
+        const occupied = new Set([...this.contexts.keys(), ...this.initializingContexts]);
+        for (const index of occupied) {
+            if (this.contexts.get(index)?.draining || this._poolClosingContexts?.has(index)) continue;
+            const key = keyFor(index);
+            if (key) counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        const groups = new Map();
+        for (const index of indices) {
+            const key = keyFor(index);
+            if (!key) continue;
+            if (!groups.has(key)) groups.set(key, { accounts: [], cursor: 0 });
+            groups.get(key).accounts.push(index);
+        }
         const result = [];
-        const score = index => [
-            models.filter(model => eligible.get(model).has(index) && !modelCoverage.get(model).has(keys.get(index)))
-                .length,
-            -(counts.get(keys.get(index)) || 0),
-        ];
-        while (remaining.length && result.length < limit) {
-            let best = 0;
-            let bestScore = score(remaining[0]);
-            for (let n = 1; n < remaining.length; n++) {
-                const next = score(remaining[n]);
-                if (next[0] > bestScore[0] || (next[0] === bestScore[0] && next[1] > bestScore[1])) {
-                    best = n;
-                    bestScore = next;
+        while (groups.size && result.length < limit) {
+            let bestKey;
+            let minimum = Infinity;
+            for (const key of groups.keys()) {
+                const count = counts.get(key) || 0;
+                if (count < minimum) {
+                    bestKey = key;
+                    minimum = count;
                 }
             }
-            const [index] = remaining.splice(best, 1);
-            result.push(index);
-            include(index);
+            const group = groups.get(bestKey);
+            result.push(group.accounts[group.cursor++]);
+            counts.set(bestKey, minimum + 1);
+            if (group.cursor === group.accounts.length) groups.delete(bestKey);
         }
         return result;
     }
 
-    _egressDiversityVictims(target) {
-        if (this.scheduler.config.strategy !== "different_proxy_first" || this.scheduler.config.maxWorkers < 2)
-            return [];
-        const now = Date.now();
-        if (now - (this._lastEgressReplacementAt || 0) < 5000) return [];
-        const key = this._egressKeyForPool(target);
-        if (!key || !this.scheduler.isAccountPoolResident(target)) return [];
-        const covered = this._egressPoolIndices();
-        if (covered.includes(target)) return [];
-        const models = [...new Set(this.scheduler.pending.map(item => item.model))];
-        const eligible = (index, model) => this.scheduler.isResourceEligible(this.scheduler.account(index), model);
-        const coverage = (indices, model) =>
-            new Set(
-                indices
-                    .filter(index => !model || eligible(index, model))
-                    .map(index => this._egressKeyForPool(index))
-                    .filter(Boolean)
-            );
-        const before = coverage(covered);
-        if (before.has(key) && !models.some(model => eligible(target, model) && !coverage(covered, model).has(key)))
-            return [];
-        return covered.filter(victim => {
-            if (
-                !this.contexts.has(victim) ||
-                this.initializingContexts.has(victim) ||
-                this.contextCapacityReservations?.has(victim) ||
-                !this._isContextIdle(victim) ||
-                this._hasValidContextDemand(victim)
-            )
-                return false;
-            const after = [...covered.filter(index => index !== victim), target];
-            const afterGroups = coverage(after);
-            if ([...before].some(group => !afterGroups.has(group))) return false;
-            let improvement = afterGroups.size > before.size;
+    getEgressPoolSnapshot(models) {
+        const groups = new Map();
+        const byModel = Object.fromEntries([...models].map(model => [model, new Map()]));
+        // Observability derives from existing contexts; never resolve cold routes.
+        for (const [index, data] of this.contexts) {
+            if (!data.proxyInfo) continue;
+            const key = egressKey(data.proxyInfo);
+            if (!groups.has(key)) groups.set(key, { contexts: 0, inflight: 0, key, ready_contexts: 0 });
+            const group = groups.get(key);
+            const account = this.scheduler.account(index);
+            group.contexts++;
+            group.inflight += account.inflight;
+            if (!this.isContextReady(index)) continue;
+            group.ready_contexts++;
             for (const model of models) {
-                const previous = coverage(covered, model);
-                const next = coverage(after, model);
-                if ([...previous].some(group => !next.has(group))) return false;
-                if (next.size > previous.size) improvement = true;
+                if (!this.scheduler.isResourceEligible(account, model) || !this.scheduler.canLease(account, model))
+                    continue;
+                const counts = byModel[model];
+                counts.set(key, (counts.get(key) || 0) + 1);
             }
-            return improvement;
-        });
+        }
+        return {
+            by_model: Object.fromEntries(
+                Object.entries(byModel).map(([model, counts]) => [
+                    model,
+                    [...counts].map(([key, ready_accounts]) => ({ key, ready_accounts })),
+                ])
+            ),
+            groups: [...groups.values()].sort((a, b) => a.key.localeCompare(b.key)),
+        };
     }
 
     _poolCandidates() {
@@ -2503,21 +2474,25 @@ class BrowserManager {
         const enabled = index => this.scheduler.isAccountManuallyDisabled?.(index) !== true;
         const now = this.scheduler.now?.() ?? Date.now();
         const models = this.scheduler.getVisibleModels?.();
-        const resident = index =>
-            enabled(index) && (this.scheduler.isAccountPoolResident?.(index, now, models) ?? true);
+        const residents = new Set(
+            rotation.filter(
+                index => enabled(index) && (this.scheduler.isAccountPoolResident?.(index, now, models) ?? true)
+            )
+        );
+        const resident = index => residents.has(index);
         for (const index of this.contextDemand?.keys() || [])
             if (!enabled(index) || !this._hasValidContextDemand(index)) this.contextDemand.delete(index);
         const demanded = [...(this.contextDemand?.keys() || [])].filter(
             index => rotation.includes(index) && enabled(index)
         );
-        const target = Math.min(this.scheduler.config.contextPoolMinReady, rotation.filter(resident).length);
+        const target = Math.min(this.scheduler.config.contextPoolMinReady, residents.size);
         const readyCount = rotation.filter(index => resident(index) && this.isContextReady(index)).length;
         const warmingCount = [...this.initializingContexts].filter(resident).length;
         const needWarm = Math.max(0, target - readyCount - warmingCount);
-        const warmStatus = `${target}:${rotation.filter(resident).length}`;
+        const warmStatus = `${target}:${residents.size}`;
         if (warmStatus !== this._lastWarmStatus) {
             this._lastWarmStatus = warmStatus;
-            this.logger.info(`[ContextPool] Warm target=${target}, candidates=${rotation.filter(resident).length}`);
+            this.logger.info(`[ContextPool] Warm target=${target}, candidates=${residents.size}`);
         }
         const warm = needWarm
             ? this.orderContextCandidates(
@@ -2537,22 +2512,7 @@ class BrowserManager {
                   needWarm
               )
             : [];
-        const diversity =
-            this.scheduler.config.strategy === "different_proxy_first" && !this._contextInitTasks.size
-                ? this.orderContextCandidates(
-                      rotation.filter(
-                          index =>
-                              resident(index) &&
-                              !this.contexts.has(index) &&
-                              !closing.has(index) &&
-                              (!this.contextUnavailable.get(index)?.retryAt ||
-                                  this.contextUnavailable.get(index).retryAt <= Date.now()) &&
-                              this._egressDiversityVictims(index).length
-                      ),
-                      1
-                  )
-                : [];
-        return [...new Set([...demanded, ...warm, ...diversity])].filter(index => {
+        return [...new Set([...demanded, ...warm])].filter(index => {
             const unavailable = this.contextUnavailable.get(index);
             return (
                 enabled(index) &&
@@ -2647,14 +2607,7 @@ class BrowserManager {
     _replaceIdlePooledContext(authIndex, purpose) {
         // Warming and background reconnects may use free capacity, but cannot
         // displace a healthy resident. Re-evaluate model demand at the mutation.
-        const diversityVictims = purpose === "warm" ? this._egressDiversityVictims(authIndex) : [];
-        const diversity = diversityVictims.length > 0;
-        if (
-            !diversity &&
-            purpose !== "foreground" &&
-            (purpose !== "demand" || !this._hasQueuedContextDemand(authIndex))
-        )
-            return;
+        if (purpose !== "foreground" && (purpose !== "demand" || !this._hasQueuedContextDemand(authIndex))) return;
         this._contextPoolReplacements ??= new Map();
         // Finish one replacement before selecting another victim for the same demand.
         if (this._contextPoolReplacements.size || this._poolClosingContexts?.size) return;
@@ -2662,7 +2615,6 @@ class BrowserManager {
             .filter(
                 index =>
                     index !== authIndex &&
-                    (!diversity || diversityVictims.includes(index)) &&
                     !this.initializingContexts.has(index) &&
                     !this.contextCapacityReservations?.has(index) &&
                     this._isContextIdle(index)
@@ -2670,11 +2622,6 @@ class BrowserManager {
             .sort((a, b) => this._compareContextEviction(a, b))[0];
         if (idle === undefined) return;
         const owner = {};
-        if (diversity) {
-            this._lastEgressReplacementAt = Date.now();
-            this.scheduler.metrics.egress_diversity_replacements =
-                (this.scheduler.metrics.egress_diversity_replacements || 0) + 1;
-        }
         this._contextPoolReplacements.set(idle, owner);
         Object.assign(this.contexts.get(idle), { draining: true, drainReason: "context_capacity" });
         this.logger.info(
@@ -2722,13 +2669,6 @@ class BrowserManager {
             !account?.healthy || !rotation.includes(authIndex) || this.authSource.isExpired?.(authIndex) ? 0 : 1,
             unusableSlots ? 0 : 1,
             this.contextDemand.has(authIndex) ? 1 : 0,
-            ...(this.scheduler?.config.strategy === "different_proxy_first"
-                ? [
-                      -this._egressPoolIndices().filter(
-                          index => this._egressKeyForPool(index) === this._egressKeyForPool(authIndex)
-                      ).length,
-                  ]
-                : []),
             data.lastRequestAt || 0,
             data.createdAt || 0,
             authIndex,

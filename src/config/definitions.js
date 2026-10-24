@@ -459,7 +459,7 @@ module.exports = [
     {
         application: "restart",
         choices: ["least_recently_used", "least_used", "different_proxy_first", "legacy"],
-        description: "不同代理优先：优先使用在途较少、较久未使用的出口；仅一个出口可用时按较久未使用优先选择账号",
+        description: "不同代理优先：新建和补充 Context 时按出口分散；请求沿用较久未使用优先，不逐请求轮换出口",
         group: "账号切换与认证维护",
         label: "账号调度模式",
         minimum: 1,

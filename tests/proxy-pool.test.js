@@ -77,6 +77,53 @@ async function main() {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-pool-"));
     const filePath = path.join(temp, "proxy-pool.json");
     const store = new ProxyPoolStore(logger, filePath);
+    const scaleStore = new ProxyPoolStore(logger, path.join(temp, "routing-scale.json"));
+    const scaleData = scaleStore.snapshot();
+    scaleData.settings.enabled = true;
+    scaleData.nodes = Array.from({ length: 5 }, (_, index) => ({
+        enabled: true,
+        host: "proxy.example.com",
+        id: `node-${index}`,
+        localPort: 10801 + index,
+        port: 1080,
+        type: "socks5",
+    }));
+    for (let index = 0; index < 218; index++)
+        scaleData.bindings[`account-${index}`] = { desiredNodeId: `node-${index % 5}` };
+    await scaleStore.replace(scaleData);
+    const scaleManager = { status: { ready: true } };
+    const scaleBrowser = { stickyProxyManager: { getProxyForAuth: () => null } };
+    const optimized = new ProxyBindingService(scaleStore, scaleManager, scaleBrowser, {});
+    const reference = new ProxyBindingService(
+        { snapshot: () => scaleStore.snapshot() },
+        scaleManager,
+        scaleBrowser,
+        {}
+    );
+    for (let index = 0; index < 218; index++)
+        assert.deepStrictEqual(
+            optimized.resolveKey(`account-${index}`, null),
+            reference.resolveKey(`account-${index}`, null)
+        );
+    const narrow = scaleStore.snapshotForAccount("account-0");
+    assert.strictEqual(Object.keys(narrow.bindings).length, 1);
+    assert.strictEqual(narrow.nodes.length, 1);
+    narrow.nodes[0].enabled = false;
+    narrow.bindings["account-0"].desiredNodeId = "node-4";
+    assert.strictEqual(optimized.resolveKey("account-0", null).appliedNodeId, "node-0");
+    const changedRoute = scaleStore.snapshot();
+    changedRoute.bindings["account-0"].desiredNodeId = "node-4";
+    changedRoute.nodes[4].egressGroup = "shared-egress";
+    await scaleStore.replace(changedRoute);
+    scaleStore.snapshot = () => {
+        throw new Error("Route lookup must not copy the entire pool");
+    };
+    assert.strictEqual(optimized.resolveKey("account-0", null).egressKey, "group:shared-egress");
+    scaleStore.data.settings.enabled = false;
+    assert.throws(() => optimized.resolveKey("account-0", null), { code: "PROXY_POOL_DISABLED" });
+    scaleStore.data.settings.enabled = true;
+    delete scaleStore.data.bindings["account-0"];
+    assert.deepStrictEqual(scaleStore.snapshotForAccount("account-0").nodes, []);
     const data = store.snapshot();
     assert.strictEqual(data.automation.enabled, false);
     assert.strictEqual(data.automation.subscriptionsEnabled, false);

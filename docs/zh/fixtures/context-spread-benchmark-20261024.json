@@ -1,0 +1,179 @@
+{
+    "environment": {
+        "accounts": 218,
+        "contexts": 12,
+        "exits": 5,
+        "node": "v22.23.2",
+        "note": "Local synthetic dispatch; immediate request completion; excludes paused enqueue time and upstream I/O"
+    },
+    "samples": [
+        {
+            "round": 0,
+            "cold_route_reads": 0,
+            "dispatch_ms": 18.215,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.41,
+            "proxy_snapshots": 0,
+            "queue": 40,
+            "selected": 40,
+            "strategy": "least_recently_used",
+            "wait_p95_ms": 16.904
+        },
+        {
+            "round": 0,
+            "cold_route_reads": 0,
+            "dispatch_ms": 10.575,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.4,
+            "proxy_snapshots": 0,
+            "queue": 40,
+            "selected": 40,
+            "strategy": "different_proxy_first",
+            "wait_p95_ms": 9.947
+        },
+        {
+            "round": 1,
+            "cold_route_reads": 0,
+            "dispatch_ms": 8.555,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.309,
+            "proxy_snapshots": 0,
+            "queue": 40,
+            "selected": 40,
+            "strategy": "different_proxy_first",
+            "wait_p95_ms": 8.069
+        },
+        {
+            "round": 1,
+            "cold_route_reads": 0,
+            "dispatch_ms": 8.721,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.385,
+            "proxy_snapshots": 0,
+            "queue": 40,
+            "selected": 40,
+            "strategy": "least_recently_used",
+            "wait_p95_ms": 7.979
+        },
+        {
+            "round": 2,
+            "cold_route_reads": 0,
+            "dispatch_ms": 7.933,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.236,
+            "proxy_snapshots": 0,
+            "queue": 40,
+            "selected": 40,
+            "strategy": "least_recently_used",
+            "wait_p95_ms": 7.465
+        },
+        {
+            "round": 2,
+            "cold_route_reads": 0,
+            "dispatch_ms": 7.075,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.235,
+            "proxy_snapshots": 0,
+            "queue": 40,
+            "selected": 40,
+            "strategy": "different_proxy_first",
+            "wait_p95_ms": 6.706
+        },
+        {
+            "round": 0,
+            "cold_route_reads": 0,
+            "dispatch_ms": 255.473,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.237,
+            "proxy_snapshots": 0,
+            "queue": 300,
+            "selected": 300,
+            "strategy": "least_recently_used",
+            "wait_p95_ms": 254.937
+        },
+        {
+            "round": 0,
+            "cold_route_reads": 0,
+            "dispatch_ms": 246.159,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.226,
+            "proxy_snapshots": 0,
+            "queue": 300,
+            "selected": 300,
+            "strategy": "different_proxy_first",
+            "wait_p95_ms": 245.403
+        },
+        {
+            "round": 1,
+            "cold_route_reads": 0,
+            "dispatch_ms": 240.718,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.229,
+            "proxy_snapshots": 0,
+            "queue": 300,
+            "selected": 300,
+            "strategy": "different_proxy_first",
+            "wait_p95_ms": 240.155
+        },
+        {
+            "round": 1,
+            "cold_route_reads": 0,
+            "dispatch_ms": 242.914,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.226,
+            "proxy_snapshots": 0,
+            "queue": 300,
+            "selected": 300,
+            "strategy": "least_recently_used",
+            "wait_p95_ms": 242.405
+        },
+        {
+            "round": 2,
+            "cold_route_reads": 0,
+            "dispatch_ms": 241.208,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.231,
+            "proxy_snapshots": 0,
+            "queue": 300,
+            "selected": 300,
+            "strategy": "least_recently_used",
+            "wait_p95_ms": 240.721
+        },
+        {
+            "round": 2,
+            "cold_route_reads": 0,
+            "dispatch_ms": 245.607,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.226,
+            "proxy_snapshots": 0,
+            "queue": 300,
+            "selected": 300,
+            "strategy": "different_proxy_first",
+            "wait_p95_ms": 245.149
+        },
+        {
+            "round": 0,
+            "cold_route_reads": 0,
+            "dispatch_ms": 3263.725,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.23,
+            "proxy_snapshots": 0,
+            "queue": 1000,
+            "selected": 1000,
+            "strategy": "least_recently_used",
+            "wait_p95_ms": 3262.943
+        },
+        {
+            "round": 0,
+            "cold_route_reads": 0,
+            "dispatch_ms": 3241.885,
+            "dispatch_timeouts": 0,
+            "full_pool_planning_p50_ms": 0.225,
+            "proxy_snapshots": 0,
+            "queue": 1000,
+            "selected": 1000,
+            "strategy": "different_proxy_first",
+            "wait_p95_ms": 3241.187
+        }
+    ]
+}

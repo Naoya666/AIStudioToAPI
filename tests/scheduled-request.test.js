@@ -1977,12 +1977,12 @@ test("anti guards retain conservative no-replay behavior for incomplete frames o
     assert.equal(fixture.registry.messageQueues.size, 0);
 });
 
-test("different proxy retries use a new exit before a same-exit account", async () => {
+test("context-spread mode retries with ordinary LRU, including another account on the same exit", async () => {
     const fixture = setup(index => (index === 0 ? [{ event_type: "error", message: "quota", status: 429 }] : success), {
         scheduler: { strategy: "different_proxy_first" },
     });
     Object.assign(fixture.browser, {
-        getAccountEgressKey: index => ["P1", "P1", "P2", "P3"][index],
+        getAccountEgressKey: () => assert.fail("Request retry must not resolve proxy routes"),
         isContextReady: () => true,
     });
     fixture.scheduler.browserManager = fixture.browser;
@@ -1992,9 +1992,9 @@ test("different proxy retries use a new exit before a same-exit account", async 
         assert.equal(res.statusCode, 200, res.body);
         assert.deepEqual(
             fixture.sent.map(entry => entry.index),
-            [0, 2]
+            [0, 1]
         );
-        assert.ok([...fixture.scheduler.egress.values()].every(group => group.inflight === 0));
+        assert.ok(fixture.scheduler.workers.every(worker => !worker.lease));
     } finally {
         fixture.scheduler.close();
     }

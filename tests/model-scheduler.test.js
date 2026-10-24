@@ -1102,6 +1102,7 @@ test("ready-only scheduling spreads leases and signals cold context demand", asy
     ready.clear();
     const controller = new AbortController();
     const waiting = scheduler.acquire("cold", new Set(), controller.signal);
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(demands.at(-1), { index: 0, model: "cold" });
     controller.abort();
     await assert.rejects(waiting, /Client disconnected/);
@@ -1185,6 +1186,7 @@ test("cold model demand does not block requests using an existing ready context"
     const cold = scheduler.acquire("cold-model", new Set(), controller.signal);
     const hot = await scheduler.acquire("hot-model");
     assert.equal(hot.account.index, 0);
+    await new Promise(resolve => setImmediate(resolve));
     assert.ok(demanded.includes(1));
     controller.abort();
     await assert.rejects(cold);

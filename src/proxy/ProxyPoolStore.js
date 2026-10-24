@@ -67,6 +67,17 @@ class ProxyPoolStore {
         return structuredClone(this.data);
     }
 
+    snapshotForAccount(accountKey) {
+        const binding = this.data.bindings[accountKey];
+        const node = binding?.desiredNodeId ? this.data.nodes.find(entry => entry.id === binding.desiredNodeId) : null;
+        // Scheduler route lookups must not clone every account binding.
+        return structuredClone({
+            bindings: binding ? { [accountKey]: binding } : {},
+            nodes: node ? [node] : [],
+            settings: { enabled: this.data.settings.enabled },
+        });
+    }
+
     validate(candidate) {
         if (!candidate || candidate.schemaVersion !== 1) throw new Error("Invalid proxy pool schema");
         if (!Array.isArray(candidate.nodes) || !candidate.bindings || typeof candidate.bindings !== "object")

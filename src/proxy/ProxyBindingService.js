@@ -28,7 +28,9 @@ class ProxyBindingService {
     }
 
     _resolveKey(accountKey, authIndex) {
-        const snapshot = this.store.snapshot();
+        const snapshot = this.store.snapshotForAccount
+            ? this.store.snapshotForAccount(accountKey)
+            : this.store.snapshot();
         const desiredNodeId = snapshot.bindings[accountKey]?.desiredNodeId || null;
         const egressGroup = snapshot.bindings[accountKey]?.egressGroup || "";
         if (desiredNodeId) {

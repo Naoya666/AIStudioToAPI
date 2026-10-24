@@ -59,155 +59,191 @@ test("new strategy enables model scheduling and keeps existing default", () => {
     assert.equal(loadConfig({ ACCOUNT_ROTATION_STRATEGY: "legacy" }).enabled, false);
 });
 
-test("serial requests rotate exits independently of account counts", async t => {
-    const { scheduler } = setup(t, ["P1", "P1", "P1", "P2", "P3"]);
+test("context-spread requests have the same account order as LRU", async t => {
+    const groups = ["P1", "P1", "P1", "P2", "P3"];
+    const spread = setup(t, groups);
+    const lru = setup(t, groups, { strategy: "least_recently_used" });
+    let routes = 0;
+    spread.manager._proxyResolver = () => {
+        routes++;
+        throw new Error("cold route must not be read");
+    };
     const chosen = [];
-    const accounts = [];
-    for (let i = 0; i < 9; i++) {
-        const lease = await scheduler.acquire("flash");
-        chosen.push(lease.egressKey);
-        accounts.push(lease.account.index);
-        scheduler.release(lease);
+    for (let i = 0; i < 15; i++) {
+        const a = await spread.scheduler.acquire("flash");
+        const b = await lru.scheduler.acquire("flash");
+        chosen.push(a.account.index);
+        assert.equal(a.account.index, b.account.index);
+        spread.scheduler.startAttempt(a);
+        spread.scheduler.release(a, true);
+        lru.scheduler.startAttempt(b);
+        lru.scheduler.release(b, true);
     }
-    assert.deepEqual(chosen, ["P1", "P2", "P3", "P1", "P2", "P3", "P1", "P2", "P3"]);
-    assert.deepEqual(
-        accounts.filter((_, i) => i % 3 === 0),
-        [0, 1, 2]
-    );
-    assert.equal(
-        [...scheduler.egress.values()].reduce((n, group) => n + group.inflight, 0),
-        0
-    );
+    assert.deepEqual(chosen.slice(0, 5), [0, 1, 2, 3, 4]);
+    assert.equal(routes, 0);
 });
 
-test("a single drain round reserves exits synchronously across workers and models", async t => {
-    const { scheduler } = setup(t, ["P1", "P1", "P2", "P3"], { globalConcurrency: 6 });
-    scheduler.paused = true;
-    const requests = ["flash", "pro", "flash", "pro", "flash", "pro"].map(model => scheduler.acquire(model));
-    scheduler.paused = false;
-    scheduler.drain();
-    const leases = await Promise.all(requests);
-    assert.deepEqual(
-        leases.map(lease => lease.egressKey),
-        ["P1", "P2", "P3", "P1", "P2", "P3"]
-    );
-    assert.deepEqual(
-        [...scheduler.egress.values()].map(group => group.inflight),
-        [2, 2, 2]
-    );
-    const snapshot = scheduler.summarySnapshot();
-    assert.equal(
-        snapshot.egress.groups.reduce((n, group) => n + group.inflight, 0),
-        snapshot.active_workers
-    );
-    assert.equal(snapshot.egress.groups.find(group => group.key === "P1").ready_accounts, 2);
-    for (const lease of leases) {
-        scheduler.release(lease);
-        scheduler.release(lease);
-    }
-    assert.ok([...scheduler.egress.values()].every(group => group.inflight === 0));
-});
-
-test("exit load precedes account load, while a single exit retains original LRU order", async t => {
-    const { scheduler } = setup(t, ["P1", "P1", "P2"], { globalConcurrency: 5 });
-    const first = await scheduler.acquire("flash");
-    const second = await scheduler.acquire("flash");
-    const third = await scheduler.acquire("flash");
-    assert.deepEqual([first.egressKey, second.egressKey, third.egressKey], ["P1", "P2", "P1"]);
-    // P2 now has less total load, even though P1 has a lower per-account load.
-    const fourth = await scheduler.acquire("other");
-    assert.equal(fourth.egressKey, "P2");
-    for (const lease of [first, second, third, fourth]) scheduler.release(lease);
-
-    const same = setup(t, ["P1", "P1", "P1"]);
-    const original = setup(t, ["P1", "P1", "P1"], { strategy: "least_recently_used" });
-    for (const pool of [same.scheduler, original.scheduler]) {
-        pool.slot(pool.account(0), "flash").last_used_at = 300;
-        pool.slot(pool.account(1), "flash").last_used_at = 100;
-        pool.slot(pool.account(2), "flash").last_used_at = 200;
-    }
-    const a = await same.scheduler.acquire("flash");
-    const b = await original.scheduler.acquire("flash");
-    assert.equal(a.account.index, b.account.index);
+test("model cooling, account exclusions and concurrency still constrain ordinary dispatch", async t => {
+    const { scheduler } = setup(t, ["P1", "P1", "P2"], { accountConcurrency: 1 });
+    const slot = scheduler.slot(scheduler.account(2), "flash");
+    slot.rate_limited = true;
+    slot.cooldown_until = Date.now() + 60000;
+    const a = await scheduler.acquire("flash", new Set([scheduler.account(0).key]));
     assert.equal(a.account.index, 1);
-    assert.equal(same.scheduler.metricsSnapshot().single_egress_fallbacks, 1);
+    const b = await scheduler.acquire("other");
+    assert.equal(b.account.index, 0);
+    const c = await scheduler.acquire("other");
+    assert.equal(c.account.index, 2);
+    assert.ok([a, b, c].every(lease => lease.account.inflight === 1));
+    for (const lease of [a, b, c]) scheduler.release(lease);
 });
 
-test("model cooldown and account exclusions remain hard constraints", async t => {
-    const { scheduler } = setup(t, ["P1", "P1", "P2", "P3"]);
-    for (const index of [2, 3]) {
-        const slot = scheduler.slot(scheduler.account(index), "flash");
-        slot.cooldown_until = Date.now() + 60000;
-        slot.rate_limited = true;
-    }
-    const lease = await scheduler.acquire("flash", new Set([scheduler.account(0).key]));
-    assert.equal(lease.account.index, 1);
-    scheduler.release(lease);
-    const other = await scheduler.acquire("other");
-    assert.equal(other.egressKey, "P2");
-    assert.equal(scheduler.summarySnapshot().models.find(model => model.model === "flash").ready_egress_groups, 1);
-});
-
-test("retry exit history is a soft preference after hard account affinity", async t => {
-    const { scheduler } = setup(t, ["P1", "P1", "P2"]);
-    const busy = await scheduler.acquire("other", new Set([scheduler.account(0).key, scheduler.account(1).key]));
-    const retry = await scheduler.acquire("flash", new Set([scheduler.account(0).key]), undefined, {
-        attemptedEgress: new Set(["P1"]),
-    });
-    assert.equal(retry.egressKey, "P2");
-    scheduler.release(retry);
-    const affinity = await scheduler.acquire(
-        "flash",
-        new Set([scheduler.account(0).key, scheduler.account(2).key]),
-        undefined,
-        {
-            attemptedEgress: new Set(["P1"]),
-        }
-    );
-    assert.equal(affinity.account.index, 1);
-    scheduler.release(affinity);
-    scheduler.release(busy);
-});
-
-test("binding changes and recovery release the leased exit snapshot exactly once", async t => {
-    const { scheduler, manager } = setup(t, ["P1", "P2"]);
+test("existing context snapshots are enough for pool observability", async t => {
+    const { scheduler, manager } = setup(t, ["P1", "P1", "P2", "P3"]);
+    manager.contexts.delete(3);
+    let routes = 0;
+    manager._proxyResolver = () => {
+        routes++;
+        return { egressKey: "changed" };
+    };
     const lease = await scheduler.acquire("flash");
-    manager.contexts.get(lease.account.index).proxyInfo = { egressKey: "P3" };
+    const snapshot = scheduler.summarySnapshot();
+    assert.deepEqual(snapshot.egress.groups, [
+        { contexts: 2, inflight: 1, key: "P1", ready_contexts: 2 },
+        { contexts: 1, inflight: 0, key: "P2", ready_contexts: 1 },
+    ]);
+    assert.equal(snapshot.models.find(model => model.model === "flash").ready_egress_groups, 2);
+    assert.equal(routes, 0);
     scheduler.beginRecovery("test");
     scheduler.release(lease);
-    assert.equal(scheduler.egress.get("P1").inflight, 0);
-    assert.equal(scheduler.egress.has("P3"), false);
     assert.ok(scheduler.workers.every(worker => !worker.lease));
-    scheduler.egressSnapshot(new Set(["flash"]));
-    assert.equal(scheduler.egress.has("P1"), false);
+    assert.equal(routes, 0);
 });
 
-test("cancellation of a queued request creates no exit reservation", async t => {
-    const { scheduler } = setup(t, ["P1"], { globalConcurrency: 1 });
-    const active = await scheduler.acquire("flash");
-    const controller = new AbortController();
-    const queued = scheduler.acquire("flash", new Set(), controller.signal);
-    controller.abort();
-    await assert.rejects(queued, /disconnected/);
-    assert.equal(scheduler.egress.get("P1").inflight, 1);
-    scheduler.release(active);
-    assert.equal(scheduler.egress.get("P1").inflight, 0);
+test("warm planning spreads groups and counts admitted initializers", t => {
+    const { manager, scheduler } = setup(t, ["P1", "P1", "P2", "P3"], { contextPoolMinReady: 3 });
+    manager.contexts.clear();
+    assert.deepEqual(manager._poolCandidates(), [0, 2, 3]);
+    manager.initializingContexts.add(0);
+    manager._contextInitTasks.set(0, Promise.resolve());
+    assert.deepEqual(manager._poolCandidates(), [2, 3]);
+    assert.equal(scheduler.pending.length, 0);
 });
 
-test("cold exits do not delay dispatch and invalid routes never become direct", async t => {
-    const { scheduler, manager } = setup(t, ["P1", "P2", "P3"]);
-    manager.contexts.delete(1);
-    manager.contexts.delete(2);
+test("new contexts prefer the least resident exit and fall back within a single exit", t => {
+    const { manager } = setup(t, ["P1", "P1", "P1", "P2", "P2", "P3"]);
+    for (const index of [2, 4, 5]) manager.contexts.delete(index);
+    assert.deepEqual(manager.orderContextCandidates([2, 4, 5], 3), [5, 4, 2]);
+    assert.deepEqual(manager.orderContextCandidates([2], 1), [2]);
+    assert.deepEqual(manager.orderContextCandidates([], 1), []);
+});
+
+test("planning resolves each candidate route once and never silently substitutes direct", t => {
+    const { manager } = setup(t, ["P1", "P1", "P2", "P3"]);
+    manager.contexts.clear();
+    const calls = new Map();
     manager._proxyResolver = index => {
-        if (index === 2) throw new Error("node unavailable");
-        return { egressKey: "P2" };
+        calls.set(index, (calls.get(index) || 0) + 1);
+        if (index === 3) throw new Error("bound node unavailable");
+        return { egressKey: index < 2 ? "P1" : "P2" };
     };
-    manager.requestContexts = () => {};
-    const lease = await scheduler.acquire("flash");
-    assert.equal(lease.egressKey, "P1");
-    assert.equal(scheduler.accountEgressKey(scheduler.account(2)), null);
-    scheduler.release(lease);
+    assert.deepEqual(manager.orderContextCandidates([0, 1, 2, 3]), [0, 2, 1]);
+    assert.deepEqual([...calls.values()], [1, 1, 1, 1]);
 });
+
+test("a full pool is reused without route scans, balancing swaps or pending-model coverage repair", t => {
+    const { manager, scheduler } = setup(t, ["P1", "P1", "P2", "P3"], { contextPoolMinReady: 2, maxWorkers: 2 });
+    manager.contexts.delete(2);
+    manager.contexts.delete(3);
+    let routes = 0;
+    manager._proxyResolver = () => {
+        routes++;
+        return { egressKey: "new" };
+    };
+    scheduler.pending.push({ excluded: new Set(), model: "pro" });
+    manager.closeContext = () => assert.fail("Healthy contexts must not be swapped just for diversity");
+    assert.deepEqual(manager._poolCandidates(), []);
+    manager._replaceIdlePooledContext(2, "warm");
+    assert.equal(manager.contexts.size, 2);
+    assert.equal(routes, 0);
+    scheduler.pending.length = 0;
+});
+
+test("a naturally freed slot is filled from an underrepresented exit", t => {
+    const { manager } = setup(t, ["P1", "P1", "P2"], { contextPoolMinReady: 2, maxWorkers: 2 });
+    manager.contexts.delete(2);
+    assert.deepEqual(manager._poolCandidates(), []);
+    manager.contexts.delete(1);
+    assert.deepEqual(manager._poolCandidates(), [2]);
+    manager.contextUnavailable.set(2, { retryAt: Date.now() + 60000 });
+    assert.deepEqual(manager._poolCandidates(), [1]);
+});
+
+test("cold model preparation is deferred and preserves model eligibility", async t => {
+    const { scheduler, manager } = setup(t, ["P1", "P1", "P2", "P3"], { contextPoolMinReady: 0 });
+    manager.contexts.delete(2);
+    manager.contexts.delete(3);
+    for (const index of [0, 1, 3]) scheduler.slot(scheduler.account(index), "pro").unsupported = true;
+    const demands = [];
+    manager.requestContexts = requests => {
+        assert.equal(scheduler._draining, false);
+        demands.push(...requests);
+    };
+    const controller = new AbortController();
+    const cold = scheduler.acquire("pro", new Set(), controller.signal);
+    const hot = await scheduler.acquire("flash");
+    assert.equal(demands.length, 0);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(demands, [{ authIndex: 2, model: "pro" }]);
+    scheduler.release(hot);
+    controller.abort();
+    await assert.rejects(cold, /disconnected/);
+});
+
+for (const queueSize of [40, 300, 1000]) {
+    test(`218 accounts and ${queueSize} queued requests dispatch without cold proxy reads`, async t => {
+        const groups = Array.from({ length: 218 }, (_, index) => `P${index % 5}`);
+        const { scheduler, manager, auth } = setup(t, groups, {
+            contextMaxConcurrency: 10,
+            contextPoolMinReady: 12,
+            globalConcurrency: 120,
+            globalQueueSize: 1000,
+            maxWorkers: 12,
+            queueSize: 1000,
+        });
+        auth.accountLoginService = {
+            state: { accounts: groups.map((_, authIndex) => ({ authIndex, manualTier: "free" })) },
+        };
+        for (let index = 12; index < groups.length; index++) manager.contexts.delete(index);
+        let routes = 0;
+        manager._proxyResolver = () => {
+            routes++;
+            throw new Error("Unexpected cold route lookup");
+        };
+        scheduler.paused = true;
+        const requests = Array.from({ length: queueSize }, (_, index) =>
+            scheduler.acquire(["flash", "pro", "other"][index % 3])
+        );
+        scheduler.paused = false;
+        let completed = 0;
+        const done = requests.map(async request => {
+            const lease = await request;
+            scheduler.startAttempt(lease);
+            scheduler.release(lease, true);
+            completed++;
+        });
+        scheduler.drain();
+        await Promise.all(done);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(completed, queueSize);
+        assert.equal(scheduler.pending.length, 0);
+        assert.equal(scheduler.metrics.dispatch_timeout, 0);
+        assert.ok(scheduler.workers.every(worker => !worker.lease));
+        assert.equal(routes, 0);
+        assert.deepEqual(manager._poolCandidates(), []);
+        assert.equal(routes, 0);
+    });
+}
 
 test("proxy identity normalizes routes without leaking credentials and unifies direct", () => {
     const a = egressKey({ proxy: { server: "HTTP://user:secret@EXAMPLE.COM:80" } });
@@ -270,91 +306,4 @@ test("node and legacy binding groups persist and report pending until context ap
     const snapshot = snapshotEgress(bindings.resolve(0));
     await service.setBinding("user", null, "next");
     assert.equal(snapshot.egressKey, "group:legacy");
-});
-
-test("warm planning spreads groups and counts admitted initializers", t => {
-    const { manager, scheduler } = setup(t, ["P1", "P1", "P2", "P3"], { contextPoolMinReady: 3 });
-    manager.contexts.clear();
-    assert.deepEqual(manager._poolCandidates(), [0, 2, 3]);
-    manager.initializingContexts.add(0);
-    manager._contextInitTasks.set(0, Promise.resolve());
-    assert.deepEqual(manager._poolCandidates(), [2, 3]);
-    assert.equal(scheduler.pending.length, 0);
-});
-
-test("full pool repairs duplicated exits without cycling when exits exceed capacity", async t => {
-    const { manager, scheduler } = setup(t, ["P1", "P1", "P2", "P3"], { contextPoolMinReady: 2, maxWorkers: 2 });
-    manager.contexts.delete(2);
-    manager.contexts.delete(3);
-    assert.deepEqual(manager._poolCandidates(), [2]);
-    manager._pumpContextPool = () => {};
-    manager.closeContext = async index => manager.contexts.delete(index);
-    assert.equal(manager._reserveContextCapacity(2, "warm"), null);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(manager.contexts.size, 1);
-    assert.equal(scheduler.metrics.egress_diversity_replacements, 1);
-    manager.contexts.set(2, { proxyInfo: { egressKey: "P2" }, state: "READY" });
-    manager._lastEgressReplacementAt = 0;
-    assert.deepEqual(manager._poolCandidates(), []);
-    assert.deepEqual(manager._egressDiversityVictims(3), []);
-});
-
-test("diversity respects busy contexts, pending model coverage, capacity one and retry backoff", t => {
-    const { manager, scheduler } = setup(t, ["P1", "P1", "P2"], { contextPoolMinReady: 2, maxWorkers: 2 });
-    manager.contexts.delete(2);
-    scheduler.account(0).inflight = 1;
-    scheduler.account(1).inflight = 1;
-    assert.deepEqual(manager._poolCandidates(), []);
-    scheduler.account(0).inflight = 0;
-    scheduler.account(1).inflight = 0;
-    scheduler.slot(scheduler.account(1), "pro").unsupported = true;
-    scheduler.slot(scheduler.account(2), "pro").unsupported = true;
-    scheduler.pending.push({ excluded: new Set(), model: "pro" });
-    assert.deepEqual(manager._egressDiversityVictims(2), [1]);
-    manager.contextUnavailable.set(2, { retryAt: Date.now() + 60000 });
-    assert.deepEqual(manager._poolCandidates(), []);
-    manager.contextUnavailable.clear();
-    scheduler.config.maxWorkers = 1;
-    assert.deepEqual(manager._poolCandidates(), []);
-    scheduler.pending.length = 0;
-});
-
-test("model-specific coverage can improve without changing global group coverage", t => {
-    const { manager, scheduler } = setup(t, ["P1", "P2", "P2"], { contextPoolMinReady: 2, maxWorkers: 2 });
-    manager.contexts.delete(2);
-    scheduler.slot(scheduler.account(1), "pro").unsupported = true;
-    scheduler.pending.push({ excluded: new Set(), model: "pro" });
-    assert.deepEqual(manager._poolCandidates(), [2]);
-    assert.deepEqual(manager._egressDiversityVictims(2), [1]);
-    scheduler.pending.length = 0;
-});
-
-test("shutdown aborts active leases and returns every exit reservation", async t => {
-    const { scheduler } = setup(t, ["P1", "P2"]);
-    const lease = await scheduler.acquire("flash");
-    let aborted = false;
-    lease.abort = () => {
-        aborted = true;
-        throw new Error("already gone");
-    };
-    scheduler.close();
-    assert.equal(aborted, true);
-    assert.equal(lease.released, true);
-    assert.equal(scheduler.egress.get("P1").inflight, 0);
-    scheduler.release(lease);
-    assert.equal(scheduler.egress.get("P1").inflight, 0);
-});
-
-test("a changed actual proxy cannot be sent under a stale lease, even without ready-only filtering", async t => {
-    const { scheduler, manager } = setup(t, ["P1", "P2"], { readyContextOnly: false });
-    const lease = await scheduler.acquire("flash");
-    manager.contexts.get(lease.account.index).proxyInfo = { egressKey: "new-proxy" };
-    assert.throws(
-        () => scheduler.startAttempt(lease),
-        error => error.kind === "transport" && error.reason === "context_proxy_changed"
-    );
-    assert.equal(lease.attempted, false);
-    assert.equal(lease.slot.request_count, 0);
-    scheduler.release(lease);
-    assert.equal(scheduler.egress.get("P1").inflight, 0);
 });

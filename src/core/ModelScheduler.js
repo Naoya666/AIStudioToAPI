@@ -145,7 +145,6 @@ class ModelScheduler {
         this.authSource = authSource;
         this.logger = logger;
         this.accounts = new Map();
-        this.egress = new Map();
         this.fileAffinities = new Map();
         this.hiddenModels = new Set();
         this.pending = [];
@@ -363,6 +362,20 @@ class ModelScheduler {
             this.poolCoordinationQueued = false;
             if (this.closed || this.recovering || this.paused) return;
             this._scheduleCooldownWake();
+            // Cold-context discovery has its own turn and budget. It must never
+            // consume the ready-request dispatch budget before leasing a worker.
+            if (this.pending.length) {
+                this._eligibleRound = new Map();
+                this._readyRound = new Map();
+                this._roundVisibleModels = this.getVisibleModels();
+                try {
+                    this._signalContextDemand(performance.now() + (this.config.drainBudgetMs ?? 8));
+                } finally {
+                    this._eligibleRound = null;
+                    this._readyRound = null;
+                    this._roundVisibleModels = null;
+                }
+            }
             this.browserManager?.reconcileContextPool?.();
         });
     }
@@ -421,87 +434,28 @@ class ModelScheduler {
         return excluded.size ? eligible.filter(account => !excluded.has(account.key)) : eligible;
     }
 
-    accountEgressKey(account) {
-        try {
-            return this.browserManager?.getAccountEgressKey?.(account.index) ?? "direct";
-        } catch {
-            // Broken configured routes cannot silently join the direct group.
-            return null;
-        }
-    }
-
-    egressState(key) {
-        if (!this.egress.has(key)) this.egress.set(key, { inflight: 0, lastSelectedSequence: 0 });
-        return this.egress.get(key);
-    }
-
-    compareEgress(a, b, attempted = new Set()) {
-        const leftKey = this.accountEgressKey(a);
-        const rightKey = this.accountEgressKey(b);
-        const left = this.egress.get(leftKey);
-        const right = this.egress.get(rightKey);
-        return (
-            Number(attempted.has(leftKey)) - Number(attempted.has(rightKey)) ||
-            (left?.inflight || 0) - (right?.inflight || 0) ||
-            (left?.lastSelectedSequence || 0) - (right?.lastSelectedSequence || 0) ||
-            String(leftKey).localeCompare(String(rightKey))
-        );
-    }
-
-    pruneEgressState() {
-        const retained = new Set();
-        const indices = new Set([
-            ...this.authSource.getRotationIndices(),
-            ...(this.browserManager?.contexts?.keys() || []),
-            ...(this.browserManager?.initializingContexts || []),
-        ]);
-        for (const index of indices) {
-            const key = this.accountEgressKey({ index });
-            if (key) retained.add(key);
-        }
-        for (const [key, state] of this.egress) if (!state.inflight && !retained.has(key)) this.egress.delete(key);
-    }
-
-    egressSnapshot(models) {
-        this.pruneEgressState();
-        const groups = new Map();
-        for (const [key, state] of this.egress) groups.set(key, { ...state, key, ready_accounts: 0 });
-        const byModel = Object.create(null);
-        const ready = new Map();
-        for (const model of models) {
-            const counts = new Map();
-            for (const account of this.readyCandidates(model).filter(account => this.canLease(account, model))) {
-                const key = this.accountEgressKey(account);
-                if (!key) continue;
-                counts.set(key, (counts.get(key) || 0) + 1);
-                if (!ready.has(key)) ready.set(key, new Set());
-                ready.get(key).add(account.key);
-                if (!groups.has(key)) groups.set(key, { inflight: 0, key, lastSelectedSequence: 0, ready_accounts: 0 });
-            }
-            byModel[model] = [...counts].map(([key, ready_accounts]) => ({ key, ready_accounts }));
-        }
-        for (const group of groups.values()) group.ready_accounts = ready.get(group.key)?.size || 0;
-        return { by_model: byModel, groups: [...groups.values()].sort((a, b) => a.key.localeCompare(b.key)) };
-    }
-
     candidates(model, excluded = new Set()) {
         return this.eligibleAccounts(model, excluded);
     }
 
     readyCandidates(model, excluded = new Set()) {
-        const eligible = this.eligibleAccounts(model, excluded).filter(
-            account => this.config.strategy !== "different_proxy_first" || this.accountEgressKey(account) !== null
-        );
-        if ((!this.config.readyContextOnly && !isArgon(model)) || !this.browserManager) return eligible;
-        return eligible.filter(account => {
-            if (!this.browserManager.isContextReady(account.index)) return false;
-            if (isArgon(model)) {
-                const benefit = this.browserManager.contexts?.get(account.index)?.page?.buildBenefit;
-                if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
-                return true;
-            }
-            return true;
-        });
+        let ready = this._readyRound?.get(model);
+        if (!ready) {
+            const eligible = this.eligibleAccounts(model);
+            ready =
+                (!this.config.readyContextOnly && !isArgon(model)) || !this.browserManager
+                    ? eligible
+                    : eligible.filter(account => {
+                          if (!this.browserManager.isContextReady(account.index)) return false;
+                          if (isArgon(model)) {
+                              const benefit = this.browserManager.contexts?.get(account.index)?.page?.buildBenefit;
+                              if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
+                          }
+                          return true;
+                      });
+            this._readyRound?.set(model, ready);
+        }
+        return excluded.size ? ready.filter(account => !excluded.has(account.key)) : ready;
     }
 
     needsContextForRequest(item, account = null, ignoreReadyAccount = null) {
@@ -572,7 +526,7 @@ class ModelScheduler {
         return this.workers.filter(worker => worker.lease?.model === model).length;
     }
 
-    acquire(model, excluded = new Set(), signal, options = {}) {
+    acquire(model, excluded = new Set(), signal) {
         if (this.closed) return Promise.reject(schedulerError("Scheduler is shutting down"));
         if (this.recovering) return Promise.reject(schedulerError("Service recovering", 503));
         try {
@@ -599,7 +553,6 @@ class ModelScheduler {
         this.slot(eligible[0], model, this.now());
         return new Promise((resolve, reject) => {
             const item = {
-                attemptedEgress: new Set(options.attemptedEgress || []),
                 createdAt: Date.now(),
                 excluded,
                 model,
@@ -654,6 +607,7 @@ class ModelScheduler {
         const deadline = started + (this.config.drainBudgetMs ?? 8);
         this._roundModels = null;
         this._eligibleRound = new Map();
+        this._readyRound = new Map();
         this._roundActiveAccountCount = [...this.accounts.values()].filter(account => account.inflight > 0).length;
         try {
             this._drainRound(deadline);
@@ -661,6 +615,7 @@ class ModelScheduler {
             this._roundModels = null;
             this._roundVisibleModels = null;
             this._eligibleRound = null;
+            this._readyRound = null;
             this._draining = false;
             this.metrics.drain_rounds = (this.metrics.drain_rounds || 0) + 1;
             this.metrics.last_drain_ms = performance.now() - started;
@@ -704,7 +659,6 @@ class ModelScheduler {
             this._continueDrain();
             return;
         }
-        this._signalContextDemand(deadline);
         // Stop replenishing one context when a waiting model needs a different account.
         // Existing streams finish normally; this prevents permanent starvation at capacity.
         const activeAccounts = [...this.accounts.values()].filter(account => account.inflight > 0);
@@ -753,9 +707,6 @@ class ModelScheduler {
                         ? account.local_transport_failures || 0
                         : 0;
                 return (
-                    (this.config.strategy === "different_proxy_first"
-                        ? this.compareEgress(a, b, item.attemptedEgress)
-                        : 0) ||
                     x.inflight - y.inflight ||
                     a.inflight - b.inflight ||
                     recentTransportFailures(a) - recentTransportFailures(b) ||
@@ -767,16 +718,6 @@ class ModelScheduler {
             });
             const account = accounts[0];
             if (!account) continue;
-            const egressKey = this.config.strategy === "different_proxy_first" ? this.accountEgressKey(account) : null;
-            if (this.config.strategy === "different_proxy_first") {
-                if (!egressKey) continue;
-                const distinct = new Set(accounts.map(candidate => this.accountEgressKey(candidate)));
-                if (distinct.size === 1)
-                    this.metrics.single_egress_fallbacks = (this.metrics.single_egress_fallbacks || 0) + 1;
-                const state = this.egressState(egressKey);
-                state.inflight++;
-                state.lastSelectedSequence = ++this.sequence;
-            }
             const slot = this.slot(account, item.model);
             if (!account.inflight) this._roundActiveAccountCount++;
             account.inflight++;
@@ -786,7 +727,6 @@ class ModelScheduler {
             const lease = {
                 account,
                 attempted: false,
-                egressKey,
                 model: item.model,
                 recorded: false,
                 released: false,
@@ -799,9 +739,6 @@ class ModelScheduler {
             this.observe("context_wait_ms", Date.now() - item.createdAt);
             item.resolve(lease);
         }
-        // Dispatch can consume the last ready slot. Reassess the remaining queue
-        // now, rather than waiting for a lease to finish before expanding.
-        if (this.pending.length && performance.now() < deadline) this._signalContextDemand(deadline);
         if (!this._drainQueued) {
             this._validationQueue = null;
             this._validationCursor = 0;
@@ -917,11 +854,6 @@ class ModelScheduler {
 
     startAttempt(lease) {
         if (!lease || lease.attempted || lease.released) return;
-        if (lease.egressKey && this.accountEgressKey(lease.account) !== lease.egressKey)
-            throw Object.assign(schedulerError("Selected context proxy changed before dispatch", 503), {
-                kind: "transport",
-                reason: "context_proxy_changed",
-            });
         const now = Date.now();
         lease.attempted = true;
         lease.sessionVersion = this._requestSessionVersion(lease.account.index);
@@ -1050,14 +982,12 @@ class ModelScheduler {
             lease.slot.last_error_kind = null;
             lease.slot.last_http_status = null;
         }
-        if (lease.egressKey) this.egressState(lease.egressKey).inflight--;
         lease.account.inflight--;
         lease.slot.inflight--;
         lease.worker.lease = null;
         this.saveSoon();
         this.drain();
         this.browserManager?.handleAccountLeaseReleased?.(lease.account.index);
-        if (this.config.strategy === "different_proxy_first") this.coordinateContextPool();
     }
 
     _recordAccountObservedResult(account, status) {
@@ -1455,10 +1385,14 @@ class ModelScheduler {
                     .filter(context => !["COLD", "UNAVAILABLE"].includes(context.state))
                     .map(context => context.auth_index)
             );
+        const egress =
+            this.config.strategy === "different_proxy_first"
+                ? this.browserManager?.getEgressPoolSnapshot?.(models)
+                : null;
         return {
             accounts_summary: this.accountsOverviewSnapshot().summary,
             strategy: this.config.strategy,
-            ...(this.config.strategy === "different_proxy_first" ? { egress: this.egressSnapshot(models) } : {}),
+            ...(egress ? { egress } : {}),
             active_browser_workers: contexts.filter(context => context.inflight > 0).length,
             active_workers: this.workers.filter(worker => worker.lease).length,
             busy_browser_workers: busyContexts,
@@ -1510,11 +1444,7 @@ class ModelScheduler {
                         ready_accounts: this.readyCandidates(model, new Set()).length,
                         ...(this.config.strategy === "different_proxy_first"
                             ? {
-                                  ready_egress_groups: new Set(
-                                      this.readyCandidates(model)
-                                          .filter(account => this.canLease(account, model))
-                                          .map(account => this.accountEgressKey(account))
-                                  ).size,
+                                  ready_egress_groups: egress?.by_model[model]?.length || 0,
                               }
                             : {}),
                         tier_allowed_accounts: indices.filter(index => this.isTierAllowed(index, model)).length,
@@ -1721,12 +1651,6 @@ class ModelScheduler {
         };
         return {
             dispatch_timeout: this.metrics.dispatch_timeout,
-            ...(this.config.strategy === "different_proxy_first"
-                ? {
-                      egress_diversity_replacements: this.metrics.egress_diversity_replacements || 0,
-                      single_egress_fallbacks: this.metrics.single_egress_fallbacks || 0,
-                  }
-                : {}),
             local_transport: this.metrics.local_transport,
             timings: Object.fromEntries(
                 Object.entries(this.metrics.samples).map(([name, samples]) => [
@@ -1869,19 +1793,6 @@ class ModelScheduler {
         for (const item of [...this.pending]) {
             this.remove(item);
             item.reject(schedulerError("Scheduler is shutting down"));
-        }
-        if (this.config.strategy === "different_proxy_first") {
-            for (const worker of this.workers) {
-                const lease = worker.lease;
-                if (!lease) continue;
-                try {
-                    lease.abort?.(schedulerError("Scheduler is shutting down", 503));
-                } catch (error) {
-                    this.logger.error?.(`[Scheduler] Shutdown abort failed: ${error.message}`);
-                } finally {
-                    this.release(lease);
-                }
-            }
         }
         this.flush();
     }
