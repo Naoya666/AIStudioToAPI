@@ -1,84 +1,84 @@
 {
-    "date": "2026-10-17 Asia/Shanghai",
-    "baseline_revision": "68ffcfd",
-    "before": {
-        "native_makersuite_requests_with_auth_and_key": 12,
-        "realm": {
-            "has_wrapped": true,
-            "observer_present": true,
-            "observer_auth": false,
-            "wrapped_observer": false,
-            "fetch_shared": false
-        },
-        "benefit_state": "failed",
-        "reason": "auth_unavailable"
-    },
     "after": {
-        "main_observation": {
-            "observer_auth": true,
-            "source": null,
-            "ext_present": true
-        },
         "benefit_state": "ready-paid",
+        "main_observation": {
+            "ext_present": true,
+            "observer_auth": true,
+            "source": null
+        },
         "query_http_statuses": [200, 200]
-    },
-    "camoufox_fixture": {
-        "tests": 8,
-        "passed": 8,
-        "failed": 0,
-        "google_contacted": false,
-        "document_reset": "goto (same navigation primitive as BrowserManager); native Page.reload timed out"
-    },
-    "local_regression": {
-        "tests": 403,
-        "pass": 371,
-        "fail": 0,
-        "skipped": 32
     },
     "argon_generation_probe": {
         "accepted": false,
-        "preview_ready": true,
         "benefit_state": "ready-paid",
-        "timed_out": true,
-        "proxy_unary_success_observed": false,
         "direct_generate_content_fallback": false,
-        "qualification_conclusion": "undetermined"
+        "preview_ready": true,
+        "proxy_unary_success_observed": false,
+        "qualification_conclusion": "undetermined",
+        "timed_out": true
     },
-    "normal_production_smoke": {
-        "model": "gemini-3.8-flash",
-        "http_status": 200,
-        "exact_ok": true,
-        "finish_reason": "stop",
-        "usage_present": true,
-        "elapsed_s": 2.551
-    },
-    "diagnostic_side_effect": {
-        "initial_websocket_interception_failed": true,
-        "temporary_account_connection_replacements": true,
-        "production_connection_recovered": true,
-        "application_restarted": false
-    },
-    "production_source_or_config_changed": false,
-    "final_production_state": {
-        "http_status": 200,
-        "health": "ok",
-        "browser_connected": true,
-        "container_running": true,
-        "container_health": "healthy",
-        "docker_restarts": 0,
-        "argon_verified_accounts": [],
-        "sqlite": {
-            "usage-stats.sqlite": "ok",
-            "accounts.sqlite": "ok"
+    "baseline_revision": "68ffcfd",
+    "before": {
+        "benefit_state": "failed",
+        "native_makersuite_requests_with_auth_and_key": 12,
+        "realm": {
+            "fetch_shared": false,
+            "has_wrapped": true,
+            "observer_auth": false,
+            "observer_present": true,
+            "wrapped_observer": false
         },
+        "reason": "auth_unavailable"
+    },
+    "camoufox_fixture": {
+        "document_reset": "goto (same navigation primitive as BrowserManager); native Page.reload timed out",
+        "failed": 0,
+        "google_contacted": false,
+        "passed": 8,
+        "tests": 8
+    },
+    "date": "2026-10-17 Asia/Shanghai",
+    "diagnostic_side_effect": {
+        "application_restarted": false,
+        "initial_websocket_interception_failed": true,
+        "production_connection_recovered": true,
+        "temporary_account_connection_replacements": true
+    },
+    "final_production_state": {
         "accounts": [
             {
                 "auth_index": 0,
-                "session_state": "valid",
-                "recovery_state": "idle"
+                "recovery_state": "idle",
+                "session_state": "valid"
             }
         ],
         "application_pids": [16],
-        "browser_processes": 1
-    }
+        "argon_verified_accounts": [],
+        "browser_connected": true,
+        "browser_processes": 1,
+        "container_health": "healthy",
+        "container_running": true,
+        "docker_restarts": 0,
+        "health": "ok",
+        "http_status": 200,
+        "sqlite": {
+            "accounts.sqlite": "ok",
+            "usage-stats.sqlite": "ok"
+        }
+    },
+    "local_regression": {
+        "fail": 0,
+        "pass": 371,
+        "skipped": 32,
+        "tests": 403
+    },
+    "normal_production_smoke": {
+        "elapsed_s": 2.551,
+        "exact_ok": true,
+        "finish_reason": "stop",
+        "http_status": 200,
+        "model": "gemini-3.8-flash",
+        "usage_present": true
+    },
+    "production_source_or_config_changed": false
 }

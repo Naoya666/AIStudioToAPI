@@ -7,6 +7,7 @@
 
 const axios = require("axios");
 const mime = require("mime-types");
+const { assertNotBlocked, isPromptBlocked } = require("../utils/UpstreamBlock");
 
 /**
  * Format Converter Module
@@ -1188,24 +1189,10 @@ class FormatConverter {
             streamState.usage = this._parseUsage(googleResponse);
         }
 
+        assertNotBlocked(googleResponse);
         const candidate = googleResponse.candidates?.[0];
 
         if (!candidate) {
-            if (googleResponse.promptFeedback) {
-                this.logger.warn(
-                    `[Adapter] Google returned promptFeedback for OpenAI stream, may have been blocked: ${JSON.stringify(
-                        googleResponse.promptFeedback
-                    )}`
-                );
-                const errorText = `[ProxySystem Error] Request blocked due to safety settings. Finish Reason: ${googleResponse.promptFeedback.blockReason}`;
-                return `data: ${JSON.stringify({
-                    choices: [{ delta: { content: errorText }, finish_reason: "stop", index: 0 }],
-                    created,
-                    id: streamId,
-                    model: modelName,
-                    object: "chat.completion.chunk",
-                })}\n\n`;
-            }
             return null;
         }
 
@@ -1594,6 +1581,7 @@ class FormatConverter {
         };
 
         const handleGoogleResponseObject = googleResponse => {
+            assertNotBlocked(googleResponse);
             ensureInitialized();
 
             // Cache usage data if present
@@ -1800,6 +1788,7 @@ class FormatConverter {
                 const googleResponse = JSON.parse(jsonString);
                 handleGoogleResponseObject(googleResponse);
             } catch (e) {
+                if (isPromptBlocked(e)) throw e;
                 this.logger.warn(`[Adapter] Unable to parse Google JSON chunk for Response API: ${jsonString}`);
             }
         }
@@ -1815,6 +1804,7 @@ class FormatConverter {
         modelName = "gemini-2.5-flash-lite",
         { privateTransport = false } = {}
     ) {
+        assertNotBlocked(googleResponse);
         if (!privateTransport)
             try {
                 this.logger.debug(
@@ -1924,6 +1914,7 @@ class FormatConverter {
      * @returns {object} - OpenAI Response API format response
      */
     convertGoogleToResponseAPINonStream(googleResponse, modelName = "gemini-2.5-flash-lite", responseDefaults = {}) {
+        assertNotBlocked(googleResponse);
         try {
             this.logger.debug(
                 `[Adapter] Debug: Received Google response for Response API non-stream: ${JSON.stringify(googleResponse)}`
@@ -2737,6 +2728,7 @@ class FormatConverter {
             return null;
         }
 
+        assertNotBlocked(googleResponse);
         const candidate = googleResponse.candidates?.[0];
         const usage = googleResponse.usageMetadata;
 
@@ -2946,6 +2938,7 @@ class FormatConverter {
      * Convert Google non-stream response to Claude format
      */
     convertGoogleToClaudeNonStream(googleResponse, modelName = "gemini-2.5-flash-lite") {
+        assertNotBlocked(googleResponse);
         try {
             this.logger.debug(
                 `[Adapter] Debug: Received Google response for Claude non-stream: ${JSON.stringify(googleResponse)}`

@@ -84,6 +84,7 @@ function isValidDateKey(value) {
 }
 
 function classifyError(error = {}) {
+    if (require("../utils/UpstreamBlock").isPromptBlocked(error)) return "prompt_blocked";
     if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return "bridge_auth";
     if (isUserAbortedError(error) || error.reason === "client_disconnect") return "aborted";
     if (
@@ -841,6 +842,10 @@ class ModelScheduler {
 
     failure(lease, error) {
         if (!lease || lease.recorded) return lease?.expirationPromise;
+        if (require("../utils/UpstreamBlock").isPromptBlocked(error)) {
+            lease.recorded = true;
+            return;
+        }
         let kind = classifyError(error);
         if (
             (isArgon(lease.model) || error.transport === "makersuite") &&

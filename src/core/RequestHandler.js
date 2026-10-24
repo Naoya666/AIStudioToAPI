@@ -15,6 +15,8 @@ const { isArgon, benefitError } = require("./BuildBenefitContext");
  */
 const AntiTruncation = require("./AntiTruncation");
 const { normalizeError } = require("../utils/UpstreamError");
+const { isPromptBlocked } = require("../utils/UpstreamBlock");
+const GenerationResponseGuard = require("../utils/GenerationResponseGuard");
 const AuthSwitcher = require("../auth/AuthSwitcher");
 const FormatConverter = require("./FormatConverter");
 const { isUserAbortedError } = require("../utils/CustomErrors");
@@ -403,6 +405,7 @@ class RequestHandler {
      * @throws {Error} Rethrows unexpected errors for outer handler
      */
     _handleFakeStreamError(error, res) {
+        if (isPromptBlocked(error)) return this._handleRequestError(error, res, error.requestId);
         const format = this._resolveErrorFormat(res);
         if (!this._isResponseWritable(res)) {
             return; // Client disconnected, no need to send error
@@ -672,6 +675,7 @@ class RequestHandler {
     }
 
     _shouldRetryError(error, proxyRequest) {
+        if (isPromptBlocked(error)) return false;
         if (proxyRequest?.transport_policy?.transport === "makersuite") return false;
         if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return false;
         return this.config.immediateSwitchStatusCodes.includes(Number(error?.status));
@@ -694,6 +698,7 @@ class RequestHandler {
     }
 
     async _performImmediateSwitchRetry(errorDetails, requestId, tracker) {
+        if (isPromptBlocked(errorDetails)) return false;
         await this.authSwitcher.handleRequestFailureAndSwitch(
             { message: errorDetails.message, status: Number(errorDetails.status) },
             null
@@ -726,6 +731,7 @@ class RequestHandler {
     }
 
     async _prepareImmediateStatusRetry(errorDetails, requestId, tracker, sourceAuthIndex) {
+        if (isPromptBlocked(errorDetails)) return false;
         const currentAuthIndex = this.currentAuthIndex;
         const hasSourceAuth = Number.isInteger(sourceAuthIndex) && sourceAuthIndex >= 0;
         const hasCurrentAuth = Number.isInteger(currentAuthIndex) && currentAuthIndex >= 0;
@@ -935,6 +941,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processRequest", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         this._startTrackedRequest(requestId, req, {
             apiFormat: "gemini",
             requestCategory: this._categorizeRequest(req.path, "request"),
@@ -1047,6 +1054,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processOpenAIEmbeddingsRequest", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         this._startTrackedRequest(requestId, req, {
             apiFormat: "openai",
             isStreaming: false,
@@ -1120,6 +1128,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processUploadRequest", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         this.logger.info(`[Upload] Processing upload request ${req.method} ${req.path}, request ID: ${requestId}`);
         this._startTrackedRequest(requestId, req, {
             apiFormat: "upload",
@@ -1340,6 +1349,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processOpenAIRequest", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         res.__acceptedAt = Date.now();
         this._startTrackedRequest(requestId, req, {
             apiFormat: "openai",
@@ -1825,6 +1835,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processOpenAIResponseRequest", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         this._startTrackedRequest(requestId, req, {
             apiFormat: "response_api",
             isStreaming: req.body.stream === true,
@@ -2292,6 +2303,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processClaudeRequest", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         this._startTrackedRequest(requestId, req, {
             apiFormat: "claude",
             isStreaming: req.body.stream === true,
@@ -2658,6 +2670,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processClaudeCountTokens", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         this.logger.info(`[Request] Claude count tokens request started, request ID: ${requestId}`);
         this._startTrackedRequest(requestId, req, {
             apiFormat: "claude",
@@ -2816,6 +2829,7 @@ class RequestHandler {
             return require("./ScheduledRequestHandler").dispatch(this, "processOpenAIResponseInputTokens", req, res);
         }
         const requestId = this._generateRequestId();
+        if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         this.logger.info(`[Request] OpenAI Response input_tokens request started, request ID: ${requestId}`);
         this._startTrackedRequest(requestId, req, {
             apiFormat: "response_api",
@@ -3044,6 +3058,7 @@ class RequestHandler {
                         }
                         try {
                             res.write(claudeChunk);
+                            if (message.hasModelContent) res.__modelOutputStarted = true;
                         } catch (writeError) {
                             this.logger.debug(
                                 `[Request] Failed to write Claude chunk to stream: ${writeError.message}`
@@ -3519,6 +3534,7 @@ class RequestHandler {
                     }
                     try {
                         res.write(dataMessage.data);
+                        if (dataMessage.hasModelContent) res.__modelOutputStarted = true;
                     } catch (writeError) {
                         this.logger.debug(
                             `[Request] Failed to write Gemini data chunk to stream: ${writeError.message}`
@@ -3529,7 +3545,9 @@ class RequestHandler {
             }
         } catch (error) {
             // Handle queue closed errors (account switch, context closed, etc.)
-            if (this._isConnectionResetError(error)) {
+            if (isPromptBlocked(error)) {
+                this._handleRequestError(error, res, proxyRequest.request_id);
+            } else if (this._isConnectionResetError(error)) {
                 this._handleRealStreamQueueClosedError(error, res);
             } else if (error instanceof QueueTimeoutError || error.code === "QUEUE_TIMEOUT") {
                 // Keep behavior consistent with other interfaces: treat missing stream chunks as a timeout error.
@@ -3723,6 +3741,10 @@ class RequestHandler {
                 return { message: initialMessage, queue: currentQueue, success: true };
             } catch (error) {
                 // Parse the structured error message
+                if (isPromptBlocked(error)) {
+                    this._cancelCurrentAttemptBeforeRetry(proxyRequest, currentQueueAuthIndex);
+                    return { error, success: false };
+                }
                 let errorPayload;
                 try {
                     errorPayload = JSON.parse(error.message);
@@ -4029,6 +4051,7 @@ class RequestHandler {
                         }
                         try {
                             res.write(responseAPIChunk);
+                            if (message.hasModelContent) res.__modelOutputStarted = true;
                         } catch (writeError) {
                             this.logger.debug(
                                 `[Request] Failed to write Response API chunk (connection likely closed): ${writeError.message}`
@@ -4158,6 +4181,7 @@ class RequestHandler {
                             if (attempt) await this._writeAntiStreamChunk(res, openAIChunk);
                             else {
                                 res.write(openAIChunk);
+                                if (streamState.modelOutputStarted) res.__modelOutputStarted = true;
                                 res.flush?.();
                             }
                         } catch (writeError) {
@@ -4312,7 +4336,46 @@ class RequestHandler {
         });
     }
 
+    _prepareBlockedResponse(error, res, requestId) {
+        res.__stopEarlyOpenAIStream?.();
+        if (res.__blockedError) return;
+        res.__blockedError = error;
+        this.logger.warn(
+            `[Request] ${JSON.stringify({
+                attemptCount: error.attemptCount,
+                blockReason: error.upstream?.blockReason,
+                diagnostics: error.upstream,
+                event: "upstream_blocked",
+                model: error.model,
+                outputStarted: Boolean(res.__modelOutputStarted),
+                requestAttemptId: error.requestAttemptId,
+                requestId: requestId || error.requestId,
+                retryable: false,
+                upstreamHttpStatus: error.upstreamHttpStatus,
+                upstreamResponseId: error.upstreamResponseId,
+            })}`
+        );
+        const id = requestId || error.requestId;
+        if (id) {
+            const index = this.connectionRegistry.getAuthIndexForRequest(id) ?? error.authIndex;
+            if (Number.isInteger(index)) this._cancelBrowserRequest(id, index, error.requestAttemptId);
+        }
+    }
+
+    _addBlockedDetails(payload, error, format) {
+        if (!isPromptBlocked(error)) return payload;
+        const target = payload.error || payload;
+        target.upstream = error.upstream;
+        if (error.requestId) target.request_id = error.requestId;
+        if (error.usageMetadata) {
+            if (format === "gemini") target.usageMetadata = error.usageMetadata;
+            else target.usage = this.formatConverter._parseUsage({ usageMetadata: error.usageMetadata });
+        }
+        return payload;
+    }
+
     _handleRequestError(error, res, requestId = null) {
+        if (isPromptBlocked(error)) this._prepareBlockedResponse(error, res, requestId);
         const format = this._resolveErrorFormat(res);
         const normalized = normalizeError(error);
         const requestIdSuffix = requestId ? `, request ID: ${requestId}` : "";
@@ -4352,11 +4415,12 @@ class RequestHandler {
     }
 
     _sendErrorResponse(res, status, message, errorType = null, details = null) {
+        if (isPromptBlocked(details)) this._prepareBlockedResponse(details, res, details.requestId);
         const normalized = normalizeError({ ...details, message, status });
         status = normalized.status;
         message = normalized.message;
         errorType = normalized.type || errorType;
-        if (res.__streamStartSent && res.headersSent) {
+        if ((res.__streamStartSent || isPromptBlocked(details)) && res.headersSent) {
             if (this._isResponseWritable(res)) {
                 this._sendErrorChunkToClient(res, message, status, errorType, "error", details);
                 res.end();
@@ -4388,14 +4452,14 @@ class RequestHandler {
             } else if (resolvedFormat === "response_api") {
                 errorPayload = {
                     error: {
-                        code: resolvedErrorType,
+                        code: isPromptBlocked(details) ? normalized.code : resolvedErrorType,
                         message,
                         param: null,
                         type: resolvedErrorType,
                     },
                 };
             } else {
-                let statusText = "INTERNAL";
+                let statusText = statusCode === 400 ? "INVALID_ARGUMENT" : "INTERNAL";
                 if (statusCode === 504) statusText = "DEADLINE_EXCEEDED";
                 else if (statusCode === 503) statusText = "UNAVAILABLE";
                 errorPayload = {
@@ -4407,7 +4471,8 @@ class RequestHandler {
                 };
             }
 
-            this._markTrackedResponseError(res, message, statusCode);
+            if (isPromptBlocked(details)) this._addBlockedDetails(errorPayload, details, resolvedFormat);
+            this._markTrackedResponseError(res, message, statusCode, "error", details);
             res.status(statusCode).type("application/json").send(JSON.stringify(errorPayload));
         }
     }
@@ -4421,6 +4486,7 @@ class RequestHandler {
     }
 
     _sendErrorChunkToClient(res, message, statusCode = null, errorType = null, outcome = "error", details = null) {
+        if (isPromptBlocked(details)) this._prepareBlockedResponse(details, res, details.requestId);
         const normalized = normalizeError({ ...details, message, status: statusCode });
         statusCode = normalized.status;
         message = normalized.message;
@@ -4432,7 +4498,7 @@ class RequestHandler {
             res.setHeader("Cache-Control", "no-cache");
             res.setHeader("Connection", "keep-alive");
         }
-        this._markTrackedResponseError(res, message, statusCode, outcome);
+        this._markTrackedResponseError(res, message, statusCode, outcome, details);
         // Check if response is still writable before attempting to write
         if (this._isResponseWritable(res)) {
             try {
@@ -4440,38 +4506,64 @@ class RequestHandler {
                     if (res.__responseApiSeq == null) res.__responseApiSeq = 0;
                     res.__responseApiSeq += 1;
                     res.write(
-                        `event: error\ndata: ${JSON.stringify({
-                            code: resolvedErrorType,
-                            message,
-                            param: null,
-                            sequence_number: res.__responseApiSeq,
-                            type: "error",
-                        })}\n\n`
+                        `event: error\ndata: ${JSON.stringify(
+                            this._addBlockedDetails(
+                                {
+                                    code: isPromptBlocked(details) ? normalized.code : resolvedErrorType,
+                                    message,
+                                    param: null,
+                                    sequence_number: res.__responseApiSeq,
+                                    type: "error",
+                                },
+                                details,
+                                format
+                            )
+                        )}\n\n`
                     );
                 } else if (format === "claude") {
                     res.write(
-                        `event: error\ndata: ${JSON.stringify({
-                            error: {
-                                message,
-                                type: resolvedErrorType,
-                            },
-                            type: "error",
-                        })}\n\n`
+                        `event: error\ndata: ${JSON.stringify(
+                            this._addBlockedDetails(
+                                {
+                                    error: {
+                                        message,
+                                        type: resolvedErrorType,
+                                    },
+                                    type: "error",
+                                },
+                                details,
+                                format
+                            )
+                        )}\n\n`
                     );
                 } else if (format === "openai") {
                     res.write(
-                        `data: ${JSON.stringify({
-                            error: {
-                                code: normalized.code,
-                                message,
-                                type: resolvedErrorType,
-                            },
-                        })}\n\n`
+                        `data: ${JSON.stringify(
+                            this._addBlockedDetails(
+                                {
+                                    error: {
+                                        code: normalized.code,
+                                        message,
+                                        type: resolvedErrorType,
+                                    },
+                                },
+                                details,
+                                format
+                            )
+                        )}\n\n`
                     );
                 } else if (format === "gemini") {
                     const status =
-                        statusCode === 504 ? "DEADLINE_EXCEEDED" : statusCode === 503 ? "UNAVAILABLE" : "INTERNAL";
-                    res.write(`data: ${JSON.stringify({ error: { code: statusCode, message, status } })}\n\n`);
+                        statusCode === 400
+                            ? "INVALID_ARGUMENT"
+                            : statusCode === 504
+                              ? "DEADLINE_EXCEEDED"
+                              : statusCode === 503
+                                ? "UNAVAILABLE"
+                                : "INTERNAL";
+                    res.write(
+                        `data: ${JSON.stringify(this._addBlockedDetails({ error: { code: statusCode, message, status } }, details, format))}\n\n`
+                    );
                 } else {
                     res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
                 }
@@ -4925,6 +5017,28 @@ class RequestHandler {
 
     _forwardRequest(proxyRequest, authIndex = this.currentAuthIndex) {
         this._assertModelPermission(proxyRequest, authIndex);
+        const queue = this.connectionRegistry.messageQueues?.get(proxyRequest.request_id)?.queue;
+        if (proxyRequest.is_generative && queue && !queue.responseGuard) {
+            queue.responseGuard = new GenerationResponseGuard(
+                {
+                    attemptCount: proxyRequest.request_attempt_number || 1,
+                    authIndex,
+                    model: this._extractModelFromPath(proxyRequest.path),
+                    requestAttemptId: proxyRequest.request_attempt_id,
+                    requestId: proxyRequest.request_id,
+                },
+                proxyRequest.__antiContext ? AntiTruncation.MAX_BYTES : Infinity,
+                proxyRequest.__antiContext
+                    ? () => {
+                          // Preserve anti's conservative no-replay rule for incomplete network frames.
+                          const res = proxyRequest.__antiContext.res;
+                          res.__upstreamOutputStarted = true;
+                          this._stopEarlyStreamKeepalive?.();
+                          res.__stopEarlyOpenAIStream?.();
+                      }
+                    : null
+            );
+        }
         const policy = proxyRequest.is_generative ? proxyRequest.transport_policy : null;
         if (policy?.transport === "makersuite") {
             const bridge = this.browserManager.contexts?.get(authIndex)?.page?.makerSuiteBridge;

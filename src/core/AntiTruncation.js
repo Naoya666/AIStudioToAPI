@@ -6,6 +6,7 @@
 const { randomBytes } = require("node:crypto");
 const FormatConverter = require("./FormatConverter");
 const { upstreamError } = require("../utils/UpstreamError");
+const { promptBlocked } = require("../utils/UpstreamBlock");
 const MAX_BYTES = 10 * 1024 * 1024;
 const TEXT_MODELS = Object.freeze([
     "gemini-2.5-flash",
@@ -206,6 +207,12 @@ class Attempt {
         return responses;
     }
     restore(response, buffered = false) {
+        const blocked = promptBlocked(response);
+        if (blocked) {
+            this.usageMetadata = blocked.usageMetadata;
+            this.log("upstream_blocked", blocked.upstream);
+            throw blocked;
+        }
         if (response?.error) throw upstreamError(response.error);
         if (!response || typeof response !== "object")
             throw error("anti_truncation_decode_failed", "Invalid upstream response", 502);
@@ -213,10 +220,6 @@ class Attempt {
         if (this.responseBytes > MAX_BYTES)
             throw error("anti_truncation_limit", "Anti-truncation response exceeds size limit", 502);
         const result = structuredClone(response);
-        if (result.promptFeedback?.blockReason && !result.candidates?.length) {
-            result.candidates = [{ content: { parts: [] }, finishReason: "SAFETY", index: 0 }];
-            this.log("upstream_blocked");
-        }
         if (result.candidates !== undefined && !Array.isArray(result.candidates))
             throw error("anti_truncation_protocol_error", "Invalid upstream candidates", 502);
         for (const [position, candidate] of (result.candidates || []).entries()) {

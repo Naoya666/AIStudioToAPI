@@ -1732,3 +1732,247 @@ test("all adapters honor bridge panel budgets beyond five minutes independently 
         }
     }
 });
+
+test("blockReason never replays generation or penalizes accounts across modes, anti and runtimes", async t => {
+    for (const legacy of [false, true])
+        for (const anti of [false, true])
+            for (const mode of [null, "real", "fake", "early"])
+                await t.test(`${legacy ? "legacy" : "model"}/${anti ? "anti" : "plain"}/${mode}`, async t => {
+                    const fixture = setup(
+                        () => {
+                            const data = JSON.stringify({
+                                candidates: [{ content: { parts: [{ text: "blocked candidate must not escape" }] } }],
+                                error: { code: 503, message: "RESOURCE_EXHAUSTED PERMISSION_DENIED network" },
+                                promptFeedback: {
+                                    blockReason: "FUTURE_BLOCK",
+                                    blockReasonMessage: "network RESOURCE_EXHAUSTED",
+                                },
+                                usageMetadata: { candidatesTokenCount: 0, promptTokenCount: 123, totalTokenCount: 123 },
+                            });
+                            const wire = mode === "real" ? `data: ${data}\n\n` : data;
+                            return [
+                                success[0],
+                                ...[wire.slice(0, 17), wire.slice(17)].map(data => ({ data, event_type: "chunk" })),
+                                success[2],
+                            ];
+                        },
+                        { immediateSwitchStatusCodes: [400, 429, 503], scheduler: { streamEarlyHeaders: false } }
+                    );
+                    t.after(() => fixture.scheduler.close());
+                    if (legacy) {
+                        useLegacy(fixture);
+                        fixture.handler._ensureBrowserBackedRequestReady = async () => true;
+                    }
+                    let switches = 0;
+                    fixture.handler.authSwitcher.handleRequestFailureAndSwitch = async () => switches++;
+                    const res = new Response();
+                    await fixture.handler.processOpenAIRequest(
+                        request(`${anti ? "anti-" : ""}gemini-2.5-flash${mode ? `-${mode}` : ""}`, Boolean(mode)),
+                        res
+                    );
+                    const error = errorPayload(res);
+                    assert.equal(error?.code, "upstream_prompt_blocked", res.body);
+                    assert.equal(error.upstream.blockReason, "FUTURE_BLOCK");
+                    assert.equal(error.upstream.error.code, 503);
+                    assert.equal(error.usage.prompt_tokens, 123);
+                    assert.equal(error.request_id, fixture.sent[0].request.request_id);
+                    assert.equal(res.body.includes("blocked candidate must not escape"), false);
+                    assert.equal(res.body.includes("[DONE]"), false);
+                    assert.equal(res.__usageTrackingOutcome, "error");
+                    assert.equal(res.__usageTrackingErrorStatus, 400);
+                    assert.equal(res.statusCode, mode === "early" ? 200 : 400, res.body);
+                    assert.equal(fixture.sent.length, 1);
+                    assert.equal(switches, 0);
+                    assert.equal(res.writableEnded, true);
+                    assert.equal(fixture.registry.messageQueues.size, 0);
+                    if (!legacy) {
+                        const account = fixture.scheduler.account(fixture.sent[0].index);
+                        const slot = account.models["gemini-2.5-flash"];
+                        assert.equal(account.healthy, true);
+                        assert.equal(account.inflight, 0);
+                        assert.equal(slot.failure_count, 0);
+                        assert.equal(slot.consecutive_failures, 0);
+                        assert.equal(slot.cooldown_until, 0);
+                        assert.equal(slot.unsupported, false);
+                        assert.equal(fixture.scheduler.metrics.upstream_error, 0);
+                    }
+                });
+});
+
+test("all protocols preserve blockReason with an error terminal and no account switch", async t => {
+    for (const method of ["processOpenAIResponseRequest", "processClaudeRequest", "processRequest"])
+        for (const legacy of [false, true])
+            for (const mode of [null, "real", "fake"])
+                await t.test(`${method}/${legacy}/${mode}`, async t => {
+                    const blocked = JSON.stringify({ promptFeedback: { blockReason: "SAFETY" } });
+                    const fixture = setup(
+                        () => [
+                            success[0],
+                            { data: mode === "real" ? `data: ${blocked}\n\n` : blocked, event_type: "chunk" },
+                            success[2],
+                        ],
+                        {
+                            immediateSwitchStatusCodes: [400, 429, 503],
+                            scheduler: { streamEarlyHeaders: false },
+                        }
+                    );
+                    t.after(() => fixture.scheduler.close());
+                    if (legacy) {
+                        useLegacy(fixture);
+                        fixture.handler._ensureBrowserBackedRequestReady = async () => true;
+                    }
+                    const req = request(`gemini-2.5-flash${mode ? `-${mode}` : ""}`, Boolean(mode));
+                    if (method === "processOpenAIResponseRequest") req.body.input = "hi";
+                    if (method === "processRequest") {
+                        req.path = `/v1beta/models/gemini-2.5-flash${mode ? `-${mode}` : ""}:${mode ? "streamGenerateContent" : "generateContent"}`;
+                        req.body = { contents: [{ parts: [{ text: "hi" }], role: "user" }] };
+                        req.query = mode ? { alt: "sse" } : {};
+                    }
+                    const res = new Response();
+                    await fixture.handler[method](req, res);
+                    assert.match(res.body, /blockReason=SAFETY/);
+                    assert.match(res.body, /"blockReason":"SAFETY"/);
+                    assert.equal(fixture.sent.length, 1);
+                    assert.equal(fixture.handler.authSwitcher.failureCount, 0);
+                    assert.equal(res.__usageTrackingOutcome, "error");
+                    assert.equal(res.__usageTrackingErrorStatus, 400);
+                    assert.equal(res.body.includes("[DONE]"), false);
+                    assert.equal(res.body.includes("response.completed"), false);
+                    assert.equal(res.body.includes("message_stop"), false);
+                    assert.equal(res.writableEnded, true);
+                    assert.equal(fixture.registry.messageQueues.size, 0);
+                });
+});
+
+test("partial output before block is preserved and a preceding retry stops at the block", async t => {
+    for (const legacy of [false, true])
+        for (const precedingFailure of [false, true]) {
+            let calls = 0;
+            const fixture = setup(
+                () => {
+                    if (precedingFailure && calls++ === 0)
+                        return [{ event_type: "error", message: "rate limited", status: 429 }];
+                    return [
+                        success[0],
+                        {
+                            data: 'data: {"candidates":[{"content":{"parts":[{"text":"prior output"}]} }],"usageMetadata":{"candidatesTokenCount":2}}\n\n',
+                            event_type: "chunk",
+                        },
+                        { data: 'data: {"promptFeedback":{"blockReason":"SAFETY"}}\n\n', event_type: "chunk" },
+                        success[2],
+                    ];
+                },
+                { scheduler: { streamEarlyHeaders: false } }
+            );
+            t.after(() => fixture.scheduler.close());
+            if (legacy) {
+                useLegacy(fixture);
+                fixture.handler._ensureBrowserBackedRequestReady = async () => true;
+                fixture.handler.authSwitcher.handleRequestFailureAndSwitch = async () => {};
+                fixture.handler._prepareImmediateStatusRetry = async error => error.code !== "upstream_prompt_blocked";
+            }
+            const res = new Response();
+            await fixture.handler.processOpenAIRequest(request("gemini-2.5-flash-real", true), res);
+            assert.match(res.body, /prior output/);
+            assert.equal(errorPayload(res)?.code, "upstream_prompt_blocked", res.body);
+            assert.equal(errorPayload(res)?.usage.completion_tokens, 2);
+            assert.equal(res.statusCode, 200);
+            assert.equal(res.body.includes("[DONE]"), false);
+            assert.equal(fixture.sent.length, precedingFailure ? 2 : 1);
+            assert.equal(res.__usageTrackingOutcome, "error");
+            assert.equal(fixture.registry.messageQueues.size, 0);
+        }
+});
+
+test("real HTTP clients receive a correlated block error before headers or inside an early SSE stream", async t => {
+    const express = require("express");
+    const fixture = setup(
+        () => [
+            success[0],
+            {
+                data: JSON.stringify({
+                    promptFeedback: { blockReason: "SAFETY", blockReasonMessage: "Bearer private-secret" },
+                }),
+                event_type: "chunk",
+            },
+            success[2],
+        ],
+        { scheduler: { streamEarlyHeaders: false } }
+    );
+    t.after(() => fixture.scheduler.close());
+    const diagnostics = [];
+    fixture.handler.logger = { ...logger, warn: message => diagnostics.push(message) };
+    const app = express();
+    app.use(express.json());
+    app.post("/v1/chat/completions", (req, res) => fixture.handler.processOpenAIRequest(req, res));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise(resolve => server.once("listening", resolve));
+    t.after(() => {
+        server.closeAllConnections();
+        server.close();
+    });
+    for (const early of [false, true]) {
+        const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/chat/completions`, {
+            body: JSON.stringify({
+                messages: [{ content: "private input must not be logged", role: "user" }],
+                model: `anti-gemini-2.5-flash${early ? "-early" : ""}`,
+                stream: early,
+            }),
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+        });
+        const body = await response.text();
+        const payload = early
+            ? body
+                  .split("\n")
+                  .filter(line => line.startsWith("data: {"))
+                  .map(line => JSON.parse(line.slice(6)))
+                  .find(event => event.error)
+            : JSON.parse(body);
+        assert.equal(response.status, early ? 200 : 400);
+        assert.equal(payload.error.code, "upstream_prompt_blocked");
+        assert.equal(payload.error.request_id, response.headers.get("x-request-id"));
+        assert.equal(body.includes("private-secret"), false);
+        assert.equal(body.includes("[DONE]"), false);
+        assert.equal(
+            early
+                ? response.headers.get("content-type").includes("text/event-stream")
+                : response.headers.get("content-type").includes("application/json"),
+            true
+        );
+    }
+    const events = diagnostics
+        .filter(line => line.includes('"event":"upstream_blocked"'))
+        .map(line => JSON.parse(line.slice("[Request] ".length)));
+    assert.equal(events.length, 2);
+    for (const event of events) {
+        assert.equal(event.blockReason, "SAFETY");
+        assert.equal(event.attemptCount, 1);
+        assert.equal(event.outputStarted, false);
+        assert.equal(event.retryable, false);
+        assert.equal(event.upstreamHttpStatus, 200);
+        assert.ok(event.requestAttemptId);
+        assert.ok(event.requestId);
+    }
+    assert.equal(diagnostics.join("\n").includes("private-secret"), false);
+    assert.equal(diagnostics.join("\n").includes("private input must not be logged"), false);
+    assert.equal(fixture.sent.length, 2);
+});
+
+test("anti guards retain conservative no-replay behavior for incomplete frames on disconnect", async t => {
+    const fixture = setup(() => [success[0], { data: 'data: {"candidates":', event_type: "chunk" }], {
+        scheduler: { streamEarlyHeaders: false },
+    });
+    t.after(() => fixture.scheduler.close());
+    const res = new Response();
+    const running = fixture.handler.processOpenAIRequest(request("anti-gemini-2.5-flash-real", true), res);
+    await waitFor(() => fixture.sent.length === 1 && fixture.registry.messageQueues.size === 1);
+    await new Promise(resolve => setImmediate(resolve));
+    const [entry] = fixture.registry.messageQueues.values();
+    fixture.registry.closeMessageQueuesForEpoch(entry.authIndex, entry.connectionEpoch, "connection_lost");
+    await running;
+    assert.equal(fixture.sent.length, 1);
+    assert.equal(res.body.includes("[DONE]"), false);
+    assert.equal(res.writableEnded, true);
+    assert.equal(fixture.registry.messageQueues.size, 0);
+});

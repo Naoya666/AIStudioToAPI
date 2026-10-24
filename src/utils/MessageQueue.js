@@ -6,6 +6,7 @@
  */
 
 const { EventEmitter } = require("events");
+const { isPromptBlocked } = require("./UpstreamBlock");
 
 /**
  * Custom error class for queue closed errors
@@ -49,6 +50,12 @@ class MessageQueue extends EventEmitter {
     }
 
     enqueue(message) {
+        const messages = this.responseGuard ? this.responseGuard.push(message) : [message];
+        for (const item of messages) this._enqueue(item);
+    }
+
+    _enqueue(message) {
+        if (isPromptBlocked(message)) this.blockedError = Object.assign(new Error(message.message), message);
         if (this.closed) return;
         if (this.waitingResolvers.length > 0) {
             const resolver = this.waitingResolvers.shift();
@@ -66,9 +73,16 @@ class MessageQueue extends EventEmitter {
     }
 
     async dequeue(timeoutMs = this.defaultTimeout) {
+        const message = await this._dequeue(timeoutMs);
+        if (isPromptBlocked(message) || message.responseGuardError)
+            throw Object.assign(new Error(message.message), message);
+        return message;
+    }
+
+    async _dequeue(timeoutMs = this.defaultTimeout) {
         if (this.generationDeadline !== undefined) {
             timeoutMs = Math.floor(this.generationDeadline - performance.now());
-            if (timeoutMs <= 0) throw new QueueTimeoutError("Generation deadline exceeded");
+            if (timeoutMs <= 0) throw this.blockedError || new QueueTimeoutError("Generation deadline exceeded");
         }
         if (this.closed) {
             throw this._closedError();
@@ -122,6 +136,7 @@ class MessageQueue extends EventEmitter {
     }
 
     _closedError() {
+        if (this.blockedError) return this.blockedError;
         const details = typeof this.closeReason === "object" ? this.closeReason : { reason: this.closeReason };
         const reason = details.reason || "unknown";
         return new QueueClosedError(`Queue is closed (reason: ${reason})`, reason, details);

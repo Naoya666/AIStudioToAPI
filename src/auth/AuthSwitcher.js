@@ -244,6 +244,7 @@ class AuthSwitcher {
     }
 
     async handleRequestFailureAndSwitch(errorDetails, sendErrorCallback) {
+        if (require("../utils/UpstreamBlock").isPromptBlocked(errorDetails)) return;
         if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(errorDetails)) return;
         this.failureCount++;
         if (this.config.failureThreshold > 0) {

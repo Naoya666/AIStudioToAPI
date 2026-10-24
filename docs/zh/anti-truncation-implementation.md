@@ -60,3 +60,42 @@
 验证结果：`npm test` 全部测试命令通过，可选真实浏览器用例按现有条件跳过；`npm run lint` 通过。最后补充缺失/无效字段、统计状态和本地协议错误码断言后，`node tests/scheduled-request.test.js` 再次通过（53/53），相关文件 ESLint 检查通过。浏览器入口通过 VM 执行真实客户端代码、模拟 fetch 验证，真实本地 HTTP 测试通过；这些结果不代表真实 Gemini 或公网下游已经验收。
 
 本次只修改代码、测试和文档，没有构建部署镜像、重启服务或更改运行容器。真实 Gemini、NewAPI、SillyTavern 的错误显示、识别及渠道处理仍属于上文的外部验收事项。
+
+## blockReason 透传与禁止重试（2026-10-24）
+
+已按 [blockReason 改造方案](upstream-block-reason-passthrough-plan.md) 完成 Build 侧改造。未部署，也未修改 NewAPI。
+
+- 新增 `UpstreamBlock`，将有效、非空的 `promptFeedback.blockReason` 识别为 `upstream_prompt_blocked` 业务错误；识别优先于 candidates 和顶层 error。保留真实原因、有效说明、安全分类及同时存在的顶层错误基础字段，不再合成空 SAFETY 候选。
+- 在生成请求转发时，为该次队列安装 `GenerationResponseGuard`。共享入口按 JSON/SSE 事件边界组装网络分片，在候选交付前检查拦截，覆盖普通请求、anti、legacy、模型感知调度与各协议。正常 SSE 事件归一为单个 data 帧；无效响应仍交给原协议解码器。anti 保持 10 MiB 资源限制及不完整非空帧后的保守禁止重放规则。
+- MessageQueue 对明确拦截抛出结构化错误，避免各适配器旧的 event_type=error 分支只传 message 导致字段丢失。已识别的拦截在队列关闭、上游断连或生成期限到达时仍保留业务分类，不能降级成可重试传输错误。
+- legacy 重试、立即换账号、模型调度重试、传输重试与账号失败处理均优先排除该分类。调度器释放租约，但不增加账号故障、连续失败、风控处罚、冷却或模型禁用计数；请求结果记作 error，实际尝试仍正常记录。
+- 未发头时返回 HTTP 400；已发头时按协议发送终止错误并关闭连接，不追加正常结束事件或成功 DONE。已交付正文保留，不重放生成。OpenAI code 为 `upstream_prompt_blocked`，type 为 `invalid_request_error`；Gemini 保留数字 code 并使用 `INVALID_ARGUMENT`。可选诊断位于 error.upstream，Responses 流式错误使用顶层 upstream。
+- 提取允许的 usage 字段，在错误对象中携带已收到的实际用量，包括前序帧的 usage，避免抛错丢失数据。OpenAI/Claude 的错误扩展字段为 usage，Gemini 为 usageMetadata；本次没有新增 SQLite schema 或改变下游扣费规则。
+- 各请求入口增加 Build `X-Request-ID`，拦截错误携带 request_id；结构化日志包含请求、尝试、模型、原因、诊断、实际尝试序号、是否已交付正文、禁止重试决策，以及实际可得的上游 HTTP 状态和 Google responseId。代理 ID 与 Google responseId 分开记录。
+- 拦截字段按允许列表提取；原因最多 256 字符、说明最多 1024 字符、安全分类最多 32 项，并对常见凭据形态脱敏。不将 candidates、聊天内容、任意原始响应字段或异常堆栈放入新增诊断。
+
+### 本地验证
+
+`npm test` 退出码为 0，全量现有检查通过；39 个可选真实浏览器用例按原条件跳过，不能视为真实浏览器验收。涉及本次改动的 anti 与 scheduled-request 测试合计 137 项通过，包含以下关键断言：
+
+- JSON、数组和 SSE 在每个分片边界都能识别拦截，覆盖多行 data、CRLF、Unicode、转义和无末尾分隔符。
+- 未知有效原因、同帧 candidates、同时存在的 503/风控关键词错误均不改变拦截优先级。
+- 即使把 400 加入立即重试状态集合，首次直接拦截时实际发送生成请求次数仍为 1，账号切换次数为 0，账号故障和冷却计数不变。
+- 先有其他错误并重试，再遇到 blockReason 时不再发送下一次请求；已交付内容及实际用量保留。
+- anti/普通、legacy/模型调度、非流式/real/fake/early 以及 OpenAI/Responses/Claude/Gemini 的失败可见、终止与清理行为一致。
+- 真实本地 Express/HTTP/fetch 验证非流式 HTTP 400 与 early HTTP 200 下的 SSE 错误，错误 request_id 与响应头一致，无成功 DONE；同时验证结构化日志不包含模拟提示词或模拟凭据。
+- 队列关闭和期限竞态不把明确拦截变成传输故障；原有 anti 不完整帧断连后不重放的行为得到保留。
+
+最初验证时，`npm run lint` 被历史文件 `docs/zh/fixtures/argon-production-diagnosis-20261017.json` 中 32 处 `jsonc/sort-keys` 错误阻挡。后续检查确认该文件仍由 Argon 生产排查报告引用，因此保留诊断证据，仅按现有 ESLint 规则重排键；JSON 解析后的内容与原版本完全一致。修改文件 ESLint、`npm run lint:css` 及 `git diff --check` 均通过；全仓 lint 的复验结果见下方补充记录。
+
+### 外部验收边界
+
+以上均使用模拟上游和本地 HTTP 服务，没有发送真实 Google 生成请求或重放生产提示词。未构建部署镜像、重启服务或修改生产状态。
+
+Build 侧已保证 blockReason 不触发自动请求重试。用户已确认现有 NewAPI 重试数为 0，本次不再将下游禁止重试列为专项改造或验收任务。NewAPI 的流内错误接收与界面展示、渠道状态、零输出免单和部分输出计费，以及公网代理实际事件到达情况仍需在对应部署版本中验收。错误扩展字段携带用量不能替代下游计费验收。
+
+### 历史诊断 JSON 整理与部署条件补充（2026-10-24）
+
+`argon-production-diagnosis-20261017.json` 是生产排查的脱敏证据附件，由 [Argon 生产问题定位](gemini-4-argon-production-diagnosis-20261017.md) 引用，不是运行配置或测试输入。本次保留文件并修复 32 处键排序问题；通过解析后对比，确认与 Git 原版本数据完全相同。修复后 `npm run lint` 全量通过，不需要忽略该文件，`git diff --check` 通过。此次只有 JSON 键顺序和文档调整，未重复运行功能测试。
+
+NewAPI 重试数为 0 是用户提供的既有部署条件，没有在本次连接生产服务读取或更改配置。已同步更新方案与使用说明；Build 对 blockReason 禁止重试的实现与测试保持不变。

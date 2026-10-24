@@ -28,6 +28,7 @@ class ScheduledRequestHandler extends RequestHandler {
         if (typeof res.write === "function") {
             const write = res.write.bind(res);
             res.write = (chunk, ...args) => {
+                if (res.__blockedError) return write(chunk, ...args);
                 const text = Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk ?? "");
                 if (res.__writingStreamStart || res.__writingEarlyKeepalive) return write(chunk, ...args);
                 if (!/^:\s*(?:accepted|keep-alive)\s*\n\n$/.test(text) && text !== "event: ping\ndata: {}\n\n") {
@@ -240,6 +241,7 @@ class ScheduledRequestHandler extends RequestHandler {
     }
 
     _shouldRetryError(error) {
+        if (require("../utils/UpstreamBlock").isPromptBlocked(error)) return false;
         if (["MODEL_TIER_DENIED", "MODEL_DISABLED", "UNKNOWN_MODEL"].includes(error.code)) return false;
         if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return false;
         if (
@@ -370,18 +372,19 @@ class ScheduledRequestHandler extends RequestHandler {
         }
     }
 
-    _markTrackedResponseError(res, message, statusCode, outcome) {
+    _markTrackedResponseError(res, message, statusCode, outcome, details = null) {
         if (this.lease?.attempted) {
             const error =
                 outcome === "local_transport"
                     ? { kind: "transport", message, reason: "connection_lost", status: statusCode }
-                    : { message, status: statusCode };
+                    : { ...details, message, status: statusCode };
             this.scheduler.failure(this.lease, error);
         }
         return super._markTrackedResponseError(res, message, statusCode, outcome);
     }
 
     async _retryTransportQueue(error, registry) {
+        if (require("../utils/UpstreamBlock").isPromptBlocked(error)) throw error;
         if (isArgon(this.model) || this.proxyRequest?.transport_policy?.transport === "makersuite")
             throw benefitError("Argon transport interrupted; generation was not replayed");
         if (

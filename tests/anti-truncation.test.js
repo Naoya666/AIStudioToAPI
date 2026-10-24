@@ -192,9 +192,15 @@ test("catalog text allowlist supports modifier parsing and Gemini injection in i
     }
 });
 
-test("upstream safety block remains a safety finish and batch DONE does not duplicate output", () => {
-    const blocked = new Attempt("synthetic").nonStream({ promptFeedback: { blockReason: "SAFETY" } }, converter, model);
-    assert.equal(blocked.choices[0].finish_reason, "content_filter");
+test("upstream safety block is a terminal business error and batch DONE does not duplicate output", () => {
+    assert.throws(
+        () => new Attempt("synthetic").nonStream({ promptFeedback: { blockReason: "SAFETY" } }, converter, model),
+        {
+            code: "upstream_prompt_blocked",
+            retryable: false,
+            status: 400,
+        }
+    );
     const attempt = new Attempt("synthetic");
     const responses = attempt.read(`data: ${JSON.stringify(response([synthetic("answer")]))}\n\ndata: [DONE]\n\n`);
     assert.equal(responses.length, 1);
@@ -291,4 +297,100 @@ test("browser HTTP failures retain structured upstream fields without proxy pref
         assert.equal(captured.cooldown, true);
         assert.equal(captured.message.includes("private error page"), false);
     }
+});
+
+test("block diagnostics are validated, bounded and take precedence over candidates and top-level errors", () => {
+    const { promptBlocked } = require("../src/utils/UpstreamBlock");
+    for (const blockReason of [undefined, null, "", "  ", {}, 4])
+        assert.equal(promptBlocked({ promptFeedback: { blockReason } }), null);
+    const blocked = promptBlocked({
+        candidates: [{ content: { parts: [{ text: "must not escape" }] }, finishReason: "STOP" }],
+        error: { code: 503, message: "network RESOURCE_EXHAUSTED PERMISSION_DENIED" },
+        promptFeedback: {
+            blockReason: "FUTURE_REASON",
+            blockReasonMessage: "Bearer secret-credential " + "x".repeat(2000),
+            safetyRatings: [{ blocked: true, category: "HARM_CATEGORY_TEST", extra: "private", probability: "HIGH" }],
+            untrusted: "private",
+        },
+        usageMetadata: { private: "do not expose", promptTokenCount: 123 },
+    });
+    assert.equal(blocked.retryable, false);
+    assert.equal(blocked.status, 400);
+    assert.equal(blocked.upstream.blockReason, "FUTURE_REASON");
+    assert.equal(blocked.upstream.error.code, 503);
+    assert.ok(blocked.upstream.blockReasonMessage.length <= 1024);
+    assert.equal(JSON.stringify(blocked).includes("secret-credential"), false);
+    assert.equal(JSON.stringify(blocked).includes("must not escape"), false);
+    assert.equal(JSON.stringify(blocked).includes("private"), false);
+    assert.deepEqual(blocked.usageMetadata, { promptTokenCount: 123 });
+    for (const convert of [
+        input => converter.convertGoogleToOpenAINonStream(input),
+        input => converter.convertGoogleToClaudeNonStream(input),
+        input => converter.convertGoogleToResponseAPINonStream(input),
+        input => converter.translateGoogleToOpenAIStream(JSON.stringify(input), model, {}),
+        input => converter.translateGoogleToClaudeStream(JSON.stringify(input), model, {}),
+        input => converter.translateGoogleToResponseAPIStream(JSON.stringify(input), model, {}),
+    ])
+        assert.throws(() => convert({ promptFeedback: { blockReason: "FUTURE_REASON" } }), {
+            code: "upstream_prompt_blocked",
+        });
+});
+
+test("generation guard assembles every JSON/SSE boundary before inspecting a block", () => {
+    const Guard = require("../src/utils/GenerationResponseGuard");
+    const blocked = JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '中😀 " } \\ hidden' }] } }],
+        promptFeedback: { blockReason: "UNKNOWN_REASON" },
+        usageMetadata: { promptTokenCount: 10 },
+    });
+    for (const wire of [blocked, `[${blocked}]`, `: heartbeat\r\n\r\ndata: ${blocked}\r\n\r\n`, `data: ${blocked}`]) {
+        for (let split = 1; split < wire.length; split++) {
+            const guard = new Guard({ requestId: "req_test" });
+            const messages = [
+                ...guard.push({ data: wire.slice(0, split), event_type: "chunk" }),
+                ...guard.push({ data: wire.slice(split), event_type: "chunk" }),
+                ...guard.push({ type: "STREAM_END" }),
+            ];
+            const error = messages.find(message => message.code === "upstream_prompt_blocked");
+            assert.ok(error, `split=${split}: ${wire}`);
+            assert.equal(error.requestId, "req_test");
+            assert.equal(error.upstream.blockReason, "UNKNOWN_REASON");
+            assert.deepEqual(error.usageMetadata, { promptTokenCount: 10 });
+            assert.equal(
+                messages.some(message => message.data?.includes("hidden")),
+                false
+            );
+            assert.deepEqual(guard.push({ event_type: "error", status: 503 }), []);
+        }
+    }
+    const guard = new Guard();
+    const prior = `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "prior" }] } }], usageMetadata: { candidatesTokenCount: 2 } })}\n\n`;
+    const messages = guard.push({
+        data: prior + 'data: {"promptFeedback":{"blockReason":"SAFETY"}}\n\n',
+        event_type: "chunk",
+    });
+    assert.equal(messages[0].data, prior);
+    assert.equal(messages[1].code, "upstream_prompt_blocked");
+    assert.deepEqual(messages[1].usageMetadata, { candidatesTokenCount: 2 });
+    const limited = new Guard({}, 4);
+    assert.equal(limited.push({ data: '{"abc', event_type: "chunk" })[0].code, "anti_truncation_limit");
+});
+
+test("a detected block survives queue closure and deadline races without becoming a transport retry", async () => {
+    const MessageQueue = require("../src/utils/MessageQueue");
+    const Guard = require("../src/utils/GenerationResponseGuard");
+    for (const close of [false, true]) {
+        const queue = new MessageQueue();
+        queue.responseGuard = new Guard();
+        queue.enqueue({ data: '{"promptFeedback":{"blockReason":"SAFETY"}}', event_type: "chunk" });
+        if (close) queue.close("connection_lost");
+        else queue.generationDeadline = performance.now() - 1;
+        await assert.rejects(queue.dequeue(), { code: "upstream_prompt_blocked", retryable: false });
+    }
+    const guard = new Guard();
+    const frames = guard.push({
+        data: 'data: {"promptFeedback":\r\ndata: {"blockReason":"SAFETY"}}\r\n\r\n',
+        event_type: "chunk",
+    });
+    assert.equal(frames[0].code, "upstream_prompt_blocked");
 });

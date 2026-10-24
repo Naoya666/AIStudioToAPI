@@ -7,6 +7,8 @@ const httpStatus = value => {
 
 // Keep business codes separate from error.code, which drives local retry classification.
 function normalizeError(error = {}, fallbackStatus = 500) {
+    if (require("./UpstreamBlock").isPromptBlocked(error))
+        return { code: "upstream_prompt_blocked", message: error.message, status: 400, type: "invalid_request_error" };
     const upstream = error.upstreamError || error.error;
     const isUpstream =
         Boolean(upstream) ||

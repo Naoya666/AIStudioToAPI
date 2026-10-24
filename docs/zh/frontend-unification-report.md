@@ -44,6 +44,8 @@
 
 39 个跳过项来自未设置 `ACCOUNT_LOGIN_BROWSER_TEST_EXECUTABLE` 的可选登录浏览器用例；跳过不计入验证通过。Chromium 前端用例实际执行。
 
+2026-10-24 补充：上表保留当时验证结果。历史诊断 JSON 的 32 处键排序问题现已修复，诊断数据保持不变，当前 `npm run lint` 全量通过，见 [补充记录](anti-truncation-implementation.md#历史诊断-json-整理与部署条件补充2026-10-24)。
+
 新增 `tests/frontend-unification.test.js`，验证以下行为：
 
 - 六个管理入口直达、刷新、路由页头唯一；站内导航和浏览器返回。
