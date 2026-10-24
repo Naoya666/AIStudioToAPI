@@ -390,7 +390,7 @@ class ModelScheduler {
         const deadlines = [...this.accounts.values()].flatMap(account =>
             [...models]
                 .map(model => account.models[model])
-                .filter(slot => slot?.rate_limited === true && slot.cooldown_until > now)
+                .filter(slot => slot?.cooldown_until > now)
                 .map(slot => slot.cooldown_until)
         );
         if (!deadlines.length) return;
@@ -1216,6 +1216,7 @@ class ModelScheduler {
         const names = new Set([
             ...(this.config.registeredModels || []),
             ...Object.keys(this.config.allocation),
+            ...Object.keys(this.config.modelContextWarmTargets || {}),
             ...this.pending.map(item => item.model),
             ...[...this.accounts.values()].flatMap(account => Object.keys(account.models)),
         ]);
@@ -1401,12 +1402,14 @@ class ModelScheduler {
                     models.size > 0 &&
                     indices.length > 0 &&
                     indices.every(index => this.isAccountQuotaExhausted(this.account(index), now, models)),
+                background_capacity: this.browserManager?._backgroundContextLimit?.() ?? this.config.maxWorkers,
                 busy: busyContexts,
                 closing: contextCount("CLOSING"),
                 configured_min_ready: this.config.contextPoolMinReady,
                 draining: contextCount("DRAINING"),
                 effective_warm_target: Math.min(
                     this.config.contextPoolMinReady,
+                    this.browserManager?._backgroundContextLimit?.() ?? this.config.maxWorkers,
                     indices.filter(index => this.isAccountPoolResident(index, now, models)).length
                 ),
                 initializing: contextCount("INITIALIZING"),
@@ -1442,6 +1445,12 @@ class ModelScheduler {
                         queue_length: this.pending.filter(item => item.model === model).length,
                         rate_limited_accounts: slots.filter(slot => slot.rate_limited).length,
                         ready_accounts: this.readyCandidates(model, new Set()).length,
+                        warm_contexts: this.browserManager?.getModelWarmCoverage?.(model) || {
+                            deficit: this.config.modelContextWarmTargets?.[model] || 0,
+                            initializing: 0,
+                            ready: 0,
+                            target: this.config.modelContextWarmTargets?.[model] || 0,
+                        },
                         ...(this.config.strategy === "different_proxy_first"
                             ? {
                                   ready_egress_groups: egress?.by_model[model]?.length || 0,

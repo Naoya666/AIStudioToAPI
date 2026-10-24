@@ -1734,3 +1734,22 @@ test("different proxy warm pool initializes distinct exits within the context li
     assert.ok(manager.peak <= 2);
     assert.ok(manager.peakInitializations <= 2);
 });
+
+test("model warm coverage raises a zero global target while keeping one actual demand slot", async () => {
+    const manager = browserFixture(4);
+    manager.authSource.getRotationIndices = () => [0, 1, 2, 3, 4, 5];
+    manager.scheduler.config.modelContextWarmTargets = { hot: 3, rare: 1 };
+    manager.scheduler.isResourceEligible = (account, model) => model === "hot" || account.index === 2;
+    manager.scheduler.account = index => ({ index, inflight: 0 });
+    manager._pumpContextPool();
+    await waitForPool(manager, 3);
+    assert.equal(manager.contexts.size, 3);
+    assert.ok(manager.contexts.has(2));
+    assert.deepEqual(manager.getModelWarmCoverage("hot"), { deficit: 0, initializing: 0, ready: 3, target: 3 });
+    assert.equal(manager.peak, 3);
+    manager.scheduler.hasUnmetContextDemand = () => true;
+    manager.requestContext(5, "hot");
+    await waitForPool(manager, 4);
+    assert.ok(manager.contexts.has(5));
+    assert.equal(manager.peak, 4);
+});

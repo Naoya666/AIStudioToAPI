@@ -195,7 +195,10 @@ class ConfigurationService {
                         limit.min_workers > limit.preferred_workers
                     )
                         throw fail(`${name}: 无效资源分配`);
-                } else if (!Number.isSafeInteger(limit) || limit < (name === "ACCOUNT_MODEL_MAX_CONCURRENCY" ? 0 : 1))
+                } else if (
+                    !Number.isSafeInteger(limit) ||
+                    limit < (["ACCOUNT_MODEL_MAX_CONCURRENCY", "MODEL_CONTEXT_WARM_TARGETS"].includes(name) ? 0 : 1)
+                )
                     throw fail(`${name}: 无效并发上限`);
             }
         }

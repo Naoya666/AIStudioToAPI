@@ -30,6 +30,16 @@ function loadSchedulerConfig(env = process.env) {
     // A background ready target among resident-eligible accounts; quota exhaustion may shrink it to zero.
     const contextPoolMinReady = integer("CONTEXT_POOL_MIN_READY", maxWorkers, 0);
     if (contextPoolMinReady > maxWorkers) throw new Error("CONTEXT_POOL_MIN_READY exceeds MAX_BROWSER_WORKERS");
+    const modelContextWarmTargets = object("MODEL_CONTEXT_WARM_TARGETS");
+    for (const [model, target] of Object.entries(modelContextWarmTargets)) {
+        if (
+            require("./ModelName").normalizeModelName(model) !== model ||
+            !Number.isSafeInteger(target) ||
+            target < 0 ||
+            target >= maxWorkers
+        )
+            throw new Error(`Invalid MODEL_CONTEXT_WARM_TARGETS for ${model}: expected 0..${maxWorkers - 1}`);
+    }
     const accountConcurrency = integer("ACCOUNT_MAX_CONCURRENCY", 0, 0);
     const accountModelConcurrency = object("ACCOUNT_MODEL_MAX_CONCURRENCY");
     for (const value of Object.values(accountModelConcurrency)) {
@@ -95,6 +105,7 @@ function loadSchedulerConfig(env = process.env) {
         maxRetries: integer("MAX_RETRIES_PER_REQUEST", Math.max(0, (Number(env.MAX_RETRIES) || 3) - 1), 0),
         maxWorkers,
         modelConcurrency,
+        modelContextWarmTargets,
         queueSize: integer("MODEL_QUEUE_SIZE", 100, 0),
         queueTimeoutMs: integer("REQUEST_DISPATCH_TIMEOUT_MS", integer("MODEL_QUEUE_TIMEOUT_MS", 120000)),
         rateLimitCooldownMs: integer("RATE_LIMIT_COOLDOWN", 86400) * 1000,

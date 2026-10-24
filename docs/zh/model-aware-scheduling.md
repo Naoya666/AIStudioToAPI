@@ -1,5 +1,7 @@
 # 模型感知账号池与浏览器 Worker 调度
 
+按模型预热覆盖已实现，详见 [按模型设置预热 Context 目标](./model-context-warm-target-design.md)。模型热池覆盖目标独立于请求执行分配，账号不足时剩余容量继续共享。
+
 ## 原架构与改造范围
 
 原来 `RequestHandler` 和 `AuthSwitcher` 共享 `BrowserManager.currentAuthIndex`，按使用次数、失败阈值和状态码触发全局切换。`BrowserManager` 已经在一个 Firefox/Camoufox 进程中维护多个独立 context/page，`ConnectionRegistry` 也已经按 `authIndex` 和 `request_attempt_id` 隔离 WebSocket 消息，但请求仍集中在当前账号上。

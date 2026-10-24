@@ -2388,7 +2388,7 @@ class BrowserManager {
         }
     }
 
-    orderContextCandidates(indices, limit = indices.length) {
+    orderContextCandidates(indices, limit = indices.length, plannedIndices = []) {
         if (this.scheduler.config.strategy !== "different_proxy_first" || !limit || !indices.length)
             return indices.slice(0, limit);
         // This runs only when a new context is needed. One route lookup per
@@ -2399,7 +2399,7 @@ class BrowserManager {
             return keys.get(index);
         };
         const counts = new Map();
-        const occupied = new Set([...this.contexts.keys(), ...this.initializingContexts]);
+        const occupied = new Set([...this.contexts.keys(), ...this.initializingContexts, ...plannedIndices]);
         for (const index of occupied) {
             if (this.contexts.get(index)?.draining || this._poolClosingContexts?.has(index)) continue;
             const key = keyFor(index);
@@ -2463,6 +2463,89 @@ class BrowserManager {
         };
     }
 
+    _modelWarmTargets() {
+        if (this.scheduler.config.enabled === false) return [];
+        return Object.entries(this.scheduler.config.modelContextWarmTargets || {}).filter(([, target]) => target > 0);
+    }
+
+    _backgroundContextLimit() {
+        return this.scheduler.config.maxWorkers - (this._modelWarmTargets().length ? 1 : 0);
+    }
+
+    _warmCoverageIndices(includeScheduled = true) {
+        const indices = new Set([...this.contexts.keys()]);
+        if (includeScheduled) {
+            for (const index of this.initializingContexts) indices.add(index);
+            for (const index of this.contextCapacityReservations?.keys() || []) indices.add(index);
+        }
+        const rotation = new Set(this.authSource.getRotationIndices());
+        return [...indices].filter(
+            index =>
+                rotation.has(index) &&
+                !this.contexts.get(index)?.draining &&
+                !this._poolClosingContexts?.has(index) &&
+                !this._contextPoolReplacements?.has(index) &&
+                ![...(this._contextCapacityClosures?.values() || [])].includes(index) &&
+                (this.isContextReady(index) ||
+                    (includeScheduled &&
+                        (this.initializingContexts.has(index) || this.contextCapacityReservations?.has(index))))
+        );
+    }
+
+    getModelWarmCoverage(model) {
+        const eligible = index => this.scheduler.isResourceEligible(this.scheduler.account(index), model);
+        const ready = this._warmCoverageIndices(false).filter(eligible).length;
+        const scheduled = this._warmCoverageIndices().filter(eligible).length;
+        const target = this.scheduler.config.modelContextWarmTargets?.[model] || 0;
+        return { deficit: Math.max(0, target - ready), initializing: scheduled - ready, ready, target };
+    }
+
+    _warmCoverageCounts(indices = this._warmCoverageIndices()) {
+        return this._modelWarmTargets().map(([model, target]) => ({
+            count: indices.filter(index => this.scheduler.isResourceEligible(this.scheduler.account(index), model))
+                .length,
+            model,
+            target,
+        }));
+    }
+
+    _warmCandidateGain(index, counts) {
+        return counts.filter(
+            ({ model, target, count }) =>
+                count < target && this.scheduler.isResourceEligible(this.scheduler.account(index), model)
+        ).length;
+    }
+
+    _warmReplacementGain(incoming, outgoing) {
+        let gain = 0;
+        for (const { model, target, count } of this._warmCoverageCounts()) {
+            const before = Math.min(target, count);
+            const after = Math.min(
+                target,
+                count +
+                    Number(this.scheduler.isResourceEligible(this.scheduler.account(incoming), model)) -
+                    Number(
+                        this._warmCoverageIndices().includes(outgoing) &&
+                            this.scheduler.isResourceEligible(this.scheduler.account(outgoing), model)
+                    )
+            );
+            // Never trade away a satisfied scarce coverage for background work.
+            if (after < before) return -1;
+            gain += after - before;
+        }
+        return gain;
+    }
+
+    _warmEvictionLoss(index) {
+        return this._warmCoverageCounts().filter(
+            ({ model, target, count }) =>
+                count <= target &&
+                count > 0 &&
+                this._warmCoverageIndices().includes(index) &&
+                this.scheduler.isResourceEligible(this.scheduler.account(index), model)
+        ).length;
+    }
+
     _poolCandidates() {
         if (this.poolMetrics) this.poolMetrics.scans++;
         const rotation = this.authSource.getRotationIndices();
@@ -2485,7 +2568,11 @@ class BrowserManager {
         const demanded = [...(this.contextDemand?.keys() || [])].filter(
             index => rotation.includes(index) && enabled(index)
         );
-        const target = Math.min(this.scheduler.config.contextPoolMinReady, residents.size);
+        const target = Math.min(
+            this.scheduler.config.contextPoolMinReady,
+            residents.size,
+            this._backgroundContextLimit()
+        );
         const readyCount = rotation.filter(index => resident(index) && this.isContextReady(index)).length;
         const warmingCount = [...this.initializingContexts].filter(resident).length;
         const needWarm = Math.max(0, target - readyCount - warmingCount);
@@ -2512,7 +2599,48 @@ class BrowserManager {
                   needWarm
               )
             : [];
-        return [...new Set([...demanded, ...warm])].filter(index => {
+        const coverageWarm = [];
+        if (this._modelWarmTargets().length) {
+            const planned = this._warmCoverageIndices();
+            const candidates = rotation.filter(index => {
+                const unavailable = this.contextUnavailable.get(index);
+                const hasCapacity = this._contextCapacityIndices().size < this._backgroundContextLimit();
+                const canReplace =
+                    this._contextCapacityIndices().size === this._backgroundContextLimit() &&
+                    [...this.contexts.keys()].some(
+                        outgoing =>
+                            this._isContextIdle(outgoing) &&
+                            !this.initializingContexts.has(outgoing) &&
+                            !this.contextCapacityReservations?.has(outgoing) &&
+                            this._warmReplacementGain(index, outgoing) > 0
+                    );
+                return (
+                    (hasCapacity || canReplace) &&
+                    resident(index) &&
+                    !planned.includes(index) &&
+                    !demanded.includes(index) &&
+                    !this.contexts.get(index)?.draining &&
+                    !closing.has(index) &&
+                    (!this.contexts.has(index) || this._isContextIdle(index)) &&
+                    (!unavailable?.retryAt || unavailable.retryAt <= Date.now())
+                );
+            });
+            while (candidates.length) {
+                const counts = this._warmCoverageCounts(planned);
+                const gain = Math.max(...candidates.map(index => this._warmCandidateGain(index, counts)));
+                if (!gain) break;
+                const best = this.orderContextCandidates(
+                    candidates.filter(index => this._warmCandidateGain(index, counts) === gain),
+                    1,
+                    coverageWarm
+                )[0];
+                if (best === undefined) break;
+                coverageWarm.push(best);
+                planned.push(best);
+                candidates.splice(candidates.indexOf(best), 1);
+            }
+        }
+        return [...new Set([...demanded, ...coverageWarm, ...warm])].filter(index => {
             const unavailable = this.contextUnavailable.get(index);
             return (
                 enabled(index) &&
@@ -2581,6 +2709,19 @@ class BrowserManager {
         )
             return null;
         const occupied = this._contextCapacityIndices();
+        if (
+            !occupied.has(authIndex) &&
+            !["foreground", "demand"].includes(purpose) &&
+            occupied.size >= this._backgroundContextLimit()
+        ) {
+            if (
+                purpose === "warm" &&
+                occupied.size === this._backgroundContextLimit() &&
+                ![...(this.contextDemand?.keys() || [])].some(index => this._hasValidContextDemand(index))
+            )
+                this._replaceIdlePooledContext(authIndex, purpose);
+            return null;
+        }
         if (!occupied.has(authIndex) && occupied.size >= this.scheduler.config.maxWorkers) {
             const status = `${occupied.size}:${this.scheduler.config.maxWorkers}:${this.contextCapacityReservations.size}`;
             if (this._lastContextCapacityWait !== status) {
@@ -2605,9 +2746,14 @@ class BrowserManager {
     }
 
     _replaceIdlePooledContext(authIndex, purpose) {
-        // Warming and background reconnects may use free capacity, but cannot
-        // displace a healthy resident. Re-evaluate model demand at the mutation.
-        if (purpose !== "foreground" && (purpose !== "demand" || !this._hasQueuedContextDemand(authIndex))) return;
+        // Background replacement must strictly improve coverage without losing
+        // existing target coverage. Real demand retains unrestricted idle replacement.
+        if (
+            purpose !== "warm" &&
+            purpose !== "foreground" &&
+            (purpose !== "demand" || !this._hasQueuedContextDemand(authIndex))
+        )
+            return;
         this._contextPoolReplacements ??= new Map();
         // Finish one replacement before selecting another victim for the same demand.
         if (this._contextPoolReplacements.size || this._poolClosingContexts?.size) return;
@@ -2617,9 +2763,12 @@ class BrowserManager {
                     index !== authIndex &&
                     !this.initializingContexts.has(index) &&
                     !this.contextCapacityReservations?.has(index) &&
-                    this._isContextIdle(index)
+                    this._isContextIdle(index) &&
+                    (purpose !== "warm" || this._warmReplacementGain(authIndex, index) > 0)
             )
-            .sort((a, b) => this._compareContextEviction(a, b))[0];
+            .sort(
+                (a, b) => this._warmEvictionLoss(a) - this._warmEvictionLoss(b) || this._compareContextEviction(a, b)
+            )[0];
         if (idle === undefined) return;
         const owner = {};
         this._contextPoolReplacements.set(idle, owner);

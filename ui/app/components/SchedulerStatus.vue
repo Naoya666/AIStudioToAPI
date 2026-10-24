@@ -64,6 +64,10 @@
                 })
             }}
         </p>
+        <p v-if="data.contexts_summary?.background_capacity < data.max_browser_workers" class="header-sub">
+            后台预热最多占用 {{ data.contexts_summary.background_capacity }} 个
+            Context，至少保留一个实际按需创建槽位；模型目标可主动提高普通补池数量。
+        </p>
         <p v-if="data.contexts_summary?.all_visible_models_rate_limited" class="scheduler-empty">
             {{ t("schedulerPoolExhausted") }}
         </p>
@@ -547,6 +551,10 @@
                         <!-- Min / Preferred -->
                         <td class="font-mono text-slate-500">
                             {{ model.configured_workers.min }} / {{ model.configured_workers.preferred }}
+                            <div v-if="model.warm_contexts?.target > 0" class="text-xs">
+                                预热目标 {{ model.warm_contexts.target }} / 当前可用 {{ model.warm_contexts.ready }} /
+                                补足中 {{ model.warm_contexts.initializing }} / 缺口 {{ model.warm_contexts.deficit }}
+                            </div>
                         </td>
                         <!-- 操作 -->
                         <td class="text-right">

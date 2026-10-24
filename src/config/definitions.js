@@ -495,7 +495,7 @@ module.exports = [
     },
     {
         application: "restart",
-        description: "后台尽量维持的就绪上下文数量",
+        description: "后台尽量维持的就绪上下文数量；启用任意正数模型预热目标时，后台总容量最多为最大 Context 数减一",
         group: "浏览器资源与初始化",
         label: "预热上下文目标数",
         minimum: 0,
@@ -605,7 +605,7 @@ module.exports = [
     },
     {
         application: "restart",
-        description: "设置最低保障和优先分配数量",
+        description: "请求执行优先级，非 Context 数量。默认 0 / 1；动态分配时优先分配数量不是并发硬上限",
         group: "并发与调度资源",
         label: "模型调度资源分配",
         minimum: 1,
@@ -614,6 +614,19 @@ module.exports = [
         path: "scheduler.allocation",
         type: "models",
         unit: "",
+    },
+    {
+        application: "restart",
+        description:
+            "尽量维持可调用此模型的就绪 Context；同一 Context 可覆盖多个模型，0 不要求覆盖。单模型目标必须小于最大 Context 数；启用后模型补池和普通补池合计最多使用 M - 1 个实际容量，至少留一个按需创建槽位。账号不足时其余容量继续共享。仅模型感知模式生效。",
+        group: "并发与调度资源",
+        label: "模型预热 Context 目标",
+        minimum: 0,
+        mode: "model",
+        name: "MODEL_CONTEXT_WARM_TARGETS",
+        path: "scheduler.modelContextWarmTargets",
+        type: "models",
+        unit: "个",
     },
     {
         application: "restart",

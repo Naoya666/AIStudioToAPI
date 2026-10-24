@@ -197,7 +197,11 @@
                             <div class="model-columns">
                                 <span>真实上游模型 ID</span
                                 ><span>{{
-                                    d.name === "MODEL_WORKER_ALLOCATION" ? "最低保障 / 优先分配数量" : "并发上限"
+                                    d.name === "MODEL_WORKER_ALLOCATION"
+                                        ? "最低保障 / 优先分配数量"
+                                        : d.name === "MODEL_CONTEXT_WARM_TARGETS"
+                                          ? "预热 Context 目标"
+                                          : "并发上限"
                                 }}</span>
                             </div>
                             <div v-for="(row, index) in draft[d.name]" :key="index" class="model-row">
@@ -218,9 +222,24 @@
                                 />
                                 <ElInputNumber
                                     v-model="row.value"
-                                    :min="d.name === 'ACCOUNT_MODEL_MAX_CONCURRENCY' ? 0 : 1"
+                                    :min="
+                                        ['ACCOUNT_MODEL_MAX_CONCURRENCY', 'MODEL_CONTEXT_WARM_TARGETS'].includes(d.name)
+                                            ? 0
+                                            : 1
+                                    "
+                                    :max="
+                                        d.name === 'MODEL_CONTEXT_WARM_TARGETS'
+                                            ? Math.max(0, draft.MAX_BROWSER_WORKERS - 1)
+                                            : Infinity
+                                    "
                                     :precision="0"
-                                    :aria-label="d.name === 'MODEL_WORKER_ALLOCATION' ? '优先分配数量' : '并发上限'"
+                                    :aria-label="
+                                        d.name === 'MODEL_WORKER_ALLOCATION'
+                                            ? '优先分配数量'
+                                            : d.name === 'MODEL_CONTEXT_WARM_TARGETS'
+                                              ? '预热 Context 目标'
+                                              : '并发上限'
+                                    "
                                     :disabled="busy"
                                 />
                                 <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除</ElButton>
@@ -230,7 +249,13 @@
                             </datalist>
                             <ElButton
                                 :disabled="busy"
-                                @click="draft[d.name].push({ model: '', value: 1, min_workers: 0 })"
+                                @click="
+                                    draft[d.name].push({
+                                        model: '',
+                                        value: d.name === 'MODEL_CONTEXT_WARM_TARGETS' ? 0 : 1,
+                                        min_workers: 0,
+                                    })
+                                "
                                 >增加模型</ElButton
                             >
                             <p>删除单独配置后继承既有默认规则；不会禁用模型。资源分配数量并非独立浏览器进程数量。</p>
@@ -493,6 +518,10 @@ async function save() {
     busy.value = true;
     error.value = "";
     try {
+        for (const row of draft.MODEL_CONTEXT_WARM_TARGETS || []) {
+            if (!Number.isSafeInteger(row.value) || row.value < 0 || row.value >= draft.MAX_BROWSER_WORKERS)
+                throw new Error("预热 Context 目标必须为非负整数且小于最大 Context 数；下调容量时请同步修改模型目标");
+        }
         const changes = Object.fromEntries(
             snapshot.value.definitions
                 .filter(d => dirtyNames.value.includes(d.name) && !resets.value.includes(d.name))

@@ -372,3 +372,16 @@ test("login browser reuse defaults off, validates limits and hot-applies through
     assert.throws(() => config({ ACCOUNT_LOGIN_BROWSER_REUSE: "yes" }));
     assert.throws(() => config({ ACCOUNT_LOGIN_BROWSER_IDLE_TIMEOUT_MS: "0" }));
 });
+
+test("warm targets persist, validate against resized capacity and require restart", t => {
+    const { service, save } = setup(t, { MAX_BROWSER_WORKERS: "4" });
+    save({ MODEL_CONTEXT_WARM_TARGETS: { "custom-upstream:preview": 3, "other-model": 3 } });
+    assert.equal(service.snapshot().saved.MODEL_CONTEXT_WARM_TARGETS["custom-upstream:preview"], 3);
+    assert.deepEqual(service.running.scheduler.modelContextWarmTargets, {});
+    assert.throws(() => save({ MAX_BROWSER_WORKERS: 3 }), { status: 400 });
+    assert.throws(() => save({ MODEL_CONTEXT_WARM_TARGETS: { "custom-upstream:preview": 4 } }), { status: 400 });
+    assert.throws(() => save({ MODEL_CONTEXT_WARM_TARGETS: { "models/flash": 1 } }), { status: 400 });
+    save({ MAX_BROWSER_WORKERS: 3, MODEL_CONTEXT_WARM_TARGETS: { "custom-upstream:preview": 2 } });
+    assert.equal(service.saved.scheduler.maxWorkers, 3);
+    assert.equal(service.saved.scheduler.modelContextWarmTargets["custom-upstream:preview"], 2);
+});
