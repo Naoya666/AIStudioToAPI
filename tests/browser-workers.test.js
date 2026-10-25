@@ -1735,7 +1735,7 @@ test("different proxy warm pool initializes distinct exits within the context li
     assert.ok(manager.peakInitializations <= 2);
 });
 
-test("model warm coverage raises a zero global target while keeping one actual demand slot", async () => {
+test("model warm coverage raises a zero global target and permits shared demand residency", async () => {
     const manager = browserFixture(4);
     manager.authSource.getRotationIndices = () => [0, 1, 2, 3, 4, 5];
     manager.scheduler.config.modelContextWarmTargets = { hot: 3, rare: 1 };
@@ -1752,4 +1752,44 @@ test("model warm coverage raises a zero global target while keeping one actual d
     await waitForPool(manager, 4);
     assert.ok(manager.contexts.has(5));
     assert.equal(manager.peak, 4);
+});
+
+test("full warm pool drains busy shared accounts and repairs coverage under mixed demands", async () => {
+    const manager = browserFixture(4);
+    const indices = [0, 1, 2, 3, 4, 5, 6, 7];
+    const accounts = indices.map(index => ({ healthy: true, index, inflight: 0 }));
+    const unavailableForHot = new Set();
+    manager.authSource.getRotationIndices = () => indices;
+    manager.scheduler.account = index => accounts[index];
+    manager.scheduler.config.contextPoolMinReady = 4;
+    manager.scheduler.config.modelContextWarmTargets = { hot: 3 };
+    manager.scheduler.isResourceEligible = (account, model) => model !== "hot" || !unavailableForHot.has(account.index);
+    manager.scheduler.hasUnmetContextDemand = () => true;
+    manager._pumpContextPool();
+    await waitForPool(manager, 4);
+    assert.equal(manager.contexts.size, 4);
+    assert.equal(manager._contextCapacityIndices().size, 4);
+    // Existing streams keep the entire pool busy while quota changes reduce hot coverage.
+    for (const index of manager.contexts.keys()) accounts[index].inflight = 1;
+    for (const index of [1, 2, 3]) unavailableForHot.add(index);
+    // Unrelated cold demands must not take all the initialization opportunities.
+    unavailableForHot.add(7);
+    manager.requestContext(7, "other");
+    for (let turn = 0; turn < 2; turn++) {
+        const victim = [...manager.contexts.keys()].find(index => manager.contexts.get(index).poolReplacement);
+        assert.notEqual(victim, undefined);
+        assert.equal(manager.contexts.get(victim).drainReason, "model_warm_target");
+        assert.equal(manager.contexts.get(victim).poolReplacement.purpose, "warm");
+        assert.equal(manager.getModelWarmCoverage("hot").ready, turn + 1);
+        accounts[victim].inflight = 0;
+        manager.handleAccountLeaseReleased(victim);
+        await waitForPool(manager, 4);
+        assert.ok(manager._contextCapacityIndices().size <= 4);
+    }
+    assert.equal(manager.getModelWarmCoverage("hot").ready, 3);
+    assert.equal(manager.peak, 4);
+    assert.equal(accounts[0].inflight, 1); // The original stream was never interrupted.
+    // Settle the remaining demand drain rather than leaving a busy fixture lifecycle behind.
+    manager.contextDemand.clear();
+    for (const index of manager.contexts.keys()) manager._cancelObsoletePoolReplacement(index);
 });

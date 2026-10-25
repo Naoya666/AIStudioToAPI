@@ -2325,9 +2325,10 @@ class BrowserManager {
         if (!this.scheduler || this.scheduler.closed || this._reconcilingPool) return;
         this._reconcilingPool = true;
         try {
+            let restored = false;
+            for (const index of this.contexts.keys()) restored = this._cancelObsoletePoolReplacement(index) || restored;
             const now = this.scheduler.now();
             const models = this.scheduler.getVisibleModels();
-            let restored = false;
             for (const [index] of this.contextDemand) {
                 if (!this._hasValidContextDemand(index)) this.contextDemand.delete(index);
             }
@@ -2469,7 +2470,7 @@ class BrowserManager {
     }
 
     _backgroundContextLimit() {
-        return this.scheduler.config.maxWorkers - (this._modelWarmTargets().length ? 1 : 0);
+        return this.scheduler.config.maxWorkers;
     }
 
     _warmCoverageIndices(includeScheduled = true) {
@@ -2482,6 +2483,7 @@ class BrowserManager {
         return [...indices].filter(
             index =>
                 rotation.has(index) &&
+                !this.benefitCheckingIndices?.has(index) &&
                 !this.contexts.get(index)?.draining &&
                 !this._poolClosingContexts?.has(index) &&
                 !this._contextPoolReplacements?.has(index) &&
@@ -2516,34 +2518,98 @@ class BrowserManager {
         ).length;
     }
 
-    _warmReplacementGain(incoming, outgoing) {
-        let gain = 0;
-        for (const { model, target, count } of this._warmCoverageCounts()) {
-            const before = Math.min(target, count);
-            const after = Math.min(
-                target,
-                count +
-                    Number(this.scheduler.isResourceEligible(this.scheduler.account(incoming), model)) -
-                    Number(
-                        this._warmCoverageIndices().includes(outgoing) &&
-                            this.scheduler.isResourceEligible(this.scheduler.account(outgoing), model)
-                    )
+    // Select at most M-1 coverage accounts; every other account remains shared,
+    // even when it can also serve a target model. Prefer incumbents on equal gain.
+    _modelWarmPlan() {
+        const protectedIndices = new Set();
+        if (!this._modelWarmTargets().length) return protectedIndices;
+        const admitted = new Set([
+            ...this._warmCoverageIndices(),
+            ...[...this.contexts.values()].flatMap(data =>
+                data.poolReplacement ? [data.poolReplacement.incoming] : []
+            ),
+        ]);
+        const candidates = this.authSource
+            .getRotationIndices()
+            .filter(
+                index =>
+                    !this.benefitCheckingIndices?.has(index) &&
+                    !this.contexts.get(index)?.draining &&
+                    !this._poolClosingContexts?.has(index) &&
+                    !this._contextPoolReplacements?.has(index) &&
+                    ![...(this._contextCapacityClosures?.values() || [])].includes(index) &&
+                    (this.scheduler.isAccountPoolResident?.(index) ?? true) &&
+                    (!this.contextUnavailable.get(index)?.retryAt ||
+                        this.contextUnavailable.get(index).retryAt <= Date.now())
             );
-            // Never trade away a satisfied scarce coverage for background work.
-            if (after < before) return -1;
-            gain += after - before;
+        while (protectedIndices.size < this.scheduler.config.maxWorkers - 1 && candidates.length) {
+            const counts = this._warmCoverageCounts([...protectedIndices]);
+            const gain = Math.max(...candidates.map(index => this._warmCandidateGain(index, counts)));
+            if (!gain) break;
+            let best = candidates.filter(index => this._warmCandidateGain(index, counts) === gain);
+            if (best.some(index => admitted.has(index))) best = best.filter(index => admitted.has(index));
+            const index = this.orderContextCandidates(best, 1, [...protectedIndices])[0];
+            if (index === undefined) break;
+            protectedIndices.add(index);
+            candidates.splice(candidates.indexOf(index), 1);
         }
-        return gain;
+        return protectedIndices;
     }
 
-    _warmEvictionLoss(index) {
-        return this._warmCoverageCounts().filter(
-            ({ model, target, count }) =>
-                count <= target &&
-                count > 0 &&
-                this._warmCoverageIndices().includes(index) &&
-                this.scheduler.isResourceEligible(this.scheduler.account(index), model)
-        ).length;
+    getWarmSharingSnapshot() {
+        const protectedIndices = this._modelWarmPlan();
+        const protectedCount = [...this.contexts.keys()].filter(index => protectedIndices.has(index)).length;
+        return {
+            protected_contexts: protectedCount,
+            shared_contexts: Math.max(0, this.contexts.size - protectedCount),
+            shared_minimum: this._modelWarmTargets().length ? 1 : 0,
+        };
+    }
+
+    orderPoolInitializationCandidates(indices, limit = indices.length, plannedIndices = []) {
+        if (!this._modelWarmTargets().length) return this.orderContextCandidates(indices, limit, plannedIndices);
+        indices = indices.filter(
+            index =>
+                !this.contexts.get(index)?.draining &&
+                !this._poolClosingContexts?.has(index) &&
+                !this._contextPoolReplacements?.has(index)
+        );
+        const counts = this._warmCoverageCounts([...new Set([...this._warmCoverageIndices(), ...plannedIndices])]);
+        const groups = new Map();
+        for (const index of indices) {
+            const gain = this._warmCandidateGain(index, counts);
+            if (!groups.has(gain)) groups.set(gain, []);
+            groups.get(gain).push(index);
+        }
+        const ordered = [];
+        for (const gain of [...groups.keys()].sort((a, b) => b - a))
+            ordered.push(
+                ...this.orderContextCandidates(groups.get(gain), indices.length, [...plannedIndices, ...ordered])
+            );
+        return ordered.slice(0, limit);
+    }
+
+    _poolReplacementNeeded(data) {
+        const replacement = data?.poolReplacement;
+        if (!replacement) return true;
+        const { incoming, purpose } = replacement;
+        if (this.scheduler.closed || this.isContextReady(incoming)) return false;
+        return purpose === "warm"
+            ? this._modelWarmPlan().has(incoming)
+            : purpose === "foreground"
+              ? this._foregroundContextWaiters?.has(incoming)
+              : this._hasQueuedContextDemand(incoming);
+    }
+
+    _cancelObsoletePoolReplacement(index) {
+        const data = this.contexts.get(index);
+        if (!data?.poolReplacement || this._poolReplacementNeeded(data)) return false;
+        delete data.poolReplacement;
+        // A later disable/recovery drain owns its own lifecycle and must survive.
+        if (!["model_warm_target", "context_capacity"].includes(data.drainReason)) return false;
+        this._cancelPendingContextClosure(index, "replacement_no_longer_needed");
+        Object.assign(data, { draining: false, drainReason: null });
+        return true;
     }
 
     _poolCandidates() {
@@ -2599,48 +2665,11 @@ class BrowserManager {
                   needWarm
               )
             : [];
-        const coverageWarm = [];
-        if (this._modelWarmTargets().length) {
-            const planned = this._warmCoverageIndices();
-            const candidates = rotation.filter(index => {
-                const unavailable = this.contextUnavailable.get(index);
-                const hasCapacity = this._contextCapacityIndices().size < this._backgroundContextLimit();
-                const canReplace =
-                    this._contextCapacityIndices().size === this._backgroundContextLimit() &&
-                    [...this.contexts.keys()].some(
-                        outgoing =>
-                            this._isContextIdle(outgoing) &&
-                            !this.initializingContexts.has(outgoing) &&
-                            !this.contextCapacityReservations?.has(outgoing) &&
-                            this._warmReplacementGain(index, outgoing) > 0
-                    );
-                return (
-                    (hasCapacity || canReplace) &&
-                    resident(index) &&
-                    !planned.includes(index) &&
-                    !demanded.includes(index) &&
-                    !this.contexts.get(index)?.draining &&
-                    !closing.has(index) &&
-                    (!this.contexts.has(index) || this._isContextIdle(index)) &&
-                    (!unavailable?.retryAt || unavailable.retryAt <= Date.now())
-                );
-            });
-            while (candidates.length) {
-                const counts = this._warmCoverageCounts(planned);
-                const gain = Math.max(...candidates.map(index => this._warmCandidateGain(index, counts)));
-                if (!gain) break;
-                const best = this.orderContextCandidates(
-                    candidates.filter(index => this._warmCandidateGain(index, counts) === gain),
-                    1,
-                    coverageWarm
-                )[0];
-                if (best === undefined) break;
-                coverageWarm.push(best);
-                planned.push(best);
-                candidates.splice(candidates.indexOf(best), 1);
-            }
-        }
-        return [...new Set([...demanded, ...coverageWarm, ...warm])].filter(index => {
+        const coverageCounts = this._warmCoverageCounts();
+        const coverageWarm = [...this._modelWarmPlan()].filter(
+            index => !this.isContextReady(index) && this._warmCandidateGain(index, coverageCounts) > 0
+        );
+        return [...new Set([...coverageWarm, ...demanded, ...warm])].filter(index => {
             const unavailable = this.contextUnavailable.get(index);
             return (
                 enabled(index) &&
@@ -2709,19 +2738,6 @@ class BrowserManager {
         )
             return null;
         const occupied = this._contextCapacityIndices();
-        if (
-            !occupied.has(authIndex) &&
-            !["foreground", "demand"].includes(purpose) &&
-            occupied.size >= this._backgroundContextLimit()
-        ) {
-            if (
-                purpose === "warm" &&
-                occupied.size === this._backgroundContextLimit() &&
-                ![...(this.contextDemand?.keys() || [])].some(index => this._hasValidContextDemand(index))
-            )
-                this._replaceIdlePooledContext(authIndex, purpose);
-            return null;
-        }
         if (!occupied.has(authIndex) && occupied.size >= this.scheduler.config.maxWorkers) {
             const status = `${occupied.size}:${this.scheduler.config.maxWorkers}:${this.contextCapacityReservations.size}`;
             if (this._lastContextCapacityWait !== status) {
@@ -2746,8 +2762,8 @@ class BrowserManager {
     }
 
     _replaceIdlePooledContext(authIndex, purpose) {
-        // Background replacement must strictly improve coverage without losing
-        // existing target coverage. Real demand retains unrestricted idle replacement.
+        // Coverage and real demand share the existing capacity/close machinery.
+        // Shared accounts drain first; in-flight requests always finish normally.
         if (
             purpose !== "warm" &&
             purpose !== "foreground" &&
@@ -2757,19 +2773,36 @@ class BrowserManager {
         this._contextPoolReplacements ??= new Map();
         // Finish one replacement before selecting another victim for the same demand.
         if (this._contextPoolReplacements.size || this._poolClosingContexts?.size) return;
+        if ([...this.contexts.values()].some(data => data.poolReplacement)) return;
+        const protectedIndices = this._modelWarmPlan();
+        if (purpose === "warm" && !protectedIndices.has(authIndex)) return;
+        const activeTargets = this._modelWarmTargets().length > 0;
         const idle = [...this.contexts.keys()]
             .filter(
                 index =>
                     index !== authIndex &&
+                    !this.contexts.get(index)?.draining &&
+                    !this.benefitCheckingIndices?.has(index) &&
                     !this.initializingContexts.has(index) &&
                     !this.contextCapacityReservations?.has(index) &&
-                    this._isContextIdle(index) &&
-                    (purpose !== "warm" || this._warmReplacementGain(authIndex, index) > 0)
+                    (activeTargets || this._isContextIdle(index)) &&
+                    (purpose !== "warm" || !protectedIndices.has(index))
             )
             .sort(
-                (a, b) => this._warmEvictionLoss(a) - this._warmEvictionLoss(b) || this._compareContextEviction(a, b)
+                (a, b) =>
+                    Number(protectedIndices.has(a)) - Number(protectedIndices.has(b)) ||
+                    Number(!this._isContextIdle(a)) - Number(!this._isContextIdle(b)) ||
+                    this._compareContextEviction(a, b)
             )[0];
         if (idle === undefined) return;
+        if (!this._isContextIdle(idle)) {
+            const data = this.contexts.get(idle);
+            data.poolReplacement = { incoming: authIndex, purpose };
+            this.beginAccountDrain(idle, purpose === "warm" ? "model_warm_target" : "context_capacity");
+            this.logger.info(`[ContextPool] Draining shared context #${idle} for #${authIndex}, purpose=${purpose}`);
+            this.scheduler.drain();
+            return;
+        }
         const owner = {};
         this._contextPoolReplacements.set(idle, owner);
         Object.assign(this.contexts.get(idle), { draining: true, drainReason: "context_capacity" });
@@ -2845,7 +2878,8 @@ class BrowserManager {
     }
 
     compareAccountsForDraining(a, b) {
-        return this._compareContextEviction(a, b);
+        const protectedIndices = this._modelWarmPlan();
+        return Number(protectedIndices.has(a)) - Number(protectedIndices.has(b)) || this._compareContextEviction(a, b);
     }
 
     beginAccountDrain(authIndex, reason = "context_capacity") {
@@ -3194,6 +3228,7 @@ class BrowserManager {
             return false;
         }
         const data = this.contexts.get(authIndex);
+        if (this._cancelObsoletePoolReplacement(authIndex)) return false;
         if (authIndex === this._currentAuthIndex && !data?.draining) {
             this.logger.debug(
                 `[ContextPool] Skipping pending close for context #${authIndex} because it is active again as current.`

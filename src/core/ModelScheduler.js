@@ -498,6 +498,7 @@ class ModelScheduler {
 
     canLease(account, model) {
         if (this.browserManager?.benefitCheckingIndices?.has(account.index)) return false;
+        if (this.browserManager?.contexts?.get(account.index)?.draining) return false;
         if (isArgon(model)) {
             const benefit = this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit;
             if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
@@ -808,10 +809,16 @@ class ModelScheduler {
                 account => !demanded.has(account.index) && !this.browserManager.isContextReady(account.index)
             );
             const coldIndex =
-                this.config.strategy === "different_proxy_first" && this.browserManager.orderContextCandidates
-                    ? this.browserManager.orderContextCandidates(
+                this.browserManager.orderPoolInitializationCandidates ||
+                (this.config.strategy === "different_proxy_first" && this.browserManager.orderContextCandidates)
+                    ? (
+                          this.browserManager.orderPoolInitializationCandidates ||
+                          this.browserManager.orderContextCandidates
+                      ).call(
+                          this.browserManager,
                           coldAccounts.map(account => account.index),
-                          1
+                          1,
+                          requests.map(request => request.authIndex)
                       )[0]
                     : coldAccounts[0]?.index;
             const cold = coldAccounts.find(account => account.index === coldIndex);
@@ -1402,7 +1409,8 @@ class ModelScheduler {
                     models.size > 0 &&
                     indices.length > 0 &&
                     indices.every(index => this.isAccountQuotaExhausted(this.account(index), now, models)),
-                background_capacity: this.browserManager?._backgroundContextLimit?.() ?? this.config.maxWorkers,
+                background_capacity: this.config.maxWorkers,
+                ...this.browserManager?.getWarmSharingSnapshot?.(),
                 busy: busyContexts,
                 closing: contextCount("CLOSING"),
                 configured_min_ready: this.config.contextPoolMinReady,

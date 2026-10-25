@@ -64,9 +64,10 @@
                 })
             }}
         </p>
-        <p v-if="data.contexts_summary?.background_capacity < data.max_browser_workers" class="header-sub">
-            后台预热最多占用 {{ data.contexts_summary.background_capacity }} 个
-            Context，至少保留一个实际按需创建槽位；模型目标可主动提高普通补池数量。
+        <p v-if="data.contexts_summary?.shared_minimum > 0" class="header-sub">
+            覆盖保护 {{ data.contexts_summary.protected_contexts }} / 共享驻留
+            {{ data.contexts_summary.shared_contexts }}； 共享名额可正常预热和调用，整体最多
+            {{ data.max_browser_workers }} 个 Context。需要换入账号时优先排空共享名额，不中断在途请求。
         </p>
         <p v-if="data.contexts_summary?.all_visible_models_rate_limited" class="scheduler-empty">
             {{ t("schedulerPoolExhausted") }}

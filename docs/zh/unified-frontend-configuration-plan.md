@@ -132,7 +132,7 @@ API Key 修改要处理现有控制台认证的关联，不能因请求重复提
 | `ACCOUNT_MODEL_MAX_CONCURRENCY`    | 单账号各模型并发上限：未单独设置的模型继承账号并发上限     | 热生效   |
 | `MODEL_MAX_CONCURRENCY`            | 各模型总并发上限：跨账号限制模型并发，未设置时继承全局上限 | 热生效   |
 | `MODEL_WORKER_ALLOCATION`          | 模型调度资源分配：设置最低保障和优先分配数量               | 重启生效 |
-| `MODEL_CONTEXT_WARM_TARGETS` | 模型预热 Context 目标：每项小于最大容量，启用后后台总容量最多 M - 1 | 重启生效 |
+| `MODEL_CONTEXT_WARM_TARGETS` | 模型预热 Context 目标：每项小于最大容量，至少保留一个可正常使用的共享名额，后台可达到 M | 重启生效 |
 | `ENABLE_DYNAMIC_WORKER_ALLOCATION` | 动态分配调度资源：允许模型按需求使用额外可用资源           | 重启生效 |
 | `SCHEDULER_READY_CONTEXT_ONLY`     | 就绪上下文调度：采用等待就绪上下文并派发的处理路径         | 重启生效 |
 
