@@ -102,7 +102,7 @@
         </div>
         <p v-if="!visibilityAvailable">启用状态管理需要启用模型调度模式。</p>
         <p>
-            “是否启用”与控制台“从面板移除／恢复显示”一致，禁用后停止接收该模型的新请求，已发送请求正常完成。全部启用／禁用仅作用于搜索结果，点击“应用启用状态”后生效。
+            “是否启用”与控制台“禁用模型／启用模型”一致，禁用后停止接收该模型的新请求，已发送请求正常完成。全部启用／禁用仅作用于搜索结果，点击“应用启用状态”后生效。
         </p>
         <p v-if="visibilityMessage" role="status">{{ visibilityMessage }}</p>
         <p v-if="visibilityError" role="alert">{{ visibilityError }}</p>

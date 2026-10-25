@@ -132,7 +132,7 @@
                     >
                     <el-table-column label="操作" width="220"
                         ><template #default="{ row }"
-                            ><el-button link @click="testNode(row)">测试</el-button
+                            ><el-button link :loading="testingNodes.has(row.id)" @click="testNode(row)">测试</el-button
                             ><el-button link @click="openNode(row)">编辑</el-button
                             ><el-button link type="danger" @click="removeNode(row)">删除</el-button></template
                         ></el-table-column
@@ -167,7 +167,7 @@
                             </p>
                         </details>
                         <div class="actions">
-                            <el-button @click="testNode(row)">测试</el-button
+                            <el-button :loading="testingNodes.has(row.id)" @click="testNode(row)">测试</el-button
                             ><el-button @click="openNode(row)">编辑</el-button
                             ><el-button type="danger" plain @click="removeNode(row)">删除</el-button>
                         </div>
@@ -672,12 +672,19 @@ const deleteSelectedNodes = async () => {
         if (error !== "cancel") ElMessage.error(error.message);
     }
 };
+const testingNodes = reactive(new Set());
 const testNode = async row => {
+    if (testingNodes.has(row.id)) return;
+    testingNodes.add(row.id);
     try {
         const result = await request(`/api/proxy-pool/nodes/${row.id}/test`, { method: "POST" });
+        Object.assign(nodes.value.find(node => node.id === row.id) || row, result);
         ElMessage.success(`延迟 ${result.latencyMs} ms`);
     } catch (error) {
+        Object.assign(nodes.value.find(node => node.id === row.id) || row, { exitIp: null, latencyMs: null });
         ElMessage.error(error.message);
+    } finally {
+        testingNodes.delete(row.id);
     }
 };
 const doImport = preview =>

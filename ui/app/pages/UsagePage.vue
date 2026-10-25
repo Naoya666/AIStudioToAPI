@@ -198,6 +198,7 @@
                     </div>
                     <div v-if="timeRange === 'custom'" class="stats-custom-range">
                         <span class="stats-custom-range-label">{{ t("customTimeRange") }}</span>
+                        <span>{{ t("recordsTimeBasis", { timezone: localTimezone }) }}</span>
                         <el-date-picker
                             v-model="customTimeRange"
                             type="datetimerange"
@@ -697,7 +698,6 @@
                                     <th>{{ t("aborted") }}</th>
                                     <th>{{ t("successRate") }}</th>
                                     <th>{{ t("avgDuration") }}</th>
-                                    <th>{{ t("modelUsage") }}</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -711,33 +711,6 @@
                                     <td class="status-warning">{{ item.abortedCount }}</td>
                                     <td>{{ item.successRate }}%</td>
                                     <td>{{ formatDuration(item.avgDurationMs) }}</td>
-                                    <td>
-                                        <div class="breakdown-list">
-                                            <span
-                                                v-for="mc in item.modelCounts"
-                                                :key="mc.key"
-                                                class="usage-tag-compact"
-                                                :style="{
-                                                    '--progress':
-                                                        (item.totalRequests > 0
-                                                            ? (mc.count / item.totalRequests) * 100
-                                                            : 0) + '%',
-                                                    '--error-progress':
-                                                        (mc.count > 0 ? (mc.error / mc.count) * 100 : 0) + '%',
-                                                }"
-                                            >
-                                                <span class="tag-label">
-                                                    {{ mc.key === EMPTY_FILTER_VALUE ? t("emptyValue") : mc.key }}
-                                                </span>
-                                                <span class="tag-count">
-                                                    {{ mc.count }}
-                                                    <span v-if="mc.error > 0" class="tag-error-count"
-                                                        >({{ mc.error }})</span
-                                                    >
-                                                </span>
-                                            </span>
-                                        </div>
-                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -762,7 +735,6 @@
                                     <th>{{ t("aborted") }}</th>
                                     <th>{{ t("successRate") }}</th>
                                     <th>{{ t("avgDuration") }}</th>
-                                    <th>{{ t("accountUsage") }}</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -776,33 +748,6 @@
                                     <td class="status-warning">{{ item.abortedCount }}</td>
                                     <td>{{ item.successRate }}%</td>
                                     <td>{{ formatDuration(item.avgDurationMs) }}</td>
-                                    <td>
-                                        <div class="breakdown-list">
-                                            <span
-                                                v-for="ac in item.accountCounts"
-                                                :key="ac.key"
-                                                class="usage-tag-compact"
-                                                :style="{
-                                                    '--progress':
-                                                        (item.totalRequests > 0
-                                                            ? (ac.count / item.totalRequests) * 100
-                                                            : 0) + '%',
-                                                    '--error-progress':
-                                                        (ac.count > 0 ? (ac.error / ac.count) * 100 : 0) + '%',
-                                                }"
-                                            >
-                                                <span class="tag-label">
-                                                    {{ formatAccount(ac.authIndex, ac.accountName) }}
-                                                </span>
-                                                <span class="tag-count">
-                                                    {{ ac.count }}
-                                                    <span v-if="ac.error > 0" class="tag-error-count"
-                                                        >({{ ac.error }})</span
-                                                    >
-                                                </span>
-                                            </span>
-                                        </div>
-                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -821,9 +766,23 @@
                 <section class="status-card records-card">
                     <div class="card-header-v2">
                         <h3 class="card-title-usage">{{ t("requestRecords") }}</h3>
-                        <span class="records-order">{{ t("recentToOldest") }}</span>
+                        <div class="records-mode-actions">
+                            <span v-if="isHistoricalQuery">{{ t("recordsHistoryPaused") }}</span>
+                            <el-button v-if="isHistoricalQuery" link type="primary" @click="timeRange = 'all'">{{
+                                t("recordsReturnLive")
+                            }}</el-button>
+                            <span class="records-order">{{ t("recentToOldest") }}</span>
+                        </div>
                     </div>
-                    <div v-if="filteredRecords.length === 0" class="empty-state">
+                    <PageState v-if="historyLoading" :loading="true" :message="t('loading')" />
+                    <PageState
+                        v-else-if="historyError"
+                        :error="true"
+                        :message="t('recordsHistoryError')"
+                        :retry-label="t('adminRetry')"
+                        @retry="loadHistoricalRecords"
+                    />
+                    <div v-else-if="filteredRecords.length === 0" class="empty-state">
                         {{ t("noRequestRecords") }}
                     </div>
                     <div v-else ref="recordsTableWrapper" class="table-scroll-wrapper records-scroll-wrapper">
@@ -831,7 +790,6 @@
                             <thead>
                                 <tr>
                                     <th>{{ t("requestTime") }}</th>
-                                    <th>{{ t("expirationTime") }}</th>
                                     <th>{{ t("requestId") }}</th>
                                     <th>{{ t("apiFormat") }}</th>
                                     <th>{{ t("streamingMode") }}</th>
@@ -847,8 +805,23 @@
                             <tbody>
                                 <tr v-for="record in paginatedRecords" :key="record.sequence">
                                     <td class="sticky-time-col">{{ formatDateTime(record.startedAt) }}</td>
-                                    <td :title="record.expires_at || ''">{{ formatRecordExpiration(record) }}</td>
-                                    <td class="mono truncate-cell">{{ record.requestId }}</td>
+                                    <td class="mono">
+                                        <el-popover trigger="click" placement="top" :width="360">
+                                            <template #reference>
+                                                <button
+                                                    type="button"
+                                                    class="record-detail-button"
+                                                    :aria-label="t('requestIdDetail')"
+                                                >
+                                                    {{ shortenRequestId(record.requestId) }}
+                                                </button>
+                                            </template>
+                                            <div class="request-id-detail">{{ record.requestId }}</div>
+                                            <el-button link type="primary" @click="copyRequestId(record.requestId)">{{
+                                                t("copy")
+                                            }}</el-button>
+                                        </el-popover>
+                                    </td>
                                     <td>{{ translateLabel(record.apiFormat) }}</td>
                                     <td>{{ translateLabel(record.streamMode) }}</td>
                                     <td>{{ record.model || "-" }}</td>
@@ -863,7 +836,18 @@
                                             {{ translateLabel(record.outcome) }}
                                         </span>
                                     </td>
-                                    <td>{{ record.statusCode ?? "-" }}</td>
+                                    <td>
+                                        <button
+                                            v-if="canShowErrorDetail(record)"
+                                            type="button"
+                                            class="record-detail-button"
+                                            :title="t('clickToViewError')"
+                                            @click="showErrorDetail(record)"
+                                        >
+                                            {{ record.statusCode ?? "-" }}
+                                        </button>
+                                        <span v-else>{{ record.statusCode ?? "-" }}</span>
+                                    </td>
                                     <td>{{ formatDuration(record.durationMs) }}</td>
                                     <td>{{ formatAccount(record.finalAuthIndex, record.finalAccountName) }}</td>
                                     <td class="attempts-cell">
@@ -1124,6 +1108,52 @@ const normalizedCustomTimeRange = computed(() => {
     return start.getTime() <= end.getTime() ? [start, end] : [end, start];
 });
 
+const isHistoricalQuery = computed(() => timeRange.value === "custom" && !!normalizedCustomTimeRange.value);
+const historicalRecords = ref([]);
+const historyLoading = ref(false);
+const historyError = ref(false);
+let historyController = null;
+const loadHistoricalRecords = async () => {
+    historyController?.abort();
+    historicalRecords.value = [];
+    historyError.value = false;
+    if (!isHistoricalQuery.value) {
+        historyLoading.value = false;
+        return;
+    }
+    const controller = new AbortController();
+    historyController = controller;
+    historyLoading.value = true;
+    const [start, end] = normalizedCustomTimeRange.value;
+    const params = new URLSearchParams({ from: start.toISOString(), limit: "100", to: end.toISOString() });
+    const records = [];
+    try {
+        let revision = null;
+        do {
+            const response = await fetch(`/api/usage-stats/records?${params}`, { signal: controller.signal });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            if (data.reset || (revision !== null && revision !== data.dataset_revision)) {
+                throw new Error("Usage dataset changed during historical query");
+            }
+            revision = data.dataset_revision;
+            records.push(...(data.records || []));
+            if (!data.has_more) break;
+            if (!data.next_cursor) throw new Error("Missing historical records cursor");
+            params.set("cursor", data.next_cursor);
+        } while (!controller.signal.aborted);
+        if (!controller.signal.aborted) {
+            historicalRecords.value = records.sort(
+                (a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt) || b.sequence - a.sequence
+            );
+        }
+    } catch (error) {
+        if (!controller.signal.aborted) historyError.value = true;
+    } finally {
+        if (historyController === controller) historyLoading.value = false;
+    }
+};
+
 const EMPTY_FILTER_VALUE = "__EMPTY__";
 const isEmptyFilterField = value =>
     value === null || value === undefined || (typeof value === "string" && !value.trim());
@@ -1146,17 +1176,7 @@ const getAccountStatsKey = (authIndex, accountName) => {
 
 const timeFilteredRecords = computed(() => {
     if (timeRange.value === "all") return statsState.records;
-    if (timeRange.value === "custom") {
-        const range = normalizedCustomTimeRange.value;
-        if (!range) return statsState.records;
-        const [start, end] = range;
-        const startTs = start.getTime();
-        const endTs = end.getTime();
-        return statsState.records.filter(record => {
-            const ts = record.startedAt ? new Date(record.startedAt).getTime() : 0;
-            return ts >= startTs && ts <= endTs;
-        });
-    }
+    if (isHistoricalQuery.value) return historicalRecords.value;
     const items = TIME_RANGE_MS[timeRange.value];
     if (!items) return statsState.records;
     const cutoff = Date.now() - items;
@@ -1645,12 +1665,6 @@ const formatStatsUptime = (startedAt, seconds) => {
 };
 
 const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const formatStorageTime = value => (value ? `${formatDateTime(value)} (${localTimezone})` : t("notAvailable"));
-const formatRecordExpiration = record => {
-    if (!record.expires_at) return t("retainedForever");
-    if (record.expired) return t("expiredPendingCleanup");
-    return formatStorageTime(record.expires_at);
-};
 const storageSummary = computed(() => {
     if (storageError.value) return t("storageLoadFailed");
     if (!storageLoaded.value) return t("loading");
@@ -1684,10 +1698,13 @@ const formatAccount = (authIndex, accountName) => {
 };
 let latestUsageSequence = null;
 let usageDatasetRevision = null;
+let recordsGeneration = 0;
 const fetchUsageStats = async (signal, includeRecords = true) => {
     const summaryPromise = fetch("/api/usage-stats/summary", { signal });
     let recordsPromise = null;
-    if (includeRecords) {
+    const wasHistorical = isHistoricalQuery.value;
+    const generation = recordsGeneration;
+    if (includeRecords && !wasHistorical) {
         const after =
             latestUsageSequence === null
                 ? ""
@@ -1713,7 +1730,7 @@ const fetchUsageStats = async (signal, includeRecords = true) => {
     const recordsData = recordsRes ? await recordsRes.json() : null;
     statsState.accounts = data.accounts || [];
     statsState.models = data.models || [];
-    if (recordsData) {
+    if (recordsData && !isHistoricalQuery.value && !wasHistorical && generation === recordsGeneration) {
         if (usageDatasetRevision !== recordsData.dataset_revision || latestUsageSequence === null) {
             statsState.records = recordsData.records || [];
         } else if (recordsData.records?.length) {
@@ -1731,6 +1748,19 @@ const fetchUsageStats = async (signal, includeRecords = true) => {
         ...statsState.summary,
         ...(data.summary || {}),
     };
+};
+
+const shortenRequestId = value => {
+    if (!value) return "-";
+    return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value;
+};
+const copyRequestId = async value => {
+    try {
+        await navigator.clipboard.writeText(value);
+        ElMessage.success(t("copySuccess"));
+    } catch {
+        ElMessage.error(t("copyFailed"));
+    }
 };
 
 const showErrorDetail = record => {
@@ -1803,6 +1833,23 @@ watch(
             buildRelativeTimeRange(oldValue) || buildRelativeTimeRange(DEFAULT_CUSTOM_TIME_RANGE) || [];
     },
     { flush: "sync" }
+);
+
+watch(
+    () => (isHistoricalQuery.value ? normalizedCustomTimeRange.value.map(item => item.toISOString()).join("|") : ""),
+    async (range, previous) => {
+        recordsGeneration++;
+        await loadHistoricalRecords();
+        if (!range && previous) {
+            latestUsageSequence = null;
+            usageDatasetRevision = null;
+            try {
+                await fetchUsageStats();
+            } catch (error) {
+                if (error.name !== "AbortError") usageError.value = true;
+            }
+        }
+    }
 );
 
 watch(
@@ -2054,6 +2101,7 @@ onMounted(() => {
     statsFiltersMobileMediaQuery.addEventListener("change", syncStatsFiltersViewport);
 });
 onBeforeUnmount(() => {
+    historyController?.abort();
     if (statsFiltersMobileMediaQuery) {
         statsFiltersMobileMediaQuery.removeEventListener("change", syncStatsFiltersViewport);
     }
@@ -2062,6 +2110,27 @@ onBeforeUnmount(() => {
 <style lang="less" scoped>
 @import "../styles/variables.less";
 
+.record-detail-button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--color-primary);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+}
+.request-id-detail {
+    overflow-wrap: anywhere;
+    font-family: monospace;
+    margin-bottom: 8px;
+}
+.records-mode-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
 .card-title {
     font-size: 16px;
     margin: 0;

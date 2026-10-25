@@ -202,7 +202,7 @@
 
                     <div v-if="hiddenModelsOpen" class="hidden-models-popover">
                         <div class="popover-head">
-                            <span class="popover-title">已从面板移除的模型 ({{ hiddenModels.length }})</span>
+                            <span class="popover-title">已禁用的模型 ({{ hiddenModels.length }})</span>
                             <button class="popover-close-btn" @click="hiddenModelsOpen = false">×</button>
                         </div>
                         <p class="popover-tip">{{ t("schedulerHiddenModelsTip") }}</p>
@@ -514,13 +514,14 @@
                         <th class="text-center">429</th>
                         <th>{{ t("schedulerQueued") }}</th>
                         <th>{{ t("schedulerWorkers") }}</th>
-                        <th>Min / Preferred</th>
+                        <th>执行槽配置（最低 / 首选）</th>
+                        <th>预热 Context</th>
                         <th class="text-right">{{ t("schedulerActions") }}</th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr v-if="!data.models?.length">
-                        <td colspan="8" class="scheduler-empty">{{ t("schedulerNoVisibleModels") }}</td>
+                        <td colspan="9" class="scheduler-empty">{{ t("schedulerNoVisibleModels") }}</td>
                     </tr>
                     <tr v-for="model in data.models" :key="model.model">
                         <td>
@@ -552,10 +553,13 @@
                         <!-- Min / Preferred -->
                         <td class="font-mono text-slate-500">
                             {{ model.configured_workers.min }} / {{ model.configured_workers.preferred }}
+                        </td>
+                        <td class="font-mono text-slate-500">
                             <div v-if="model.warm_contexts?.target > 0" class="text-xs">
                                 预热目标 {{ model.warm_contexts.target }} / 当前可用 {{ model.warm_contexts.ready }} /
                                 补足中 {{ model.warm_contexts.initializing }} / 缺口 {{ model.warm_contexts.deficit }}
                             </div>
+                            <span v-else>—</span>
                         </td>
                         <!-- 操作 -->
                         <td class="text-right">

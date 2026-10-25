@@ -154,3 +154,41 @@ test("public windows wait for queued completed writes", async t => {
     const snapshot = await service.getPublicModelWindows(["flash"], Date.parse(completed.finishedAt) + 1);
     assert.equal(snapshot.models[0].stats["1h"].totalRequests, 1);
 });
+
+test("request history filters inclusive start times across cursor pages, including long requests", async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "usage-history-"));
+    const service = new UsageStatsService(null, logger, directory, true, { retentionDays: 0 });
+    t.after(async () => {
+        await service.close();
+        fs.rmSync(directory, { force: true, recursive: true });
+    });
+    await service.ready;
+    const start = Date.now() - 3600000;
+    const end = start + 1000;
+    const makeEntry = (id, startedAtMs, finishedAtMs) => ({
+        ...record(id, finishedAtMs),
+        durationMs: finishedAtMs - startedAtMs,
+        startedAt: new Date(startedAtMs).toISOString(),
+    });
+    const entries = [
+        makeEntry("before-start", start - 1, start + 500),
+        makeEntry("start-edge", start, end + 60000),
+        ...Array.from({ length: 123 }, (_, i) => makeEntry(`middle-${i}`, start + 1 + i, end + 60000)),
+        makeEntry("end-edge", end, end + 60000),
+        makeEntry("after-end", end + 1, end + 60000),
+    ];
+    await service.importJsonl(entries.map(entry => JSON.stringify(entry)).join("\n"));
+    const query = { from: new Date(start).toISOString(), limit: 100, to: new Date(end).toISOString() };
+    const first = await service.queryRecordsAsync(query);
+    assert.equal(first.records.length, 100);
+    assert.equal(first.has_more, true);
+    const second = await service.queryRecordsAsync({ ...query, cursor: first.next_cursor });
+    assert.equal(second.records.length, 25);
+    assert.equal(second.has_more, false);
+    const ids = new Set([...first.records, ...second.records].map(item => item.requestId));
+    assert.equal(ids.size, 125);
+    assert.ok(ids.has("start-edge"));
+    assert.ok(ids.has("end-edge"));
+    assert.ok(!ids.has("before-start"));
+    assert.ok(!ids.has("after-end"));
+});

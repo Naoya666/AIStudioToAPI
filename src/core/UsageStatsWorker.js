@@ -37,6 +37,7 @@ function initialize() {
             final_auth_index INTEGER, final_account_name TEXT, outcome TEXT NOT NULL,
             status_code INTEGER, error_message TEXT, attempt_count INTEGER NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_requests_started ON requests(started_at_ms,id);
         CREATE INDEX IF NOT EXISTS idx_requests_finished ON requests(finished_at_ms,id);
         CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model,id);
         CREATE INDEX IF NOT EXISTS idx_requests_account ON requests(account_key,id);
@@ -382,13 +383,13 @@ function queryRecords(options) {
     if (options.from) {
         const value = Date.parse(options.from);
         if (!Number.isFinite(value)) throw Object.assign(new Error("Invalid records time range"), { status: 400 });
-        clauses.push("finished_at_ms>=?");
+        clauses.push("started_at_ms>=?");
         values.push(value);
     }
     if (options.to) {
         const value = Date.parse(options.to);
         if (!Number.isFinite(value)) throw Object.assign(new Error("Invalid records time range"), { status: 400 });
-        clauses.push("finished_at_ms<=?");
+        clauses.push("started_at_ms<=?");
         values.push(value);
     }
     let direction = "DESC";
