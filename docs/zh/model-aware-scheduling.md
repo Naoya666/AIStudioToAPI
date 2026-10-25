@@ -37,7 +37,7 @@ REQUEST_DISPATCH_TIMEOUT_MS=30000
 SCHEDULER_READY_CONTEXT_ONLY=true
 STREAM_EARLY_HEADERS=true
 STREAM_KEEPALIVE_INTERVAL_MS=10000
-RATE_LIMIT_COOLDOWN=86400
+RATE_LIMIT_COOLDOWN=60
 RISK_CONTROL_COOLDOWN=600
 RISK_CONTROL_MAX_COOLDOWN=10800
 SCHEDULER_DAILY_RESET_ENABLED=true
@@ -47,33 +47,33 @@ MAX_RETRIES_PER_REQUEST=2
 SCHEDULER_STATE_PATH=data/scheduler-state.json
 ```
 
-| 配置                               | 语义                                                                                                |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `ACCOUNT_ROTATION_STRATEGY`        | `least_recently_used` 默认；`least_used` 按调用次数优先；`different_proxy_first` 不同代理优先；`legacy` 恢复原账号轮换                    |
-| `MAX_BROWSER_WORKERS`              | 最大缓存 context/page 数量                                                                          |
-| `GLOBAL_MAX_CONCURRENCY`           | 最大执行租约数，默认等于 context 上限，可以大于它                                                   |
-| `CONTEXT_POOL_MIN_READY`           | 后台最少就绪目标，只对具备驻留资格的账号生效；可用账号不足或全部显示模型处于实际 429 冷却时可低于目标（含 0），不得超过 `MAX_BROWSER_WORKERS`                                     |
-| `CONTEXT_INIT_CONCURRENCY`         | 后台同时初始化的 context 数，默认 2                                                                 |
-| `CONTEXT_CREATION_TIMEOUT_MS`      | 串行 BrowserContext 创建阶段的超时毫秒数，默认 120000                                               |
-| `CONTEXT_MAX_CONCURRENCY`          | 单 context 并发硬上限，0 表示不限但仍执行 least-inflight                                            |
-| `ACCOUNT_MAX_CONCURRENCY`          | 单账号跨模型总并发上限，默认 0 表示不限                                                             |
-| `ACCOUNT_MODEL_MAX_CONCURRENCY`    | JSON：单账号在指定模型上的并发上限，0 不限，未配置继承账号上限；账号总上限仍独立生效                |
-| `MODEL_WORKER_ALLOCATION`          | JSON 对象。值为整数时表示 preferred、min 为 0；也支持上面的对象写法。preferred 总和不能超过全局并发 |
-| `MODEL_MAX_CONCURRENCY`            | 模型的硬并发上限；默认等于全局并发；不得低于该模型 min                                              |
-| `ENABLE_DYNAMIC_WORKER_ALLOCATION` | 默认 `true`，可借用空闲配额；`false` 时每个已配置模型以 preferred 为上限                            |
-| `MODEL_QUEUE_SIZE`                 | 每模型最大等待数，不包含已拿到租约的请求；0 表示不排队                                              |
-| `MODEL_QUEUE_TIMEOUT_MS`           | 最长排队时间，默认 120000 毫秒                                                                      |
-| `REQUEST_DISPATCH_TIMEOUT_MS`      | ready context 调度超时；未设置时兼容 `MODEL_QUEUE_TIMEOUT_MS`                                       |
-| `STREAM_EARLY_HEADERS`             | 流式请求通过校验后立即发送 SSE headers 和 accepted 注释，默认开启                                   |
-| `STREAM_KEEPALIVE_INTERVAL_MS`     | 等待调度或上游首包期间的 SSE 注释心跳间隔，默认 10000 毫秒                                          |
-| `RATE_LIMIT_COOLDOWN`              | 429 冷却秒数，默认 86400（24 小时），不猜测 Google 的日额度重置时刻                                  |
-| `RISK_CONTROL_COOLDOWN`            | HTTP 403 风控初始冷却秒数，默认 600，连续风控按 1、3、6、18 倍退避并带 ±10% 抖动                    |
-| `RISK_CONTROL_MAX_COOLDOWN`        | HTTP 403 风控最大冷却秒数，默认 10800                                                               |
-| `SCHEDULER_DAILY_RESET_ENABLED`    | 是否在每天太平洋时间自动清理可恢复冷却，默认 `true`；仅 `false` 关闭                                |
-| `SCHEDULER_DAILY_RESET_TIME`       | 每日重置时间，固定使用 `America/Los_Angeles` 时区及严格 `HH:mm` 格式，默认 `00:00`                  |
-| `TEMP_ERROR_COOLDOWN`              | 临时错误初始冷却秒数，默认 30，连续失败退避到 60、120，最多 4 倍                                    |
-| `MAX_RETRIES_PER_REQUEST`          | 初次之外的最大重试次数，默认继承旧 `MAX_RETRIES - 1`，未配置时为 2                                  |
-| `SCHEDULER_STATE_PATH`             | 默认工作目录下 `data/scheduler-state.json`                                                          |
+| 配置                               | 语义                                                                                                                                          |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ACCOUNT_ROTATION_STRATEGY`        | `least_recently_used` 默认；`least_used` 按调用次数优先；`different_proxy_first` 不同代理优先；`legacy` 恢复原账号轮换                        |
+| `MAX_BROWSER_WORKERS`              | 最大缓存 context/page 数量                                                                                                                    |
+| `GLOBAL_MAX_CONCURRENCY`           | 最大执行租约数，默认等于 context 上限，可以大于它                                                                                             |
+| `CONTEXT_POOL_MIN_READY`           | 后台最少就绪目标，只对具备驻留资格的账号生效；可用账号不足或全部显示模型处于实际 429 冷却时可低于目标（含 0），不得超过 `MAX_BROWSER_WORKERS` |
+| `CONTEXT_INIT_CONCURRENCY`         | 后台同时初始化的 context 数，默认 2                                                                                                           |
+| `CONTEXT_CREATION_TIMEOUT_MS`      | 串行 BrowserContext 创建阶段的超时毫秒数，默认 120000                                                                                         |
+| `CONTEXT_MAX_CONCURRENCY`          | 单 context 并发硬上限，0 表示不限但仍执行 least-inflight                                                                                      |
+| `ACCOUNT_MAX_CONCURRENCY`          | 单账号跨模型总并发上限，默认 0 表示不限                                                                                                       |
+| `ACCOUNT_MODEL_MAX_CONCURRENCY`    | JSON：单账号在指定模型上的并发上限，0 不限，未配置继承账号上限；账号总上限仍独立生效                                                          |
+| `MODEL_WORKER_ALLOCATION`          | JSON 对象。值为整数时表示 preferred、min 为 0；也支持上面的对象写法。preferred 总和不能超过全局并发                                           |
+| `MODEL_MAX_CONCURRENCY`            | 模型的硬并发上限；默认等于全局并发；不得低于该模型 min                                                                                        |
+| `ENABLE_DYNAMIC_WORKER_ALLOCATION` | 默认 `true`，可借用空闲配额；`false` 时每个已配置模型以 preferred 为上限                                                                      |
+| `MODEL_QUEUE_SIZE`                 | 每模型最大等待数，不包含已拿到租约的请求；0 表示不排队                                                                                        |
+| `MODEL_QUEUE_TIMEOUT_MS`           | 最长排队时间，默认 120000 毫秒                                                                                                                |
+| `REQUEST_DISPATCH_TIMEOUT_MS`      | ready context 调度超时；未设置时兼容 `MODEL_QUEUE_TIMEOUT_MS`                                                                                 |
+| `STREAM_EARLY_HEADERS`             | 流式请求通过校验后立即发送 SSE headers 和 accepted 注释，默认开启                                                                             |
+| `STREAM_KEEPALIVE_INTERVAL_MS`     | 等待调度或上游首包期间的 SSE 注释心跳间隔，默认 10000 毫秒                                                                                    |
+| `RATE_LIMIT_COOLDOWN`              | 临时或无法识别的 429 冷却秒数，默认 60；已识别日额度耗尽等待下一次每日重置时间                                                                |
+| `RISK_CONTROL_COOLDOWN`            | HTTP 403 风控初始冷却秒数，默认 600，连续风控按 1、3、6、18 倍退避并带 ±10% 抖动                                                              |
+| `RISK_CONTROL_MAX_COOLDOWN`        | HTTP 403 风控最大冷却秒数，默认 10800                                                                                                         |
+| `SCHEDULER_DAILY_RESET_ENABLED`    | 是否在每天太平洋时间自动清理可恢复冷却，默认 `true`；仅 `false` 关闭                                                                          |
+| `SCHEDULER_DAILY_RESET_TIME`       | 每日重置时间，固定使用 `America/Los_Angeles` 时区及严格 `HH:mm` 格式，默认 `00:00`                                                            |
+| `TEMP_ERROR_COOLDOWN`              | 临时错误初始冷却秒数，默认 30，连续失败退避到 60、120，最多 4 倍                                                                              |
+| `MAX_RETRIES_PER_REQUEST`          | 初次之外的最大重试次数，默认继承旧 `MAX_RETRIES - 1`，未配置时为 2                                                                            |
+| `SCHEDULER_STATE_PATH`             | 默认工作目录下 `data/scheduler-state.json`                                                                                                    |
 
 `MODEL_WORKER_ALLOCATION={}` 表示共享池。动态模式下，未配置模型的默认 min=0、preferred=1；静态模式下，未配置模型使用剩余共享容量（至少允许一个槽位竞争）。静态模式限制每模型并发，但不绑定具体 worker ID。
 
@@ -89,7 +89,9 @@ SCHEDULER_STATE_PATH=data/scheduler-state.json
 
 ## 错误、重试与恢复
 
-- 429 / `RESOURCE_EXHAUSTED`：仅对该账号×模型冷却，其他模型继续可选。
+- 429 / `RESOURCE_EXHAUSTED`：仅对该账号×模型冷却，其他模型继续可选。命中 `Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user` 时按日额度耗尽处理，截止时间为严格晚于当前时刻的下一次太平洋时间 `SCHEDULER_DAILY_RESET_TIME`（默认 `00:00`，自动适配夏令时）。短 `Quota exceeded` 和其他无法确定的 429 使用 `RATE_LIMIT_COOLDOWN`。不依据消息长度、`RESOURCE_EXHAUSTED` 或重试提示单独判断日额度耗尽。
+- 已记录的日额度冷却不会被随后到达的并发短 429 缩短。管理面板区分“日额度耗尽”和“临时限流”，并展示冷却截止时间。新冷却使用当前配置计算，修改配置不追溯修改已记录的截止时间。
+- `SCHEDULER_DAILY_RESET_ENABLED=false` 仅关闭每日批量清理；日额度冷却仍按上述时间自然到期。每日批量清理范围保持不变，会清理包括临时 429、日额度 429、403 风控和临时错误在内的所有可恢复冷却，即使它们的原定截止时间尚未到达。恢复本地状态不保证上游已经可用。
 - 明确 `PERMISSION_DENIED` 或模型不支持：仅该账号×模型标记 `UNSUPPORTED`，重启后保留；需手动恢复。没有明确模型权限证据的普通 403 不会永久禁用账号或模型。
 - 明确的上游 5xx：按配置短暂模型冷却；不会永久剔除整个账号。
 - page/context/MessageQueue/WebSocket 等本地传输故障：不修改账号×模型 cooldown；尚未输出模型内容时迁移到其他 ready context。

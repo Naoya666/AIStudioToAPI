@@ -63,18 +63,18 @@
 
 ### 4.1 服务及认证
 
-| 配置项                     | 中文名称与含义                                                            | 展示条件 | 保存后   |
-| -------------------------- | ------------------------------------------------------------------------- | -------- | -------- |
-| `PUBLIC_DASHBOARD_ENABLED` | 启用公开用量看板：启动无需登录的独立只读用量看板                          | 通用     | 重启生效 |
-| `PUBLIC_DASHBOARD_ROLE` | 公示角色：独立 / 主控 / agent | 通用 | 重启生效 |
-| `PUBLIC_DASHBOARD_AGENT_TOKEN` | Agent 查询凭证，读取时脱敏 | 通用 | 重启生效 |
-| `PUBLIC_DASHBOARD_HEALTH_TOKEN` | master/agent 本机状态只读凭证，读取时脱敏 | 通用 | 重启生效 |
-| `PUBLIC_DASHBOARD_AGENTS` | 主控节点列表，已有节点留空 Token 保留凭证 | 通用 | 重启生效 |
-| `PUBLIC_DASHBOARD_SNAPSHOT_INTERVAL_MS` | 本机快照生成周期 | 通用 | 重启生效 |
-| `PUBLIC_DASHBOARD_POLL_INTERVAL_MS` | 主控后台采集周期 | 通用 | 重启生效 |
-| `PUBLIC_DASHBOARD_FETCH_TIMEOUT_MS` | 单节点查询超时 | 通用 | 重启生效 |
-| `PUBLIC_DASHBOARD_STALE_AFTER_MS` | 快照有效期 | 通用 | 重启生效 |
-| `API_KEYS`                 | API 访问密钥：调用 API 使用的密钥；未设置独立控制台密码时也用于控制台登录 | 通用     | 热生效   |
+| 配置项                                  | 中文名称与含义                                                            | 展示条件 | 保存后   |
+| --------------------------------------- | ------------------------------------------------------------------------- | -------- | -------- |
+| `PUBLIC_DASHBOARD_ENABLED`              | 启用公开用量看板：启动无需登录的独立只读用量看板                          | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_ROLE`                 | 公示角色：独立 / 主控 / agent                                             | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_AGENT_TOKEN`          | Agent 查询凭证，读取时脱敏                                                | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_HEALTH_TOKEN`         | master/agent 本机状态只读凭证，读取时脱敏                                 | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_AGENTS`               | 主控节点列表，已有节点留空 Token 保留凭证                                 | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_SNAPSHOT_INTERVAL_MS` | 本机快照生成周期                                                          | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_POLL_INTERVAL_MS`     | 主控后台采集周期                                                          | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_FETCH_TIMEOUT_MS`     | 单节点查询超时                                                            | 通用     | 重启生效 |
+| `PUBLIC_DASHBOARD_STALE_AFTER_MS`       | 快照有效期                                                                | 通用     | 重启生效 |
+| `API_KEYS`                              | API 访问密钥：调用 API 使用的密钥；未设置独立控制台密码时也用于控制台登录 | 通用     | 热生效   |
 
 API Key 修改要处理现有控制台认证的关联，不能因请求重复提交而重复执行切换操作。接口必须设置明确目标值。
 
@@ -124,17 +124,17 @@ API Key 修改要处理现有控制台认证的关联，不能因请求重复提
 
 下列配置仅在模型调度模式展示。
 
-| 配置项                             | 中文名称与含义                                             | 保存后   |
-| ---------------------------------- | ---------------------------------------------------------- | -------- |
-| `GLOBAL_MAX_CONCURRENCY`           | 全局请求并发上限：同时处理的逻辑请求数量，与浏览器数量不同 | 重启生效 |
-| `CONTEXT_MAX_CONCURRENCY`          | 单上下文请求并发上限：0 表示不设置该级硬上限               | 热生效   |
-| `ACCOUNT_MAX_CONCURRENCY`          | 单账号请求并发上限：0 表示不设置该级硬上限                 | 热生效   |
-| `ACCOUNT_MODEL_MAX_CONCURRENCY`    | 单账号各模型并发上限：未单独设置的模型继承账号并发上限     | 热生效   |
-| `MODEL_MAX_CONCURRENCY`            | 各模型总并发上限：跨账号限制模型并发，未设置时继承全局上限 | 热生效   |
-| `MODEL_WORKER_ALLOCATION`          | 模型调度资源分配：设置最低保障和优先分配数量               | 重启生效 |
-| `MODEL_CONTEXT_WARM_TARGETS` | 模型预热 Context 目标：每项小于最大容量，至少保留一个可正常使用的共享名额，后台可达到 M | 重启生效 |
-| `ENABLE_DYNAMIC_WORKER_ALLOCATION` | 动态分配调度资源：允许模型按需求使用额外可用资源           | 重启生效 |
-| `SCHEDULER_READY_CONTEXT_ONLY`     | 就绪上下文调度：采用等待就绪上下文并派发的处理路径         | 重启生效 |
+| 配置项                             | 中文名称与含义                                                                          | 保存后   |
+| ---------------------------------- | --------------------------------------------------------------------------------------- | -------- |
+| `GLOBAL_MAX_CONCURRENCY`           | 全局请求并发上限：同时处理的逻辑请求数量，与浏览器数量不同                              | 重启生效 |
+| `CONTEXT_MAX_CONCURRENCY`          | 单上下文请求并发上限：0 表示不设置该级硬上限                                            | 热生效   |
+| `ACCOUNT_MAX_CONCURRENCY`          | 单账号请求并发上限：0 表示不设置该级硬上限                                              | 热生效   |
+| `ACCOUNT_MODEL_MAX_CONCURRENCY`    | 单账号各模型并发上限：未单独设置的模型继承账号并发上限                                  | 热生效   |
+| `MODEL_MAX_CONCURRENCY`            | 各模型总并发上限：跨账号限制模型并发，未设置时继承全局上限                              | 热生效   |
+| `MODEL_WORKER_ALLOCATION`          | 模型调度资源分配：设置最低保障和优先分配数量                                            | 重启生效 |
+| `MODEL_CONTEXT_WARM_TARGETS`       | 模型预热 Context 目标：每项小于最大容量，至少保留一个可正常使用的共享名额，后台可达到 M | 重启生效 |
+| `ENABLE_DYNAMIC_WORKER_ALLOCATION` | 动态分配调度资源：允许模型按需求使用额外可用资源                                        | 重启生效 |
+| `SCHEDULER_READY_CONTEXT_ONLY`     | 就绪上下文调度：采用等待就绪上下文并派发的处理路径                                      | 重启生效 |
 
 ### 4.6 排队与等待保活
 
@@ -159,15 +159,15 @@ API Key 修改要处理现有控制台认证的关联，不能因请求重复提
 
 下列配置仅在模型调度模式展示。
 
-| 配置项                          | 中文名称与含义                                      | 保存后 |
-| ------------------------------- | --------------------------------------------------- | ------ |
-| `RATE_LIMIT_COOLDOWN`           | 限流冷却时间：账号对应模型遭遇 429 后的冷却时长，秒 | 热生效 |
-| `RISK_CONTROL_COOLDOWN`         | 风控基础冷却时间：重复风控时递增使用的基础时长，秒  | 热生效 |
-| `RISK_CONTROL_MAX_COOLDOWN`     | 风控最长冷却时间：递增冷却的上限，秒                | 热生效 |
-| `RISK_CONTROL_JITTER`           | 风控冷却随机浮动：是否加入约 ±10% 的时长浮动        | 热生效 |
-| `TEMP_ERROR_COOLDOWN`           | 临时错误基础冷却时间：临时错误的短暂冷却，秒        | 热生效 |
-| `SCHEDULER_DAILY_RESET_ENABLED` | 启用每日冷却重置：定时清理可自动恢复的调度冷却      | 热生效 |
-| `SCHEDULER_DAILY_RESET_TIME`    | 每日冷却重置时间：洛杉矶时区的 HH:mm 时间           | 热生效 |
+| 配置项                          | 中文名称与含义                                                             | 保存后 |
+| ------------------------------- | -------------------------------------------------------------------------- | ------ |
+| `RATE_LIMIT_COOLDOWN`           | 临时限流冷却时间：账号对应模型遭遇临时或未知 429 后的冷却时长，秒，默认 60 | 热生效 |
+| `RISK_CONTROL_COOLDOWN`         | 风控基础冷却时间：重复风控时递增使用的基础时长，秒                         | 热生效 |
+| `RISK_CONTROL_MAX_COOLDOWN`     | 风控最长冷却时间：递增冷却的上限，秒                                       | 热生效 |
+| `RISK_CONTROL_JITTER`           | 风控冷却随机浮动：是否加入约 ±10% 的时长浮动                               | 热生效 |
+| `TEMP_ERROR_COOLDOWN`           | 临时错误基础冷却时间：临时错误的短暂冷却，秒                               | 热生效 |
+| `SCHEDULER_DAILY_RESET_ENABLED` | 启用每日冷却重置：定时清理可自动恢复的调度冷却                             | 热生效 |
+| `SCHEDULER_DAILY_RESET_TIME`    | 每日冷却重置时间：洛杉矶时区的 HH:mm 时间，也用于计算日额度耗尽的截止时间  | 热生效 |
 
 每日重置不会重置上游真实配额；修改启用状态和时间后，需要重新安排既有定时任务。
 

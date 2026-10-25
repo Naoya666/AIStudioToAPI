@@ -1068,7 +1068,14 @@ function getSlotStatusClass(slot) {
 function getSlotStatusLabel(slot) {
     if (slot.status === "RISK_CONTROLLED" || slot.last_error_kind === "risk_controlled")
         return props.t("schedulerStatusRiskControlled");
-    if (slot.status === "RATE_LIMITED") return props.t("schedulerStatusRateLimited");
+    if (slot.status === "RATE_LIMITED")
+        return props.t(
+            slot.rate_limit_type === "daily_quota"
+                ? "schedulerStatusDailyQuotaExhausted"
+                : slot.rate_limit_type === "temporary"
+                  ? "schedulerStatusTemporaryRateLimited"
+                  : "schedulerStatusRateLimited"
+        );
     if (slot.status === "COOLDOWN") return props.t("schedulerCooldown");
     if (slot.status === "HEALTHY") return props.t("schedulerStatusHealthy");
     return slot.status || "—";

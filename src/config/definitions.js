@@ -705,9 +705,10 @@ module.exports = [
     },
     {
         application: "hot",
-        description: "账号对应模型遭遇 429 后的冷却时长，秒",
+        description:
+            "账号对应模型遭遇临时或无法识别的 429 后的冷却时长，秒，默认 60；已识别的日额度耗尽等待下一次每日重置时间",
         group: "冷却与每日恢复",
-        label: "限流冷却时间",
+        label: "临时限流冷却时间",
         minimum: 1,
         mode: "model",
         name: "RATE_LIMIT_COOLDOWN",
@@ -777,8 +778,8 @@ module.exports = [
     },
     {
         application: "hot",
-        dependsOn: "SCHEDULER_DAILY_RESET_ENABLED",
-        description: "洛杉矶时区的 HH:mm 时间",
+        description:
+            "洛杉矶时区的 HH:mm 时间，默认 00:00；也是已识别日额度耗尽的恢复时间，关闭每日批量重置后仍用于计算截止时间",
         group: "冷却与每日恢复",
         label: "每日冷却重置时间",
         minimum: 1,

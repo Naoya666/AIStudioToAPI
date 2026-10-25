@@ -246,6 +246,36 @@ test("disable scheduler route authenticates, validates IDs, and is idempotent", 
 });
 
 for (const stream of [false, true]) {
+    test(`OpenAI ${stream ? "real stream" : "buffered"} preserves daily quota details through retry`, async t => {
+        const fixture = setup(index =>
+            index === 0
+                ? [
+                      {
+                          event_type: "error",
+                          message:
+                              "Google API returned error: 429 RESOURCE_EXHAUSTED\n" +
+                              "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user, " +
+                              "limit: 100, model: flash\nPlease retry in 15h8m4.376717497s.",
+                          status: 429,
+                      },
+                  ]
+                : success
+        );
+        t.after(() => fixture.scheduler.close());
+        const res = new Response();
+        await fixture.handler.processOpenAIRequest(request("flash-high-real-search", stream), res);
+        assert.equal(res.statusCode, 200, res.body);
+        assert.match(res.body, /hello/);
+        const slot = fixture.scheduler.account(0).models.flash;
+        assert.equal(slot.rate_limit_type, "daily_quota");
+        assert.equal(slot.rate_limited, true);
+        assert.equal(
+            new Date(slot.cooldown_until).toLocaleTimeString("en-GB", { timeZone: "America/Los_Angeles" }),
+            "00:00:00"
+        );
+        assert.equal(fixture.scheduler.snapshot().active_workers, 0);
+    });
+
     test(`OpenAI ${stream ? "real stream" : "buffered"} retries quota on another account and keeps global account unchanged`, async () => {
         const fixture = setup(index =>
             index === 0 ? [{ event_type: "error", message: "quota", status: 429 }] : success
@@ -260,6 +290,7 @@ for (const stream of [false, true]) {
         );
         assert.ok(fixture.sent.every(entry => entry.request.path.includes("/flash:")));
         assert.equal(fixture.scheduler.account(0).models.flash.rate_limited, true);
+        assert.equal(fixture.scheduler.account(0).models.flash.rate_limit_type, "temporary");
         assert.equal(fixture.scheduler.account(1).models.flash.success_count, 1);
         assert.equal(fixture.scheduler.snapshot().models.find(model => model.model === "flash").daily_requests, 2);
         assert.equal(fixture.browser.currentAuthIndex, 99);

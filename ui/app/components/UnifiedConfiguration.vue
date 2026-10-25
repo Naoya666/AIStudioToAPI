@@ -329,7 +329,6 @@ const groups = computed(() => {
         const mode = draft.ACCOUNT_ROTATION_STRATEGY === "legacy" ? "legacy" : "model";
         if (d.mode !== "all" && d.mode !== mode) continue;
         if (d.name === "STREAM_KEEPALIVE_INTERVAL_MS" && !draft.STREAM_EARLY_HEADERS) continue;
-        if (d.name === "SCHEDULER_DAILY_RESET_TIME" && !draft.SCHEDULER_DAILY_RESET_ENABLED) continue;
         if (!result.has(d.group)) result.set(d.group, []);
         result.get(d.group).push(d);
     }

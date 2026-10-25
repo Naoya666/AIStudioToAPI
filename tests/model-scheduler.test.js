@@ -27,6 +27,150 @@ function setup(overrides = {}, count = 8) {
     return new ModelScheduler(config, auth, logger);
 }
 
+const dailyQuotaError = {
+    message:
+        "You exceeded your current quota, please check your plan and billing details.\n" +
+        "* Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user, " +
+        "limit: 100, model: gemini-3.8-flash\nPlease retry in 15h8m4.376717497s.",
+    status: 429,
+};
+
+test("daily quota 429 uses the next configured Pacific reset even when bulk reset is disabled", async t => {
+    for (const [timestamp, resetTime, expected] of [
+        ["2026-01-15T07:00:00Z", "00:00", "2026-01-15T08:00:00Z"],
+        ["2026-07-15T06:00:00Z", "00:00", "2026-07-15T07:00:00Z"],
+        ["2026-07-15T07:00:00Z", "00:00", "2026-07-16T07:00:00Z"],
+        ["2026-07-15T07:00:30Z", "00:00", "2026-07-16T07:00:00Z"],
+        ["2026-07-15T08:00:00Z", "02:30", "2026-07-15T09:30:00Z"],
+        ["2026-03-08T09:00:00Z", "02:30", "2026-03-08T10:00:00Z"],
+        ["2026-03-08T08:00:00Z", "00:00", "2026-03-09T07:00:00Z"],
+        ["2026-11-01T07:00:00Z", "00:00", "2026-11-02T08:00:00Z"],
+    ]) {
+        let now = Date.parse(timestamp);
+        const scheduler = setup({ dailyResetEnabled: false, dailyResetTime: resetTime, now: () => now }, 1);
+        t.after(() => scheduler.close());
+        const lease = await scheduler.acquire("flash");
+        scheduler.failure(lease, dailyQuotaError);
+        assert.equal(lease.slot.cooldown_until, Date.parse(expected), timestamp);
+        assert.equal(lease.slot.rate_limit_type, "daily_quota");
+        assert.equal(scheduler.dailyResetTimer, null);
+        const detail = scheduler.accountsSnapshot().accounts[0].models[0];
+        assert.equal(detail.rate_limit_type, "daily_quota");
+        assert.equal(detail.cooldown_until, Date.parse(expected));
+        assert.equal(detail.status, "RATE_LIMITED");
+        now = Date.parse(expected);
+        assert.equal(scheduler.slot(lease.account, "flash", now).rate_limited, false);
+        assert.equal(lease.slot.rate_limit_type, null);
+        scheduler.release(lease);
+    }
+});
+
+test("short and unknown 429 errors use configured temporary cooldown without guessing from retry hints", async t => {
+    const now = Date.now();
+    for (const message of [
+        "Quota exceeded",
+        "RESOURCE_EXHAUSTED",
+        "You exceeded your current quota. Please retry in 15h8m4.376717497s.",
+        "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_minute, limit: 10",
+        "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user_other",
+    ]) {
+        const scheduler = setup({ now: () => now, rateLimitCooldownMs: 90000 }, 1);
+        t.after(() => scheduler.close());
+        const lease = await scheduler.acquire("flash");
+        scheduler.failure(lease, { message, status: 429 });
+        assert.equal(lease.slot.cooldown_until, now + 90000);
+        assert.equal(lease.slot.rate_limit_type, "temporary");
+        assert.equal(lease.account.healthy, true);
+        const other = await scheduler.acquire("other");
+        scheduler.release(other);
+        scheduler.release(lease);
+    }
+    assert.equal(loadConfig({}).rateLimitCooldownMs, 60000);
+    assert.equal(loadConfig({ RATE_LIMIT_COOLDOWN: "86400" }).rateLimitCooldownMs, 86400000);
+});
+
+test("daily quota identification survives upstream error envelopes", async t => {
+    for (const error of [
+        { status: 429, upstreamError: { message: dailyQuotaError.message } },
+        { error: { code: 429, message: dailyQuotaError.message, status: "RESOURCE_EXHAUSTED" } },
+        { message: JSON.stringify({ error: dailyQuotaError }), status: 429 },
+    ]) {
+        const scheduler = setup({}, 1);
+        t.after(() => scheduler.close());
+        const lease = await scheduler.acquire("flash");
+        scheduler.failure(lease, error);
+        assert.equal(lease.slot.rate_limit_type, "daily_quota");
+        scheduler.release(lease);
+    }
+});
+
+test("concurrent temporary 429 and success cannot shorten a daily quota block", async t => {
+    for (const dailyFirst of [true, false]) {
+        const scheduler = setup({}, 1);
+        t.after(() => scheduler.close());
+        const leases = await Promise.all(Array.from({ length: 3 }, () => scheduler.acquire("flash")));
+        leases.forEach(lease => scheduler.startAttempt(lease));
+        const errors = dailyFirst
+            ? [dailyQuotaError, { message: "Quota exceeded", status: 429 }]
+            : [{ message: "Quota exceeded", status: 429 }, dailyQuotaError];
+        errors.forEach((error, index) => scheduler.failure(leases[index], error));
+        const deadline = leases[0].slot.cooldown_until;
+        assert.equal(leases[0].slot.rate_limit_type, "daily_quota");
+        assert.equal(deadline, calculateNextPacificResetAt(Date.now(), "00:00", null, true));
+        scheduler.release(leases[2], true);
+        assert.equal(leases[0].slot.rate_limit_type, "daily_quota");
+        assert.equal(leases[0].slot.cooldown_until, deadline);
+        leases.forEach(lease => scheduler.release(lease));
+    }
+});
+
+test("all reset paths still clear both daily and temporary rate limits", async t => {
+    for (const reset of [
+        scheduler => scheduler.resetDailyCooldowns(),
+        scheduler => scheduler.resetAllRateLimits(),
+        scheduler => scheduler.resetAllAccounts(),
+        scheduler => scheduler.reset(0),
+    ]) {
+        const scheduler = setup({}, 1);
+        t.after(() => scheduler.close());
+        const daily = await scheduler.acquire("daily");
+        const temporary = await scheduler.acquire("temporary");
+        scheduler.failure(daily, dailyQuotaError);
+        scheduler.failure(temporary, { message: "Quota exceeded", status: 429 });
+        scheduler.release(daily);
+        scheduler.release(temporary);
+        reset(scheduler);
+        for (const { slot } of [daily, temporary]) {
+            assert.equal(slot.cooldown_until, 0);
+            assert.equal(slot.rate_limited, false);
+            assert.equal(slot.rate_limit_type, null);
+        }
+    }
+});
+
+test("rate limit reason and deadline survive restart and legacy states remain readable", async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-quota-"));
+    t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+    const statePath = path.join(directory, "state.json");
+    const first = setup({ statePath }, 1);
+    const lease = await first.acquire("flash");
+    first.failure(lease, dailyQuotaError);
+    const deadline = lease.slot.cooldown_until;
+    first.release(lease);
+    first.close();
+    const second = setup({ statePath }, 1);
+    assert.equal(second.account(0).models.flash.rate_limit_type, "daily_quota");
+    assert.equal(second.account(0).models.flash.cooldown_until, deadline);
+    second.close();
+    const legacy = JSON.parse(fs.readFileSync(statePath));
+    delete legacy.accounts[0].models.flash.rate_limit_type;
+    fs.writeFileSync(statePath, JSON.stringify(legacy));
+    const third = setup({ statePath }, 1);
+    t.after(() => third.close());
+    assert.equal(third.account(0).models.flash.rate_limit_type, null);
+    assert.equal(third.account(0).models.flash.cooldown_until, deadline);
+});
+
 test("upstream UNAUTHENTICATED expires the request session once", async t => {
     const scheduler = setup({}, 1);
     t.after(() => scheduler.close());

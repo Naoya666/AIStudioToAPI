@@ -41,7 +41,7 @@ function nextDateKey(dateKey) {
     ).padStart(2, "0")}`;
 }
 
-function calculateNextPacificResetAt(now, configuredTime, skipDate = null) {
+function calculateNextPacificResetAt(now, configuredTime, skipDate = null, strictlyFuture = false) {
     const [targetHour, targetMinute] = configuredTime.split(":").map(Number);
     const current = pacificDateTimeParts(now);
     const currentDate = `${current.year}-${String(current.month).padStart(2, "0")}-${String(current.day).padStart(
@@ -51,7 +51,9 @@ function calculateNextPacificResetAt(now, configuredTime, skipDate = null) {
     const currentMinute = current.hour * 60 + current.minute;
     const targetMinutes = targetHour * 60 + targetMinute;
     let targetDate =
-        currentMinute <= targetMinutes && skipDate !== currentDate ? currentDate : nextDateKey(currentDate);
+        (strictlyFuture ? currentMinute < targetMinutes : currentMinute <= targetMinutes) && skipDate !== currentDate
+            ? currentDate
+            : nextDateKey(currentDate);
     if (skipDate === targetDate) targetDate = nextDateKey(targetDate);
 
     // Searching real instants avoids depending on the host timezone and naturally handles DST:
@@ -83,6 +85,18 @@ function isValidDateKey(value) {
     return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
+function isDailyQuotaError(error) {
+    // This observed metric denotes the account/model daily quota. Generic
+    // RESOURCE_EXHAUSTED and retry hints also occur for temporary rate limits.
+    return [error.message, error.upstreamError?.message, error.error?.message].some(
+        message =>
+            typeof message === "string" &&
+            /Quota exceeded for metric:\s*generativelanguage\.googleapis\.com\/generate_requests_per_model_per_user\b/i.test(
+                message
+            )
+    );
+}
+
 function classifyError(error = {}) {
     if (require("../utils/UpstreamBlock").isPromptBlocked(error)) return "prompt_blocked";
     if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return "bridge_auth";
@@ -100,8 +114,8 @@ function classifyError(error = {}) {
         ].includes(error.kind || error.reason)
     )
         return "transport";
-    const message = String(error.message || "");
-    const explicitStatus = Number(error.status ?? error.code);
+    const message = String(error.message || error.upstreamError?.message || error.error?.message || "");
+    const explicitStatus = Number(error.status ?? error.code ?? error.upstreamError?.code ?? error.error?.code);
     const messageStatus = Number(
         /^\s*\[(\d{3})\]/.exec(message)?.[1] || /Google API returned error:\s*(\d{3})/i.exec(message)?.[1]
     );
@@ -128,8 +142,8 @@ function classifyError(error = {}) {
 }
 
 function observedHttpStatus(error = {}, kind) {
-    const message = String(error.message || "");
-    const explicitStatus = Number(error.status ?? error.code);
+    const message = String(error.message || error.upstreamError?.message || error.error?.message || "");
+    const explicitStatus = Number(error.status ?? error.code ?? error.upstreamError?.code ?? error.error?.code);
     const messageStatus = Number(
         /^\s*\[(\d{3})\]/.exec(message)?.[1] || /Google API returned error:\s*(\d{3})/i.exec(message)?.[1]
     );
@@ -233,6 +247,7 @@ class ModelScheduler {
                 last_error_kind: null,
                 last_http_status: null,
                 last_used_at: 0,
+                rate_limit_type: null,
                 rate_limited: false,
                 request_count: 0,
                 risk_control_failures: 0,
@@ -242,6 +257,7 @@ class ModelScheduler {
         const slot = account.models[model];
         if (this.rolloverDailyUsage(slot, now)) this.saveSoon();
         if (slot.cooldown_until && slot.cooldown_until <= now) {
+            slot.rate_limit_type = null;
             slot.rate_limited = false;
             slot.cooldown_until = 0;
         }
@@ -404,6 +420,7 @@ class ModelScheduler {
                     for (const model of models) {
                         const slot = account.models[model];
                         if (slot?.rate_limited && slot.cooldown_until <= firedAt) {
+                            slot.rate_limit_type = null;
                             slot.rate_limited = false;
                             slot.cooldown_until = 0;
                         }
@@ -926,7 +943,9 @@ class ModelScheduler {
         this.metrics.upstream_error++;
         if (kind === "risk_controlled") slot.risk_control_failures = (slot.risk_control_failures || 0) + 1;
         else slot.consecutive_failures++;
-        slot.last_error = String(error.message || "Request failed").slice(0, 2000);
+        slot.last_error = String(
+            error.upstreamError?.message || error.error?.message || error.message || "Request failed"
+        ).slice(0, 2000);
         slot.last_error_kind = kind;
         if (error.transport) slot.last_transport = error.transport;
         const httpStatus = Number(error.status ?? error.code);
@@ -941,8 +960,18 @@ class ModelScheduler {
         if (kind === "account") account.healthy = false;
         if (kind === "unsupported") slot.unsupported = true;
         if (kind === "rate_limited") {
+            const now = this.now();
+            const dailyQuota = isDailyQuotaError(error);
+            const existingDailyQuota =
+                slot.rate_limited && slot.rate_limit_type === "daily_quota" && slot.cooldown_until > now;
             slot.rate_limited = true;
-            slot.cooldown_until = this.now() + this.config.rateLimitCooldownMs;
+            // A concurrent temporary 429 must not shorten a known daily block.
+            if (!existingDailyQuota) {
+                slot.rate_limit_type = dailyQuota ? "daily_quota" : "temporary";
+                slot.cooldown_until = dailyQuota
+                    ? calculateNextPacificResetAt(now, this.config.dailyResetTime, null, true)
+                    : now + this.config.rateLimitCooldownMs;
+            }
         }
         if (kind === "temporary")
             slot.cooldown_until =
@@ -1046,6 +1075,7 @@ class ModelScheduler {
         for (const account of this.accounts.values()) {
             for (const slot of Object.values(account.models)) {
                 if (!slot.rate_limited) continue;
+                slot.rate_limit_type = null;
                 slot.rate_limited = false;
                 slot.cooldown_until = 0;
                 resetCount++;
@@ -1093,6 +1123,7 @@ class ModelScheduler {
                     last_error: null,
                     last_error_kind: null,
                     last_http_status: null,
+                    rate_limit_type: null,
                     rate_limited: false,
                     risk_control_failures: 0,
                     unsupported: false,
@@ -1130,6 +1161,7 @@ class ModelScheduler {
                     last_error: null,
                     last_error_kind: null,
                     last_http_status: null,
+                    rate_limit_type: null,
                     rate_limited: false,
                     risk_control_failures: 0,
                 });
@@ -1206,6 +1238,7 @@ class ModelScheduler {
                 last_error: null,
                 last_error_kind: null,
                 last_http_status: null,
+                rate_limit_type: null,
                 rate_limited: false,
                 risk_control_failures: 0,
                 unsupported: false,
@@ -1593,6 +1626,7 @@ class ModelScheduler {
                             last_error_kind: slot.last_error_kind || null,
                             last_http_status: slot.last_http_status || null,
                             model,
+                            rate_limit_type: slot.rate_limit_type || null,
                             risk_control_failures: slot.risk_control_failures || 0,
                             status: this._slotStatus(account, slot, rotationIndices),
                         };
@@ -1713,6 +1747,7 @@ class ModelScheduler {
                 }
                 account.continuous_403_since ??= null;
                 for (const slot of Object.values(account.models)) {
+                    slot.rate_limit_type ??= null;
                     slot.risk_control_failures ??= 0;
                     slot.last_error_kind ??= null;
                     slot.last_http_status ??= null;

@@ -108,7 +108,7 @@ function loadSchedulerConfig(env = process.env) {
         modelContextWarmTargets,
         queueSize: integer("MODEL_QUEUE_SIZE", 100, 0),
         queueTimeoutMs: integer("REQUEST_DISPATCH_TIMEOUT_MS", integer("MODEL_QUEUE_TIMEOUT_MS", 120000)),
-        rateLimitCooldownMs: integer("RATE_LIMIT_COOLDOWN", 86400) * 1000,
+        rateLimitCooldownMs: integer("RATE_LIMIT_COOLDOWN", 60) * 1000,
         readyContextOnly: env.SCHEDULER_READY_CONTEXT_ONLY !== "false",
         riskControlCooldownMs: integer("RISK_CONTROL_COOLDOWN", 600) * 1000,
         riskControlJitter: env.RISK_CONTROL_JITTER !== "false",
