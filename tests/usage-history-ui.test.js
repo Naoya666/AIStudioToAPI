@@ -19,12 +19,11 @@ test(
             server: { host: "127.0.0.1", port: 0, strictPort: false },
         });
         await server.listen();
-        let browser;
+        const browser = await chromium.launch({ args: ["--no-sandbox"] });
         t.after(async () => {
             await browser?.close();
             await server.close();
         });
-        browser = await chromium.launch({ args: ["--no-sandbox"] });
         const page = await browser.newPage({ viewport: { height: 1000, width: 1440 } });
         page.setDefaultTimeout(6000);
         const errors = [];
@@ -93,6 +92,16 @@ test(
         await records.getByRole("button", { exact: true, name: "gemini-3.8-flash" }).click();
         await page.getByText("fixture_attempt_1 · legacy", { exact: true }).waitFor();
         await records.locator(".card-title-usage").click();
+        await page.setViewportSize({ height: 1000, width: 390 });
+        await page.reload();
+        await records.getByRole("button", { exact: true, name: "gemini-3.8-flash" }).click();
+        await page.getByText("fixture_attempt_1 · legacy", { exact: true }).waitFor();
+        const metadataPopover = page.locator(".el-popover:visible").filter({ hasText: "fixture_attempt_1" });
+        const bounds = await metadataPopover.boundingBox();
+        assert.ok(bounds.x >= -1 && bounds.x + bounds.width <= 391);
+        await records.locator(".card-title-usage").click();
+        await page.setViewportSize({ height: 1000, width: 1440 });
+        await page.reload();
         const id = records.getByRole("button", { name: "Full request ID" });
         assert.ok((await id.innerText()).length < "req_synthetic_full_identifier_1000".length);
         await id.click();

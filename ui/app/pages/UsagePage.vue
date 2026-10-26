@@ -827,13 +827,17 @@
                                     <td>{{ translateLabel(record.streamMode) }}</td>
                                     <td>{{ record.model || "-" }}</td>
                                     <td>
-                                        <el-popover v-if="record.upstreamMetadata?.length" trigger="click" :width="460">
+                                        <el-popover v-if="record.upstreamMetadata?.length" trigger="click" :width="360">
                                             <template #reference>
                                                 <button type="button" class="record-detail-button">
                                                     {{ record.modelVersion || t("upstreamModelMissing") }}
                                                 </button>
                                             </template>
-                                            <div v-for="(item, index) in record.upstreamMetadata" :key="index">
+                                            <div
+                                                v-for="(item, index) in record.upstreamMetadata"
+                                                :key="index"
+                                                class="request-id-detail"
+                                            >
                                                 <div>{{ item.requestAttemptId || "-" }} · {{ item.transport }}</div>
                                                 <div>
                                                     modelVersion: {{ item.modelVersion || t("upstreamModelMissing") }}
