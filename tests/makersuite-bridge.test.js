@@ -606,6 +606,29 @@ test("registered bridge excludes client keys and never intercepts non-generation
     assert.equal(f.bridge.attempts.size, 0);
 });
 
+test("registered MakerSuite calls report missing model metadata to their own request observer", async t => {
+    const f = fixture(t, 0, { bridge: { requireRegistration: true } });
+    await f.init();
+    const observed = [];
+    const routes = ["one", "two"].map(requestAttemptId => {
+        const proxy = {
+            body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }], role: "user" }] }),
+            request_attempt_id: requestAttemptId,
+            transport_policy: require("../src/core/ModelTransportPolicy").resolve("gemini-2.5-flash", "fake", {
+                "gemini-2.5-flash": "makersuite",
+            }),
+        };
+        const wire = f.bridge.prepare(proxy, performance.now() + 1000, 1000, metadata =>
+            observed.push({ ...metadata, requestAttemptId })
+        );
+        return f.route({ body: JSON.parse(wire.body), id: requestAttemptId });
+    });
+    await Promise.all(routes.map(route => f.bridge.handle(route)));
+    assert.deepEqual(observed.map(item => item.requestAttemptId).sort(), ["one", "two"]);
+    assert.ok(observed.every(item => item.modelVersion === null && item.modelIdentifiers.length === 0));
+    assert.ok(routes.every(route => route.outcomes[0].status === 200));
+});
+
 test("a hung proof computation times out without retaining a live bridge record or starting generation", async t => {
     const f = fixture(t, 0, { bridge: { timeoutMs: 10 } });
     await f.init();

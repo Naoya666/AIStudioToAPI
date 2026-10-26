@@ -6,7 +6,7 @@
 const { BRIDGE_SETTLEMENT_MS, DEFAULT_MAKERSUITE_TIMEOUT_MS } = require("../config/TransportConfig");
 const { randomUUID } = require("node:crypto");
 const { tagStatus } = require("../utils/MakerSuiteAuth");
-const { buildBody, errorEnvelope, wrapResponse } = require("./MakerSuiteCodec");
+const { buildBody, errorEnvelope, extractModelMetadata, wrapResponse } = require("./MakerSuiteCodec");
 const RPC = url =>
     url.origin === "https://alkalimakersuite-pa.clients6.google.com" &&
     /^\/\$rpc\/google\.internal\.alkali\.applications\.makersuite\.v1\.MakerSuiteService\/Proxy(?:Unary|Streamed)Call$/.test(
@@ -489,7 +489,7 @@ class MakerSuiteBridge {
         );
         return this;
     }
-    prepare(proxyRequest, deadline, timeoutMs = this.timeoutMs) {
+    prepare(proxyRequest, deadline, timeoutMs = this.timeoutMs, onResponseMetadata = null) {
         const id = proxyRequest.request_attempt_id;
         if (this.closed || this.benefit?.disposed || this.benefit?.isCurrent() === false)
             throw Object.assign(new Error("MakerSuite document unavailable"), { status: 503 });
@@ -508,6 +508,7 @@ class MakerSuiteBridge {
                     .map(([, value]) => value),
                 proxyRequest.query_params?.key,
             ].filter(value => typeof value === "string"),
+            onResponseMetadata,
             policy: proxyRequest.transport_policy,
             reserveMs: Math.min(BRIDGE_SETTLEMENT_MS, timeoutMs * 0.05, remaining * 0.05),
         });
@@ -686,6 +687,7 @@ class MakerSuiteBridge {
                 return await fulfill(normalized);
             }
             const response = wrapResponse(result.text, streamed);
+            registration?.onResponseMetadata?.(extractModelMetadata(result.text));
             await fulfill({ body: response, status: 200 });
             this.logger.debug(`[MakerSuite] account #${this.authIndex}: generation completed`);
         } catch (error) {

@@ -4,6 +4,7 @@ const { DatabaseSync } = require("node:sqlite");
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const { modelVersionOf, normalizeObservation } = require("../utils/UpstreamModelMetadata");
 
 const EMPTY = "\u0000";
 const DAY_MS = 86400000;
@@ -62,7 +63,16 @@ function initialize() {
             PRIMARY KEY(day,account_key,model,api_format,request_category,stream_mode)
         );
     `);
-    if (!metaGet("schema_version")) metaSet("schema_version", 1);
+    const columns = new Set(
+        db
+            .prepare("PRAGMA table_info(requests)")
+            .all()
+            .map(item => item.name)
+    );
+    if (!columns.has("model_version")) db.exec("ALTER TABLE requests ADD COLUMN model_version TEXT");
+    if (!columns.has("upstream_metadata"))
+        db.exec("ALTER TABLE requests ADD COLUMN upstream_metadata TEXT NOT NULL DEFAULT '[]'");
+    metaSet("schema_version", 2);
     if (!metaGet("dataset_revision")) metaSet("dataset_revision", 1);
     if (!metaGet("started_at_ms")) metaSet("started_at_ms", Date.now());
     if (!metaGet("purged_before_ms")) metaSet("purged_before_ms", -1);
@@ -93,6 +103,10 @@ function normalizeRecord(raw) {
         isStreaming: Boolean(raw.isStreaming),
         method: raw.method || "GET",
         model: nullable(raw.model),
+        modelVersion: modelVersionOf(raw.modelVersion),
+        upstreamMetadata: (Array.isArray(raw.upstreamMetadata) ? raw.upstreamMetadata : [])
+            .slice(-32)
+            .map(normalizeObservation),
         outcome,
         path: raw.path || "/",
         requestCategory: raw.requestCategory || "request",
@@ -116,8 +130,8 @@ function insertRequest(record) {
                 `INSERT OR IGNORE INTO requests(
             request_id,started_at_ms,finished_at_ms,duration_ms,method,path,api_format,request_category,model,
             is_streaming,stream_mode,client_ip,account_key,initial_auth_index,initial_account_name,
-            final_auth_index,final_account_name,outcome,status_code,error_message,attempt_count
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            final_auth_index,final_account_name,outcome,status_code,error_message,attempt_count,model_version,upstream_metadata
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
             )
             .run(
                 r.requestId,
@@ -140,7 +154,9 @@ function insertRequest(record) {
                 r.outcome,
                 r.statusCode,
                 r.errorMessage,
-                r.attemptCount
+                r.attemptCount,
+                r.modelVersion,
+                JSON.stringify(r.upstreamMetadata)
             );
         if (!result.changes) {
             db.exec("ROLLBACK");
@@ -321,6 +337,8 @@ function rowToRecord(row) {
         startedAt: iso(row.started_at_ms),
         errorMessage: row.error_message,
         model: row.model,
+        modelVersion: row.model_version,
+        upstreamMetadata: JSON.parse(row.upstream_metadata || "[]"),
         attemptCount: row.attempt_count,
         path: row.path,
         attempts: db

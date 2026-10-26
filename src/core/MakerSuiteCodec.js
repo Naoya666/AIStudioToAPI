@@ -301,7 +301,12 @@ function merge(chunks) {
         fail("MakerSuite response ended without a confirmed finish reason", 502);
     return out;
 }
-function wrapResponse(text, streamed) {
+const isChunk = x =>
+    Array.isArray(x) &&
+    ((Array.isArray(x[0]) && x[0].length > 0 && x[0].every(c => Array.isArray(c?.[0]?.[0]) && c[0][1] === "model")) ||
+        ((x[0] == null || (Array.isArray(x[0]) && x[0].length === 0)) && Array.isArray(x[2])));
+
+function responseRecords(text) {
     let root;
     try {
         root = JSON.parse(text);
@@ -309,14 +314,37 @@ function wrapResponse(text, streamed) {
         return fail("Invalid MakerSuite response JSON", 502);
     }
     // Observed envelopes: [chunk, ...] or [[chunk, ...]]. A chunk may contain usage only.
-    const isChunk = x =>
-        Array.isArray(x) &&
-        ((Array.isArray(x[0]) &&
-            x[0].length > 0 &&
-            x[0].every(c => Array.isArray(c?.[0]?.[0]) && c[0][1] === "model")) ||
-            ((x[0] == null || (Array.isArray(x[0]) && x[0].length === 0)) && Array.isArray(x[2])));
     const arr = Array.isArray(root) && root.some(isChunk) ? root : root?.[0];
     if (!Array.isArray(arr)) fail("Unrecognized MakerSuite response envelope", 502);
+    return arr;
+}
+
+function extractModelMetadata(text) {
+    const { modelVersionOf } = require("../utils/UpstreamModelMetadata");
+    const metadata = { modelIdentifiers: [], modelVersion: null };
+    const visit = (value, path, depth) => {
+        if (depth > 5 || metadata.modelIdentifiers.length >= 16) return;
+        if (modelVersionOf(value)) metadata.modelIdentifiers.push({ path, value });
+        if (value && typeof value === "object") {
+            if (!Array.isArray(value) && modelVersionOf(value.modelVersion)) metadata.modelVersion = value.modelVersion;
+            for (const [key, item] of Object.entries(value))
+                visit(item, Array.isArray(value) ? `${path}[${key}]` : `${path}.${key}`, depth + 1);
+        }
+    };
+    responseRecords(text)
+        .filter(isChunk)
+        .forEach((chunk, index) => {
+            // Candidates contain generated text/signatures, and slot 7 is the opaque
+            // response identifier. Neither is evidence of the executing model.
+            chunk.forEach((value, slot) => {
+                if (slot !== 0 && slot !== 7) visit(value, `$[${index}][${slot}]`, 0);
+            });
+        });
+    return metadata;
+}
+
+function wrapResponse(text, streamed) {
+    const arr = responseRecords(text);
     for (const record of arr) {
         if (Array.isArray(record) && Number.isInteger(record[0]) && record[0] !== 0 && typeof record[1] === "string") {
             throw Object.assign(new Error(record[1]), { rpcStatus: record, status: RPC_STATUS[record[0]] || 502 });
@@ -348,4 +376,4 @@ function errorEnvelope(text, status) {
         status: status >= 400 ? status : 502,
     };
 }
-module.exports = { buildBody, decStruct, encStruct, errorEnvelope, merge, wrapResponse };
+module.exports = { buildBody, decStruct, encStruct, errorEnvelope, extractModelMetadata, merge, wrapResponse };

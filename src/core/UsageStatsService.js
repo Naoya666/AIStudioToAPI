@@ -8,6 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 const UsageStatsStorage = require("./UsageStatsStorage");
+const { normalizeObservation } = require("../utils/UpstreamModelMetadata");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -158,12 +159,14 @@ class UsageStatsService {
             isStreaming: Boolean(meta.isStreaming),
             method: meta.method || "GET",
             model: meta.model || null,
+            modelVersion: null,
             path: meta.path || "/",
             requestCategory: meta.requestCategory || "request",
             requestId,
             startedAt: new Date().toISOString(),
             startedAtMs: Date.now(),
             streamMode: meta.streamMode || null,
+            upstreamMetadata: [],
         };
 
         this.activeRequests.set(requestId, tracker);
@@ -207,6 +210,28 @@ class UsageStatsService {
                 : this._resolveAccountName(normalizedAuthIndex);
 
         this._pushAttempt(tracker, normalizedAuthIndex, resolvedAccountName);
+        tracker.modelVersion = null;
+    }
+
+    recordUpstreamMetadata(requestId, metadata) {
+        if (!this.enabled) return;
+        const tracker = this.activeRequests.get(requestId);
+        if (!tracker) return;
+        const observation = normalizeObservation(metadata);
+        tracker.upstreamMetadata ||= [];
+        const sameAttempt = item =>
+            item.requestAttemptId === observation.requestAttemptId && item.transport === observation.transport;
+        const empty = item => !item.modelVersion && item.modelIdentifiers.length === 0;
+        if (empty(observation) && tracker.upstreamMetadata.some(sameAttempt)) return;
+        if (!empty(observation))
+            tracker.upstreamMetadata = tracker.upstreamMetadata.filter(item => !sameAttempt(item) || !empty(item));
+        // Usage-only stream events must not erase an earlier explicit version.
+        if (observation.modelVersion) tracker.modelVersion = observation.modelVersion;
+        const key = JSON.stringify(observation);
+        if (!tracker.upstreamMetadata.some(item => JSON.stringify(item) === key)) {
+            if (tracker.upstreamMetadata.length >= 32) tracker.upstreamMetadata.shift();
+            tracker.upstreamMetadata.push(observation);
+        }
     }
 
     finishRequest(requestId, result = {}) {
@@ -253,6 +278,7 @@ class UsageStatsService {
             isStreaming: tracker.isStreaming,
             method: tracker.method,
             model: tracker.model,
+            modelVersion: tracker.modelVersion,
             outcome,
             path: tracker.path,
             requestCategory: tracker.requestCategory,
@@ -261,6 +287,7 @@ class UsageStatsService {
             startedAt: tracker.startedAt,
             statusCode,
             streamMode: tracker.requestCategory === "generation" ? tracker.streamMode || "non" : null,
+            upstreamMetadata: tracker.upstreamMetadata || [],
         };
 
         this.records.push(record);
