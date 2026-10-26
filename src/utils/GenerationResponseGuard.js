@@ -3,11 +3,10 @@ const { promptBlocked, usageMetadataOf } = require("./UpstreamBlock");
 // Validate whole generation events before any part reaches a protocol converter.
 // Network messages need not coincide with JSON or SSE event boundaries.
 class GenerationResponseGuard {
-    constructor(context = {}, maxBytes = Infinity, onIncomplete = null, onMetadata = null) {
+    constructor(context = {}, maxBytes = Infinity, onIncomplete = null) {
         this.context = context;
         this.maxBytes = maxBytes;
         this.onIncomplete = onIncomplete;
-        this.onMetadata = onMetadata;
         this.bytes = 0;
         this.input = "";
         this.scanned = 0;
@@ -89,7 +88,6 @@ class GenerationResponseGuard {
             }
             const responses = Array.isArray(response) ? response : [response];
             for (const item of responses) {
-                if (item && typeof item === "object" && !Array.isArray(item)) this.onMetadata?.(item);
                 if (item?.usageMetadata) this.usageMetadata = usageMetadataOf(item.usageMetadata) || this.usageMetadata;
                 const error = promptBlocked(item);
                 if (error) {

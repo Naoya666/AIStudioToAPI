@@ -16,14 +16,12 @@ test(
         const server = await createServer({
             configFile: path.resolve(__dirname, "../vite.config.js"),
             logLevel: "error",
-            server: { host: "127.0.0.1", port: 0, strictPort: false },
+            server: { host: "127.0.0.1", port: 0 },
         });
         await server.listen();
+        t.after(() => server.close());
         const browser = await chromium.launch({ args: ["--no-sandbox"] });
-        t.after(async () => {
-            await browser?.close();
-            await server.close();
-        });
+        t.after(() => browser.close());
         const page = await browser.newPage({ viewport: { height: 1000, width: 1440 } });
         page.setDefaultTimeout(6000);
         const errors = [];
@@ -42,16 +40,11 @@ test(
             finalAuthIndex: 0,
             finishedAt: new Date(now).toISOString(),
             model: "fixture-model",
-            modelVersion: sequence === 1000 ? "gemini-3.8-flash" : null,
             outcome: "error",
             requestId: `req_synthetic_full_identifier_${sequence}`,
             sequence,
             startedAt: new Date(now - 1000 - sequence).toISOString(),
             statusCode: 200,
-            upstreamMetadata:
-                sequence === 1000
-                    ? [{ modelVersion: "gemini-3.8-flash", requestAttemptId: "fixture_attempt_1", transport: "legacy" }]
-                    : [],
         });
         const history = Array.from({ length: 125 }, (_, i) => makeRecord(125 - i));
         let liveQueries = 0;
@@ -89,19 +82,6 @@ test(
         await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/usage`);
         const records = page.locator(".records-card");
         await records.locator("tbody tr").waitFor();
-        await records.getByRole("button", { exact: true, name: "gemini-3.8-flash" }).click();
-        await page.getByText("fixture_attempt_1 · legacy", { exact: true }).waitFor();
-        await records.locator(".card-title-usage").click();
-        await page.setViewportSize({ height: 1000, width: 390 });
-        await page.reload();
-        await records.getByRole("button", { exact: true, name: "gemini-3.8-flash" }).click();
-        await page.getByText("fixture_attempt_1 · legacy", { exact: true }).waitFor();
-        const metadataPopover = page.locator(".el-popover:visible").filter({ hasText: "fixture_attempt_1" });
-        const bounds = await metadataPopover.boundingBox();
-        assert.ok(bounds.x >= -1 && bounds.x + bounds.width <= 391);
-        await records.locator(".card-title-usage").click();
-        await page.setViewportSize({ height: 1000, width: 1440 });
-        await page.reload();
         const id = records.getByRole("button", { name: "Full request ID" });
         assert.ok((await id.innerText()).length < "req_synthetic_full_identifier_1000".length);
         await id.click();

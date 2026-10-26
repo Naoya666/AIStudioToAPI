@@ -5036,15 +5036,7 @@ class RequestHandler {
                           this._stopEarlyStreamKeepalive?.();
                           res.__stopEarlyOpenAIStream?.();
                       }
-                    : null,
-                metadata => {
-                    if (proxyRequest.transport_policy?.transport !== "makersuite")
-                        this._getUsageStatsService()?.recordUpstreamMetadata(proxyRequest.request_id, {
-                            modelVersion: metadata.modelVersion,
-                            requestAttemptId: proxyRequest.request_attempt_id,
-                            transport: "legacy",
-                        });
-                }
+                    : null
             );
         }
         const policy = proxyRequest.is_generative ? proxyRequest.transport_policy : null;
@@ -5097,13 +5089,7 @@ class RequestHandler {
                           .page.makerSuiteBridge.prepare(
                               proxyRequest,
                               proxyRequest.__generationDeadline,
-                              this.config.makerSuiteTimeoutMs,
-                              metadata =>
-                                  this._getUsageStatsService()?.recordUpstreamMetadata(proxyRequest.request_id, {
-                                      ...metadata,
-                                      requestAttemptId: proxyRequest.request_attempt_id,
-                                      transport: "makersuite",
-                                  })
+                              this.config.makerSuiteTimeoutMs
                           ) || proxyRequest
                     : proxyRequest;
             this.logger.debug(

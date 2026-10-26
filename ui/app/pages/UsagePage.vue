@@ -729,7 +729,6 @@
                             <thead>
                                 <tr>
                                     <th>{{ t("requestModel") }}</th>
-                                    <th>{{ t("upstreamModelVersion") }}</th>
                                     <th>{{ t("total") }}</th>
                                     <th>{{ t("success") }}</th>
                                     <th>{{ t("failed") }}</th>
@@ -826,33 +825,6 @@
                                     <td>{{ translateLabel(record.apiFormat) }}</td>
                                     <td>{{ translateLabel(record.streamMode) }}</td>
                                     <td>{{ record.model || "-" }}</td>
-                                    <td>
-                                        <el-popover v-if="record.upstreamMetadata?.length" trigger="click" :width="360">
-                                            <template #reference>
-                                                <button type="button" class="record-detail-button">
-                                                    {{ record.modelVersion || t("upstreamModelMissing") }}
-                                                </button>
-                                            </template>
-                                            <div
-                                                v-for="(item, index) in record.upstreamMetadata"
-                                                :key="index"
-                                                class="request-id-detail"
-                                            >
-                                                <div>{{ item.requestAttemptId || "-" }} · {{ item.transport }}</div>
-                                                <div>
-                                                    modelVersion: {{ item.modelVersion || t("upstreamModelMissing") }}
-                                                </div>
-                                                <div
-                                                    v-for="candidate in item.modelIdentifiers || []"
-                                                    :key="candidate.path"
-                                                >
-                                                    {{ t("upstreamModelCandidate") }} {{ candidate.path }}:
-                                                    {{ candidate.value }}
-                                                </div>
-                                            </div>
-                                        </el-popover>
-                                        <span v-else>{{ t("upstreamModelUnrecorded") }}</span>
-                                    </td>
                                     <td>
                                         <span
                                             class="outcome-badge"
