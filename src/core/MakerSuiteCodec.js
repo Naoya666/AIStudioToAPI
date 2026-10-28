@@ -4,6 +4,9 @@
  * See docs/zh/makersuite-generate-content-protocol-repair-plan-20261016.md.
  * Positions below are observed protocol fields, not a public Google API contract.
  */
+const { promptBlocked } = require("../utils/UpstreamBlock");
+const BLOCK = { 1: "SAFETY", 2: "OTHER", 3: "BLOCKLIST", 4: "PROHIBITED_CONTENT", 5: "IMAGE_SAFETY" };
+const PROB = { 0: "HARM_PROBABILITY_UNSPECIFIED", 1: "NEGLIGIBLE", 2: "LOW", 3: "MEDIUM", 4: "HIGH" };
 const CAT = {
     HARM_CATEGORY_CIVIC_INTEGRITY: 11,
     HARM_CATEGORY_DANGEROUS_CONTENT: 10,
@@ -232,9 +235,79 @@ function buildBody(model, g) {
         .join(" ");
     return { body, ht };
 }
+// AI Studio's GenerateContent reader uses field 2 (Gw), with fields 1/2/3
+// for reason/ratings/message. Protocol evidence and limitations are recorded in
+// docs/zh/makersuite-error-passthrough-repair-20261028.md.
+function decFeedback(value) {
+    if (!Array.isArray(value)) return undefined;
+    const feedback = {};
+    const reason = value[0];
+    if (Number.isSafeInteger(reason) && reason > 0) feedback.blockReason = BLOCK[reason] || String(reason);
+    if (typeof value[2] === "string") feedback.blockReasonMessage = value[2];
+    if (Array.isArray(value[1]))
+        feedback.safetyRatings = value[1].filter(Array.isArray).map(rating => {
+            const out = {};
+            const category = Object.keys(CAT).find(key => CAT[key] === rating[2]);
+            if (category) out.category = category;
+            if (Object.hasOwn(PROB, rating[3])) out.probability = PROB[rating[3]];
+            return out;
+        });
+    return feedback;
+}
+
+// Only normalize omitted array elements outside quoted strings. JSON.parse still
+// rejects all other non-JSON syntax; response text is never executed.
+function parseWire(text) {
+    try {
+        return JSON.parse(text);
+    } catch {
+        // ProtoJSON array elisions need the restricted normalization below.
+    }
+    const result = [];
+    const stack = [];
+    let quoted = false,
+        escaped = false,
+        previous;
+    for (const char of text) {
+        if (quoted) {
+            result.push(char);
+            if (escaped) escaped = false;
+            else if (char === "\\") escaped = true;
+            else if (char === '"') quoted = false;
+            continue;
+        }
+        if (char === '"') quoted = true;
+        if (
+            stack.at(-1) === "[" &&
+            ((char === "," && (previous === "[" || previous === ",")) || (char === "]" && previous === ","))
+        )
+            result.push("null");
+        result.push(char);
+        if (char === "[" || char === "{") stack.push(char);
+        if (char === "]" || char === "}") stack.pop();
+        if (!/\s/.test(char)) previous = char;
+    }
+    return JSON.parse(result.join(""));
+}
+const isRpcStatus = value =>
+    Array.isArray(value) &&
+    Number.isInteger(value[0]) &&
+    value[0] > 0 &&
+    value[0] <= 16 &&
+    typeof value[1] === "string" &&
+    (value[2] == null || Array.isArray(value[2]));
+function rpcStatusOf(value) {
+    if (isRpcStatus(value)) return value;
+    // Known GenerateContent error envelope: [null, Status]. Do not recursively
+    // search arbitrary details or candidate text for something resembling Status.
+    if (Array.isArray(value) && value[0] == null && isRpcStatus(value[1])) return value[1];
+    return undefined;
+}
 function convChunk(m) {
     const out = {};
-    if (Array.isArray(m[0]))
+    const feedback = decFeedback(m[1]);
+    if (feedback) out.promptFeedback = feedback;
+    if (!promptBlocked(out) && Array.isArray(m[0]))
         out.candidates = m[0].map((c, i) => {
             if (!Array.isArray(c?.[0]?.[0])) fail("Invalid MakerSuite candidate", 502);
             const parts = c[0][0].map(p => {
@@ -294,10 +367,18 @@ function merge(chunks) {
                 else dest.content.parts.push({ ...p });
             }
         }
+        if (ch.promptFeedback) {
+            const previous = out.promptFeedback;
+            out.promptFeedback = { ...previous, ...ch.promptFeedback };
+            // Once confirmed, later empty/default feedback cannot clear a block.
+            if (promptBlocked({ promptFeedback: previous }) && !promptBlocked(ch))
+                out.promptFeedback.blockReason = previous.blockReason;
+        }
         if (ch.usageMetadata) out.usageMetadata = { ...out.usageMetadata, ...ch.usageMetadata };
         if (ch.responseId) out.responseId = ch.responseId;
     }
     out.candidates = [...candidates.values()];
+    if (promptBlocked(out)) return out;
     if (!out.candidates.length || out.candidates.some(c => !c.finishReason))
         fail("MakerSuite response ended without a confirmed finish reason", 502);
     return out;
@@ -305,27 +386,35 @@ function merge(chunks) {
 function wrapResponse(text, streamed) {
     let root;
     try {
-        root = JSON.parse(text);
+        root = parseWire(text);
     } catch {
         return fail("Invalid MakerSuite response JSON", 502);
     }
+    const status = rpcStatusOf(root);
+    if (status) throw Object.assign(new Error(status[1]), { rpcStatus: status, status: RPC_STATUS[status[0]] || 502 });
     // Observed envelopes: [chunk, ...] or [[chunk, ...]]. A chunk may contain usage only.
+    const isCandidateList = x =>
+        Array.isArray(x) && x.every(c => Array.isArray(c) && (c[0] == null || c[0][1] === "model"));
     const isChunk = x =>
         Array.isArray(x) &&
-        ((Array.isArray(x[0]) &&
-            x[0].length > 0 &&
-            x[0].every(c => Array.isArray(c?.[0]?.[0]) && c[0][1] === "model")) ||
-            ((x[0] == null || (Array.isArray(x[0]) && x[0].length === 0)) && Array.isArray(x[2])));
+        ((promptBlocked({ promptFeedback: decFeedback(x[1]) }) && (x[0] == null || isCandidateList(x[0]))) ||
+            (Array.isArray(x[0]) &&
+                x[0].length > 0 &&
+                x[0].every(c => Array.isArray(c?.[0]?.[0]) && c[0][1] === "model")) ||
+            ((x[0] == null || (Array.isArray(x[0]) && x[0].length === 0)) &&
+                (Array.isArray(x[2]) || Array.isArray(x[1]))));
     const arr = Array.isArray(root) && root.some(isChunk) ? root : root?.[0];
     if (!Array.isArray(arr)) fail("Unrecognized MakerSuite response envelope", 502);
+    const chunks = arr.filter(isChunk).map(convChunk);
     for (const record of arr) {
-        if (Array.isArray(record) && Number.isInteger(record[0]) && record[0] !== 0 && typeof record[1] === "string") {
+        if (!promptBlocked(chunks) && isRpcStatus(record)) {
             throw Object.assign(new Error(record[1]), { rpcStatus: record, status: RPC_STATUS[record[0]] || 502 });
         }
     }
-    const chunks = arr.filter(isChunk).map(convChunk);
     const merged = merge(chunks); // Validate completion even when returning the old streamed envelope.
     if (!streamed) return JSON.stringify([JSON.stringify(merged)]);
+    // Deliver a block with all received usage/responseId, before any candidates.
+    if (promptBlocked(merged)) return JSON.stringify([[[JSON.stringify(merged)]]]);
     const tail = arr.length && !isChunk(arr.at(-1)) ? arr.at(-1) : null;
     return JSON.stringify([[...chunks.map(c => [JSON.stringify(c)]), ...(tail ? [tail] : [])]]);
 }
@@ -333,12 +422,13 @@ const RPC_STATUS = { 3: 400, 5: 404, 7: 403, 8: 429, 9: 400, 13: 500, 14: 503, 1
 function errorEnvelope(text, status) {
     let value;
     try {
-        value = JSON.parse(text);
+        value = parseWire(text);
     } catch {
         value = null;
     }
-    if (Array.isArray(value) && typeof value[0] === "number") {
-        return { body: JSON.stringify(value), status: status >= 400 ? status : RPC_STATUS[value[0]] || 502 };
+    const rpc = rpcStatusOf(value);
+    if (rpc) {
+        return { body: JSON.stringify(rpc), status: status >= 400 ? status : RPC_STATUS[rpc[0]] || 502 };
     }
     const error = value?.error;
     const message =

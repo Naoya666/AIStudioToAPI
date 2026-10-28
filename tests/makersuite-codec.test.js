@@ -249,7 +249,7 @@ test("thinking, signature, functions, multiple candidates and usage-only chunks"
 
 test("unconfirmed responses and malformed envelopes cannot become empty STOP successes", () => {
     const unfinished = [[[[[[null, "partial"]], "model"]]]];
-    for (const input of [[], [unfinished], [null], [3, "error"], [[13, "error"]], [first]]) {
+    for (const input of [[], [unfinished], [null], [[13, "error"]], [first]]) {
         assert.throws(
             () => wrapResponse(JSON.stringify(input), false),
             e => e.status === 502
@@ -333,4 +333,125 @@ test("token hash input preserves empty parts and leading, trailing and adjacent 
         ],
     });
     assert.equal(ht, " A   B base64 ");
+});
+
+test("observed daily quota envelopes retain RPC message and opaque details", () => {
+    const fixtures = require("./fixtures/makersuite/daily-quota.json");
+    for (const { wire, rpc } of fixtures) {
+        for (const text of [wire, JSON.stringify([null, rpc]), JSON.stringify(rpc)]) {
+            const result = errorEnvelope(text, 429);
+            assert.equal(result.status, 429);
+            assert.deepEqual(JSON.parse(result.body), rpc);
+            const assertRpc = error => {
+                assert.deepEqual(error.rpcStatus, rpc);
+                return true;
+            };
+            for (const stream of [false, true])
+                assert.throws(
+                    () => wrapResponse(text, stream),
+                    e => e.status === 429 && assertRpc(e)
+                );
+        }
+    }
+});
+
+test("wire parser preserves quoted strings and rejects executable or unknown error structures", () => {
+    const message = 'synthetic parser fixture [,,] \\"quoted\\"\nnot a real temporary 429';
+    const rpc = [8, message, [["opaque", [null, null, "[,]", { text: "} [,]" }]]]];
+    assert.deepEqual(JSON.parse(errorEnvelope(`[,${JSON.stringify(rpc)}]`, 200).body), rpc);
+    assert.deepEqual(JSON.parse(errorEnvelope('[,[8,"message",[[, ,1]]]]', 429).body), [
+        8,
+        "message",
+        [[null, null, 1]],
+    ]);
+    for (const text of [
+        '(()=>{throw Error("must not execute")})()',
+        '[, [8,"bad",[]]]; process.exit(1)',
+        '{"error":{,"message":"bad"}}',
+        '{"arbitrary":[8,"unrelated",[]]}',
+        '[null,null,[8,"unrelated",[]]]',
+        '[null,[0,"OK",[]]]',
+        '[null,[8,"bad",{}]]',
+        "<html>unavailable</html>",
+    ]) {
+        const result = errorEnvelope(text, 429);
+        assert.equal(result.status, 429);
+        assert.deepEqual(JSON.parse(result.body), [8, "MakerSuite upstream request failed (HTTP 429)", []]);
+    }
+    assert.equal(errorEnvelope("unavailable", 503).status, 503);
+    assert.deepEqual(JSON.parse(errorEnvelope('{"error":{"message":"denied","details":[{"reason":"x"}]}}', 403).body), [
+        7,
+        "denied",
+        [{ reason: "x" }],
+    ]);
+});
+
+test("protocol-derived prompt feedback fixtures precede completion checks and preserve metadata", () => {
+    // Constructed from Google's public Studio reader, not a captured moderation response.
+    for (const [reason, name] of [
+        [1, "SAFETY"],
+        [2, "OTHER"],
+        [3, "BLOCKLIST"],
+        [4, "PROHIBITED_CONTENT"],
+        [5, "IMAGE_SAFETY"],
+        [99, "99"],
+    ]) {
+        for (const candidates of [null, [], [[answerContent]], [[answerContent, 1]], [[null]]]) {
+            const blocked = [candidates, [reason, [[null, null, 9, 4]], "reason from upstream"]];
+            const usage = [null, null, [12, 0, 12], null, null, null, null, "real-response-id"];
+            for (const stream of [false, true]) {
+                for (const root of [[blocked, usage], [[blocked, usage]]]) {
+                    const wire = JSON.parse(wrapResponse(JSON.stringify(root), stream));
+                    const result = JSON.parse(stream ? wire[0][0][0] : wire[0]);
+                    assert.equal(result.promptFeedback.blockReason, name);
+                    assert.equal(result.promptFeedback.blockReasonMessage, "reason from upstream");
+                    assert.deepEqual(result.promptFeedback.safetyRatings, [
+                        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", probability: "HIGH" },
+                    ]);
+                    assert.equal(result.usageMetadata.promptTokenCount, 12);
+                    assert.equal(result.responseId, "real-response-id");
+                    assert.deepEqual(result.candidates, []);
+                }
+            }
+        }
+    }
+    const result = merge([
+        { promptFeedback: { blockReason: "SAFETY", blockReasonMessage: "explanation" } },
+        { promptFeedback: { blockReason: "", safetyRatings: [] } },
+        { usageMetadata: { promptTokenCount: 4 } },
+    ]);
+    assert.equal(result.promptFeedback.blockReason, "SAFETY");
+    assert.equal(result.promptFeedback.blockReasonMessage, "explanation");
+    assert.equal(result.usageMetadata.promptTokenCount, 4);
+    for (const feedback of [[], [0], [null], ["4"], [-1]])
+        assert.throws(() => wrapResponse(JSON.stringify([[null, feedback, [4]]]), false), /confirmed finish/);
+    assert.throws(() => wrapResponse(JSON.stringify([[null, null, [4]]]), false), /confirmed finish/);
+    const filtered = [[[answerContent, 3]]];
+    const decoded = JSON.parse(JSON.parse(wrapResponse(JSON.stringify([filtered]), false))[0]);
+    assert.equal(decoded.candidates[0].finishReason, "SAFETY");
+    assert.equal(decoded.promptFeedback, undefined);
+});
+
+test("nested stream envelopes cannot turn a trailing RPC Status into prompt feedback", () => {
+    for (const streamed of [false, true]) {
+        assert.throws(
+            () => wrapResponse(JSON.stringify([[answer, [8, "quota", []]]]), streamed),
+            error => error.status === 429 && error.message === "quota"
+        );
+        const raw = [[answer, [null, [4, null, "blocked"]], [8, "quota", []]]];
+        const wrapped = JSON.parse(wrapResponse(JSON.stringify(raw), streamed));
+        const decoded = JSON.parse(streamed ? wrapped[0][0][0] : wrapped[0]);
+        assert.equal(decoded.promptFeedback.blockReason, "PROHIBITED_CONTENT");
+        assert.equal(decoded.usageMetadata.totalTokenCount, 6);
+    }
+});
+
+test("elided feedback and feedback split across chunks keep the actual reason and explanation", () => {
+    for (const streamed of [false, true]) {
+        const wrapped = JSON.parse(wrapResponse('[[,[,,"upstream explanation"]],[,[4]],[,[0], [6,0,6]]]', streamed));
+        const response = JSON.parse(streamed ? wrapped[0][0][0] : wrapped[0]);
+        assert.equal(response.promptFeedback.blockReason, "PROHIBITED_CONTENT");
+        assert.equal(response.promptFeedback.blockReasonMessage, "upstream explanation");
+        assert.equal(response.usageMetadata.promptTokenCount, 6);
+    }
 });

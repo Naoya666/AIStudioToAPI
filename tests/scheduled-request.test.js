@@ -2041,3 +2041,96 @@ test("context-spread mode retries with ordinary LRU, including another account o
         fixture.scheduler.close();
     }
 });
+
+test("raw MakerSuite blocks reach request handlers without replay, cooldown or successful terminals", async t => {
+    const { wrapResponse } = require("../src/core/MakerSuiteCodec");
+    for (const legacy of [false, true])
+        for (const anti of [false, true])
+            for (const mode of [null, "real", "fake", "early"])
+                for (const shape of ["feedback-only", "with-usage", "with-candidate"])
+                    await t.test(`${legacy}/${anti}/${mode}/${shape}`, async t => {
+                        const candidate = [[[[[null, "blocked candidate must not escape"]], "model"]]];
+                        // Protocol-derived positional fixture; no captured prompt or response content.
+                        const raw = [
+                            [
+                                shape === "with-candidate" ? candidate : null,
+                                [4, null, "network RESOURCE_EXHAUSTED Bearer private-secret"],
+                            ],
+                        ];
+                        if (shape !== "feedback-only")
+                            raw.push([null, null, [123, 0, 123], null, null, null, null, "google-response-id"]);
+                        const fixture = setup(
+                            () => {
+                                // Model Studio's existing ProxyUnary/ProxyStreamed unwrapping after the codec.
+                                const streamed = mode === "real";
+                                const wrapped = JSON.parse(wrapResponse(JSON.stringify(raw), streamed));
+                                const data = streamed
+                                    ? wrapped[0].map(record => `data: ${record[0]}\n\n`).join("")
+                                    : wrapped[0];
+                                return [success[0], { data, event_type: "chunk" }, success[2]];
+                            },
+                            { immediateSwitchStatusCodes: [400, 429, 503], scheduler: { streamEarlyHeaders: false } }
+                        );
+                        t.after(() => fixture.scheduler.close());
+                        if (legacy) {
+                            useLegacy(fixture);
+                            fixture.handler._ensureBrowserBackedRequestReady = async () => true;
+                        }
+                        let switches = 0;
+                        fixture.handler.authSwitcher.handleRequestFailureAndSwitch = async () => switches++;
+                        const res = new Response();
+                        await fixture.handler.processOpenAIRequest(
+                            request(`${anti ? "anti-" : ""}gemini-2.5-flash${mode ? `-${mode}` : ""}`, Boolean(mode)),
+                            res
+                        );
+                        const error = errorPayload(res);
+                        assert.equal(error?.code, "upstream_prompt_blocked", res.body);
+                        assert.equal(error.upstream.blockReason, "PROHIBITED_CONTENT");
+                        assert.equal(res.statusCode, mode === "early" ? 200 : 400, res.body);
+                        if (shape !== "feedback-only") assert.equal(error.usage.prompt_tokens, 123);
+                        assert.equal(res.body.includes("blocked candidate must not escape"), false);
+                        assert.equal(res.body.includes("private-secret"), false);
+                        assert.equal(res.body.includes("[DONE]"), false);
+                        assert.equal(fixture.sent.length, 1);
+                        assert.equal(switches, 0);
+                        assert.equal(res.__usageTrackingOutcome, "error");
+                        assert.equal(res.__usageTrackingErrorStatus, 400);
+                        assert.equal(res.writableEnded, true);
+                        assert.equal(fixture.registry.messageQueues.size, 0);
+                        if (!legacy) {
+                            const account = fixture.scheduler.account(fixture.sent[0].index);
+                            const slot = account.models["gemini-2.5-flash"];
+                            assert.equal(account.healthy, true);
+                            assert.equal(slot.failure_count, 0);
+                            assert.equal(slot.cooldown_until, 0);
+                            assert.equal(slot.unsupported, false);
+                            assert.equal(account.inflight, 0);
+                        }
+                    });
+});
+
+test("observed MakerSuite quota messages reach daily classification while unknown 429 stays temporary", async t => {
+    const { errorEnvelope } = require("../src/core/MakerSuiteCodec");
+    const samples = require("./fixtures/makersuite/daily-quota.json");
+    for (const wire of [...samples.map(sample => sample.wire), "unknown upstream response"])
+        await t.test(wire === "unknown upstream response" ? "unknown" : "observed daily", async t => {
+            const normalized = errorEnvelope(wire, 429);
+            const rpc = JSON.parse(normalized.body);
+            const fixture = setup(index =>
+                index === 0 ? [{ event_type: "error", message: rpc[1], status: normalized.status }] : success
+            );
+            t.after(() => fixture.scheduler.close());
+            const res = new Response();
+            await fixture.handler.processOpenAIRequest(request("flash"), res);
+            assert.equal(res.statusCode, 200, res.body);
+            const slot = fixture.scheduler.account(0).models.flash;
+            if (wire === "unknown upstream response") assert.notEqual(slot.rate_limit_type, "daily_quota");
+            else {
+                assert.equal(slot.rate_limit_type, "daily_quota");
+                assert.equal(
+                    new Date(slot.cooldown_until).toLocaleTimeString("en-GB", { timeZone: "America/Los_Angeles" }),
+                    "00:00:00"
+                );
+            }
+        });
+});

@@ -794,3 +794,38 @@ test("ambiguous or missing native exports fail without calling unrelated functio
         assert.doesNotThrow(() => f.sandbox.__makerSuiteBridge.dispose());
     }
 });
+
+test("bridge retains observed nested quota statuses for HTTP errors and HTTP 200 RPC failures", async t => {
+    for (const sample of require("./fixtures/makersuite/daily-quota.json"))
+        for (const status of [200, 429]) {
+            const f = fixture(t, 0, { fetch: async () => ({ status, text: async () => sample.wire }) });
+            await f.init();
+            const route = f.route();
+            await f.context.handler(route);
+            assert.equal(route.outcomes[0].status, 429);
+            assert.deepEqual(JSON.parse(route.outcomes[0].body), sample.rpc);
+            assert.equal(f.calls.length, 1);
+            assert.equal(
+                f.logs.some(line => line.includes(sample.rpc[1])),
+                false
+            );
+        }
+});
+
+test("bridge delivers prompt feedback as a response for the existing block handler", async t => {
+    for (const streamed of [false, true]) {
+        const text = '[[null,[4,null,"blocked"], [7,0,7],null,null,null,null,"response-id"]]';
+        const f = fixture(t, 0, { fetch: async () => ({ status: 200, text: async () => text }) });
+        await f.init();
+        const route = f.route({ streamed });
+        await f.context.handler(route);
+        assert.equal(route.outcomes[0].status, 200);
+        const body = JSON.parse(route.outcomes[0].body);
+        const response = JSON.parse(streamed ? body[0][0][0] : body[0]);
+        assert.equal(response.promptFeedback.blockReason, "PROHIBITED_CONTENT");
+        assert.equal(response.usageMetadata.promptTokenCount, 7);
+        assert.equal(response.responseId, "response-id");
+        assert.deepEqual(response.candidates, []);
+        assert.equal(f.calls.length, 1);
+    }
+});
