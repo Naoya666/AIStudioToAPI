@@ -211,6 +211,26 @@ class ConfigurationService {
         if (this.system.scheduler && this.running.scheduler.contextPoolMinReady === 0) return true; // Intentional lazy initialization.
         return (health?.ready || 0) > 0 && !(health?.staleInitializing > 0);
     }
+    waitingForQuota() {
+        if (!this.system.ready || this.system.scheduler?.isWaitingForQuota?.() !== true) return false;
+        const manager = this.system.browserManager;
+        const health = manager?.getContextInitHealth?.();
+        return (
+            !!health &&
+            !health.recovering &&
+            !health.initializing &&
+            !health.staleInitializing &&
+            !health.cleanupPending &&
+            !manager._contextInitTasks?.size &&
+            !manager.contextUnavailable?.size &&
+            ["STOPPED", "RUNNING"].includes(health.browserState)
+        );
+    }
+    startupAcceptable() {
+        // Accept a validated, listening service waiting for quota without claiming
+        // that it can serve inference. The supervisor can then accept its configuration.
+        return this.operational() || this.waitingForQuota();
+    }
     snapshot(reveal = false) {
         const errorPath = path.join(path.dirname(this.file), "restart-status.json");
         if (fs.existsSync(errorPath)) this.restartError = JSON.parse(fs.readFileSync(errorPath, "utf8")).error;

@@ -185,7 +185,9 @@
                             <datalist :id="`models-${d.name}`">
                                 <option v-for="model in models" :key="model" :value="model" />
                             </datalist>
-                            <ElButton :disabled="busy" @click="draft[d.name].push({ model: '', transport: 'legacy' })"
+                            <ElButton
+                                :disabled="busy"
+                                @click="draft[d.name].push({ model: '', transport: 'makersuite' })"
                                 >增加模型</ElButton
                             >
                             <p>

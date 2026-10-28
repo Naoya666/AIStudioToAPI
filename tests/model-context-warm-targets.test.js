@@ -238,3 +238,58 @@ test("coverage initialization gets an opportunity ahead of unrelated repeated de
     scheduler.slot(scheduler.account(0), "a").unsupported = true;
     assert.deepEqual(manager._poolCandidates().slice(0, 3), [1, 2, 0]);
 });
+
+test("quota wait requires healthy authorized accounts and natural expiry wakes an empty pool", async t => {
+    const { manager, scheduler } = fixture(t, { a: 1 }, 2, 2);
+    let now = scheduler.now();
+    scheduler.now = () => now;
+    scheduler.getVisibleModels = () => new Set(["a"]);
+    scheduler.isTierAllowed = () => true;
+    const deadline = now + 1000;
+    for (const index of [0, 1])
+        Object.assign(scheduler.slot(scheduler.account(index), "a"), {
+            cooldown_until: deadline,
+            rate_limit_type: "daily_quota",
+            rate_limited: true,
+        });
+    assert.equal(scheduler.isWaitingForQuota(), true);
+    assert.deepEqual(manager._poolCandidates(), []);
+    for (const patch of [{ healthy: false }, { disabled: true }]) {
+        const account = scheduler.account(0);
+        const previous = { ...account };
+        Object.assign(account, patch);
+        assert.equal(scheduler.isWaitingForQuota(), false);
+        Object.assign(account, previous);
+    }
+    scheduler.authSource.isExpired = () => true;
+    assert.equal(scheduler.isWaitingForQuota(), false);
+    scheduler.authSource.isExpired = () => false;
+    scheduler.isTierAllowed = () => false;
+    assert.equal(scheduler.isWaitingForQuota(), false);
+    scheduler.isTierAllowed = () => true;
+    scheduler.account(0).models.a.unsupported = true;
+    assert.equal(scheduler.isWaitingForQuota(), false);
+    scheduler.account(0).models.a.unsupported = false;
+    let wake;
+    scheduler.setTimer = (callback, delay) => {
+        assert.equal(delay, 1000);
+        wake = callback;
+        return { unref() {} };
+    };
+    scheduler.clearTimer = () => {};
+    let reconciled = false;
+    scheduler.browserManager = manager;
+    manager.reconcileContextPool = () => {
+        reconciled = true;
+    };
+    scheduler._scheduleCooldownWake();
+    assert.equal(scheduler.nextCooldownCheckAt, deadline);
+    now = deadline;
+    wake();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(scheduler.isWaitingForQuota(), false);
+    assert.ok(manager._poolCandidates().length > 0);
+    assert.equal(reconciled, true);
+    assert.equal(scheduler.nextCooldownCheckAt, null);
+    assert.equal(scheduler.account(0).models.a.rate_limited, false);
+});

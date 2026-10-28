@@ -132,3 +132,129 @@ else {
         assert.equal(retried.pending.length, 0);
     }
 );
+
+for (const [hasLastGood, browserState] of [
+    [false, "STOPPED"],
+    [true, "STOPPED"],
+    [false, "FAILED"],
+    [true, "FAILED"],
+]) {
+    test(
+        `production startup with quota idle, browser=${browserState}, last-good=${hasLastGood}`,
+        { timeout: 15000 },
+        async t => {
+            const directory = fs.mkdtempSync(path.join(os.tmpdir(), "quota-startup-"));
+            const data = path.join(directory, "data");
+            fs.mkdirSync(data);
+            const saved = {
+                migratedAccounts: true,
+                overrides: { CONTEXT_POOL_MIN_READY: 8, GLOBAL_MAX_CONCURRENCY: 80, MAX_BROWSER_WORKERS: 8 },
+                version: 2,
+            };
+            fs.writeFileSync(path.join(data, "managed-config.json"), JSON.stringify(saved));
+            if (hasLastGood)
+                fs.writeFileSync(
+                    path.join(data, "managed-config.last-good.json"),
+                    JSON.stringify({
+                        ...saved,
+                        overrides: { CONTEXT_POOL_MIN_READY: 1, GLOBAL_MAX_CONCURRENCY: 1, MAX_BROWSER_WORKERS: 1 },
+                        version: 1,
+                    })
+                );
+            const entry = path.join(directory, "fixture.cjs");
+            fs.writeFileSync(
+                entry,
+                `
+const fs = require('fs'), path = require('path'), http = require('http');
+if (!process.send) require(${modulePath("ServiceSupervisor.js")}).supervise(__filename);
+else {
+    fs.appendFileSync('launches', process.env.AISTUDIO_CONFIG_RECOVERY + '\\n');
+    // Advance beyond the production startup deadline if main enters its wait loop.
+    const realSetTimeout = global.setTimeout, realNow = Date.now;
+    let offset = 0;
+    Date.now = () => realNow() + offset;
+    global.setTimeout = (callback, delay, ...args) => {
+        if (delay === 250) { offset += 240001; delay = 1; }
+        return realSetTimeout(callback, delay, ...args);
+    };
+    class FixtureSystem {
+        constructor() {
+            this.logger = { error(){}, info(){}, warn(){} };
+            this.authSource = { availableIndices: [0] };
+            this.configurationService = new (require(${modulePath("ConfigurationService.js")})).ConfigurationService(this, { env: { AISTUDIO_CONFIG_RECOVERY: process.env.AISTUDIO_CONFIG_RECOVERY, SUPERVISOR_HEARTBEAT_MS: "20", SUPERVISOR_TIMEOUT_MS: "1500", CONTEXT_OPERATION_TIMEOUT_MS: "10", CONTEXT_INIT_TOTAL_TIMEOUT_MS: "20" } });
+            // Queued inference has no capacity; it is not stalled initialization.
+            this.scheduler = { metrics: {}, pending: [{}], isWaitingForQuota: () => true };
+            this.browserManager = { getContextInitHealth: () => ({ browserState: ${JSON.stringify(browserState)}, ready: 0, initializing: 0, staleInitializing: 0 }) };
+        }
+        async start() {
+            this.httpServer = http.createServer((req,res) => { res.end('ok'); });
+            await new Promise(resolve => this.httpServer.listen(0, '127.0.0.1', resolve));
+            this.ready = true;
+        }
+        async shutdown() { await new Promise(resolve => this.httpServer.close(resolve)); }
+    }
+    const systemPath = ${JSON.stringify(require.resolve("../src/core/ProxyServerSystem"))};
+    require.cache[systemPath] = { id: systemPath, filename: systemPath, loaded: true, exports: FixtureSystem };
+    require(${JSON.stringify(require.resolve("../main"))}).initializeServer();
+}
+`
+            );
+            let output = "";
+            const child = spawn(process.execPath, [entry], {
+                cwd: directory,
+                env: { ...process.env, AISTUDIO_SERVICE_CHILD: "0" },
+                stdio: ["ignore", "pipe", "pipe"],
+            });
+            child.stdout.on("data", value => (output += value));
+            child.stderr.on("data", value => (output += value));
+            t.after(async () => {
+                if (child.exitCode === null) {
+                    const ended = once(child, "exit");
+                    child.kill("SIGTERM");
+                    await ended;
+                }
+                fs.rmSync(directory, { force: true, recursive: true });
+            });
+            const deadline = Date.now() + 8000;
+            if (browserState === "FAILED") {
+                while (child.exitCode === null && Date.now() < deadline)
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                assert.equal(child.exitCode, 1, output);
+                assert.equal(
+                    fs.readFileSync(path.join(directory, "launches"), "utf8"),
+                    hasLastGood ? "0\n1\n" : "0\n",
+                    output
+                );
+                assert.match(output, /Service contexts did not become healthy within startup deadline/);
+                if (hasLastGood)
+                    assert.equal(
+                        JSON.parse(fs.readFileSync(path.join(data, "managed-config.last-good.json"))).version,
+                        1
+                    );
+                else assert.equal(fs.existsSync(path.join(data, "managed-config.last-good.json")), false);
+                return;
+            }
+            let good;
+            while (Date.now() < deadline) {
+                assert.equal(child.exitCode, null, output);
+                try {
+                    good = JSON.parse(fs.readFileSync(path.join(data, "managed-config.last-good.json")));
+                } catch {
+                    /* Not accepted yet. */
+                }
+                if (good?.overrides.MAX_BROWSER_WORKERS === 8) break;
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            assert.equal(good?.overrides.MAX_BROWSER_WORKERS, 8, output);
+            assert.equal(good?.overrides.GLOBAL_MAX_CONCURRENCY, 80, output);
+            // Cover multiple supervisor probes and its no-progress watchdog window.
+            await new Promise(resolve => setTimeout(resolve, 3200));
+            assert.equal(child.exitCode, null, output);
+            assert.equal(fs.readFileSync(path.join(directory, "launches"), "utf8"), "0\n", output);
+            const actualSaved = JSON.parse(fs.readFileSync(path.join(data, "managed-config.json")));
+            assert.equal(actualSaved.overrides.MAX_BROWSER_WORKERS, 8);
+            assert.equal(actualSaved.overrides.GLOBAL_MAX_CONCURRENCY, 80);
+            assert.doesNotMatch(output, /startup failed|restoring last usable|recovery budget exhausted/i);
+        }
+    );
+}

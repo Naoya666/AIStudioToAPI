@@ -63,6 +63,15 @@ function setup(reply, overrides = {}) {
         immediateSwitchStatusCodes: [429, 503],
         makerSuiteTimeoutMs: 100,
         maxRetries: 3,
+        // These fixtures exercise legacy incremental frames and disconnects.
+        // Bridge fixtures below use models without an explicit legacy override.
+        modelTransportPolicy: {
+            a: "legacy",
+            b: "legacy",
+            flash: "legacy",
+            "gemini-2.5-flash": "legacy",
+            other: "legacy",
+        },
         retryDelay: 1,
         streamingMode: "real",
         streamTimeoutMs: 100,
@@ -1486,53 +1495,55 @@ test("anti early fills missing or invalid upstream fields without overriding val
     }
 });
 
-test("Argon uses unary across all adapters while preserving client JSON and SSE", async t => {
-    for (const method of [
-        "processOpenAIRequest",
-        "processOpenAIResponseRequest",
-        "processClaudeRequest",
-        "processRequest",
-    ]) {
-        for (const stream of [false, true]) {
-            await t.test(`${method} stream=${stream}`, async t => {
-                const fixture = setup(() => success, { paidAccounts: [0] });
-                t.after(() => fixture.scheduler.close());
-                const benefit = { state: "ready-paid", verified: true };
-                fixture.browser.contexts = new Map([
-                    [
-                        0,
-                        {
-                            page: { buildBenefit: benefit, makerSuiteBridge: { cancelAttempt() {}, prepare() {} } },
-                            state: "READY",
-                        },
-                    ],
-                ]);
-                fixture.browser.isContextReady = index => index === 0;
-                fixture.scheduler.browserManager = fixture.browser;
-                const req = request("gemini-4-argon-real", stream);
-                if (method === "processOpenAIResponseRequest") req.body.input = "hi";
-                if (method === "processRequest") {
-                    req.path = `/v1beta/models/gemini-4-argon-real:${stream ? "streamGenerateContent" : "generateContent"}`;
-                    req.body = { contents: [{ parts: [{ text: "hi" }], role: "user" }] };
-                    req.query = stream ? { alt: "sse" } : {};
-                }
-                const res = new Response();
-                await fixture.handler[method](req, res);
-                assert.equal(res.statusCode, 200, res.body);
-                assert.equal(fixture.sent.length, 1);
-                assert.equal(fixture.sent[0].index, 0);
-                assert.equal(fixture.sent[0].request.path, "/v1beta/models/gemini-4-argon:generateContent");
-                assert.equal(fixture.sent[0].request.query_params.alt, undefined);
-                assert.equal(fixture.sent[0].request.streaming_mode, "fake");
-                if (stream) {
-                    assert.match(res.body, /data: /);
-                    assert.equal(res.__proxyResponseStreamMode, "fake");
-                } else assert.doesNotThrow(() => JSON.parse(res.body));
-                assert.match(res.body, /hello/);
-            });
+for (const model of ["gemini-4-argon", "gemini-3.7-flash"]) {
+    test(`${model} defaults to bridge across all adapters while preserving client JSON and SSE`, async t => {
+        for (const method of [
+            "processOpenAIRequest",
+            "processOpenAIResponseRequest",
+            "processClaudeRequest",
+            "processRequest",
+        ]) {
+            for (const stream of [false, true]) {
+                await t.test(`${method} stream=${stream}`, async t => {
+                    const fixture = setup(() => success, { paidAccounts: [0] });
+                    t.after(() => fixture.scheduler.close());
+                    const benefit = { state: "ready-paid", verified: true };
+                    fixture.browser.contexts = new Map([
+                        [
+                            0,
+                            {
+                                page: { buildBenefit: benefit, makerSuiteBridge: { cancelAttempt() {}, prepare() {} } },
+                                state: "READY",
+                            },
+                        ],
+                    ]);
+                    fixture.browser.isContextReady = index => index === 0;
+                    fixture.scheduler.browserManager = fixture.browser;
+                    const req = request(`${model}-real`, stream);
+                    if (method === "processOpenAIResponseRequest") req.body.input = "hi";
+                    if (method === "processRequest") {
+                        req.path = `/v1beta/models/${model}-real:${stream ? "streamGenerateContent" : "generateContent"}`;
+                        req.body = { contents: [{ parts: [{ text: "hi" }], role: "user" }] };
+                        req.query = stream ? { alt: "sse" } : {};
+                    }
+                    const res = new Response();
+                    await fixture.handler[method](req, res);
+                    assert.equal(res.statusCode, 200, res.body);
+                    assert.equal(fixture.sent.length, 1);
+                    assert.equal(fixture.sent[0].index, 0);
+                    assert.equal(fixture.sent[0].request.path, `/v1beta/models/${model}:generateContent`);
+                    assert.equal(fixture.sent[0].request.query_params.alt, undefined);
+                    assert.equal(fixture.sent[0].request.streaming_mode, "fake");
+                    if (stream) {
+                        assert.match(res.body, /data: /);
+                        assert.equal(res.__proxyResponseStreamMode, "fake");
+                    } else assert.doesNotThrow(() => JSON.parse(res.body));
+                    assert.match(res.body, /hello/);
+                });
+            }
         }
-    }
-});
+    });
+}
 
 test("Argon permission errors affect only the model and do not replay generation", async t => {
     const fixture = setup(() => [{ event_type: "error", message: "PERMISSION_DENIED", status: 403 }], {

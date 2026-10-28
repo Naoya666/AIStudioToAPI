@@ -385,3 +385,48 @@ test("warm targets persist, validate against resized capacity and require restar
     assert.equal(service.saved.scheduler.maxWorkers, 3);
     assert.equal(service.saved.scheduler.modelContextWarmTargets["custom-upstream:preview"], 2);
 });
+
+test("quota-only idle startup accepts saved configuration without claiming inference readiness", t => {
+    const { service, system, directory, save } = setup(t, { CONTEXT_POOL_MIN_READY: "1" });
+    atomicWrite(path.join(directory, "managed-config.last-good.json"), service.runningDocument());
+    save({ CONTEXT_POOL_MIN_READY: 8, GLOBAL_MAX_CONCURRENCY: 80, MAX_BROWSER_WORKERS: 8 });
+    const restarted = new ConfigurationService(system, { env: {}, file: service.file });
+    system.authSource = { availableIndices: [0] };
+    system.scheduler = { isWaitingForQuota: () => true };
+    const health = { browserState: "STOPPED", initializing: 0, ready: 0, staleInitializing: 0 };
+    system.browserManager = { contextUnavailable: new Map(), getContextInitHealth: () => health };
+    assert.equal(restarted.startupAcceptable(), true);
+    assert.equal(restarted.operational(), false);
+    assert.equal(restarted.snapshot().pending.length, 0);
+    assert.equal(restarted.running.scheduler.maxWorkers, 8);
+    assert.equal(restarted.running.scheduler.globalConcurrency, 80);
+    assert.equal(
+        JSON.parse(fs.readFileSync(path.join(directory, "managed-config.last-good.json"))).overrides
+            .MAX_BROWSER_WORKERS,
+        1
+    );
+    for (const patch of [
+        { initializing: 1 },
+        { staleInitializing: 1 },
+        { recovering: true },
+        { cleanupPending: 1 },
+        { browserState: "FAILED" },
+        { browserState: "STARTING" },
+    ]) {
+        const previous = { ...health };
+        Object.assign(health, patch);
+        assert.equal(restarted.startupAcceptable(), false, JSON.stringify(patch));
+        Object.keys(health).forEach(key => delete health[key]);
+        Object.assign(health, previous);
+    }
+    system.browserManager.contextUnavailable.set(0, { reason: "init_failed" });
+    assert.equal(restarted.startupAcceptable(), false);
+    system.browserManager.contextUnavailable.clear();
+    system.browserManager._contextInitTasks = new Map([[0, {}]]);
+    assert.equal(restarted.startupAcceptable(), false);
+    system.browserManager._contextInitTasks.clear();
+    system.scheduler.isWaitingForQuota = () => false;
+    assert.equal(restarted.startupAcceptable(), false);
+    system.ready = false;
+    assert.equal(restarted.startupAcceptable(), false);
+});

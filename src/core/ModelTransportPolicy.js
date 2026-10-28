@@ -35,7 +35,7 @@ function parsePolicy(value = {}) {
 function resolve(model, mode = "fake", overrides = {}) {
     model = cleanModel(model);
     const rules = parsePolicy(overrides);
-    const transport = Object.hasOwn(rules, model) ? rules[model] : model === "gemini-4-argon" ? "makersuite" : "legacy";
+    const transport = Object.hasOwn(rules, model) ? rules[model] : "makersuite";
     return Object.freeze({
         effectiveMode: transport === "makersuite" && mode === "real" ? "fake" : mode,
         incremental: transport === "legacy",

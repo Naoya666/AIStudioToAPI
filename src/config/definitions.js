@@ -14,7 +14,7 @@ module.exports = [
     },
     {
         application: "restart",
-        description: "精确模型 ID 到 legacy 或 makersuite 的映射；重启生效",
+        description: "所有模型默认使用 makersuite 桥接；可按精确模型 ID 覆盖为 legacy 或 makersuite，重启生效",
         group: "请求处理与模型功能",
         label: "模型传输策略",
         mode: "all",
@@ -315,7 +315,7 @@ module.exports = [
     {
         application: "hot",
         description:
-            "仅用于 legacy 通道的非流式或假流式请求。gemini-4-argon 默认走 MakerSuite 桥接，不受本项限制，请设置下方的桥接生成超时。",
+            "仅用于 legacy 通道的非流式或假流式请求。所有模型默认走 MakerSuite 桥接，不受本项限制，请设置下方的桥接生成超时。",
         group: "请求处理与模型功能",
         label: "普通通道缓冲响应超时",
         maximum: MAX_GENERATION_TIMEOUT_MS,

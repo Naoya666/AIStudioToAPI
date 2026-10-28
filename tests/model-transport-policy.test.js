@@ -15,10 +15,12 @@ test("exact routing follows existing prefix/suffix parsing, with immutable per-r
         assert.equal(policy.timeoutCategory, "buffered");
         assert.equal(Object.isFrozen(policy), true);
     }
-    for (const name of ["gemini-3.7-flash", "gemini-4-other", "gemini-4-argon-preview", "constructor"]) {
-        assert.equal(resolve(name, "real").transport, "legacy");
-        assert.equal(resolve(name, "real").effectiveMode, "real");
+    for (const name of ["gemini-3.7-flash", "gemini-4-other", "gemini-4-argon-preview"]) {
+        assert.equal(resolve(name, "real").transport, "makersuite");
+        assert.equal(resolve(name, "real").effectiveMode, "fake");
+        assert.equal(resolve(name, "real", { [name]: "legacy" }).transport, "legacy");
     }
+    assert.equal(resolve("constructor", "real").transport, "makersuite");
     assert.equal(resolve("gemini-4-argon", "early").effectiveMode, "early");
     assert.equal(resolve("gemini-4-argon", "real", { "gemini-4-argon": "legacy" }).effectiveMode, "real");
     assert.equal(resolve("gemini-3.7-flash", "real", { "gemini-3.7-flash": "makersuite" }).effectiveMode, "fake");

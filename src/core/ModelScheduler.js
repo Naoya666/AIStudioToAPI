@@ -312,6 +312,31 @@ class ModelScheduler {
         );
     }
 
+    isWaitingForQuota() {
+        if (this.closed || this.paused) return false;
+        const indices = this.authSource.getRotationIndices();
+        const now = this.now();
+        const models = this.getVisibleModels();
+        // Zero candidates alone is insufficient: authentication, permissions and
+        // unsupported models must not masquerade as temporary quota exhaustion.
+        return (
+            indices.length > 0 &&
+            indices.every(index => {
+                const account = this.account(index);
+                return (
+                    account.healthy &&
+                    !account.disabled &&
+                    !this.authSource.isExpired?.(index) &&
+                    this.isAccountQuotaExhausted(account, now, models) &&
+                    ![...models].some(
+                        model => this.isTierAllowed(index, model) && account.models[model]?.unsupported
+                    ) &&
+                    !this.accountPoolRestriction(account, models)
+                );
+            })
+        );
+    }
+
     isResourceEligible(account, model, now = this.now()) {
         const slot = account.models[model];
         if (!this.isTierAllowed(account.index, model)) return false;

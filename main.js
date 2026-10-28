@@ -46,7 +46,10 @@ const initializeServer = async () => {
                 progress: {
                     completed: serverSystem.scheduler?.metrics.completed || 0,
                     generation: health.generation,
-                    pending: (serverSystem.scheduler?.pending.length || 0) + health.initializing,
+                    pending:
+                        (serverSystem.configurationService.waitingForQuota()
+                            ? 0
+                            : serverSystem.scheduler?.pending.length || 0) + health.initializing,
                     ready: health.ready,
                 },
                 sequence: message.sequence,
@@ -80,10 +83,10 @@ const initializeServer = async () => {
             if (message?.type === "shutdown") shutdownHandler("restart");
         });
         const startupDeadline = Date.now() + 240000;
-        while (!shuttingDown && !serverSystem.configurationService.operational() && Date.now() < startupDeadline)
+        while (!shuttingDown && !serverSystem.configurationService.startupAcceptable() && Date.now() < startupDeadline)
             await new Promise(resolve => setTimeout(resolve, 250));
         if (shuttingDown) return;
-        if (!serverSystem.configurationService.operational())
+        if (!serverSystem.configurationService.startupAcceptable())
             throw new Error("Service contexts did not become healthy within startup deadline");
         const address = serverSystem.httpServer.address();
         process.send?.({

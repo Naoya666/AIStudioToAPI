@@ -201,10 +201,10 @@ See the [production diagnosis and fix report](docs/zh/gemini-4-argon-production-
 
 ### Model transport compatibility
 
-`gemini-3.7-flash` keeps its original ID, legacy Proxy RPC and real streaming. `gemini-4-argon` defaults to the MakerSuite GenerateContent bridge. All other models remain on legacy. The configuration UI provides model ID rows with legacy / bridge selectors. Saved transport overrides require a restart; environment overrides remain JSON mappings:
+All models default to the MakerSuite GenerateContent bridge and keep their original IDs. The legacy endpoint no longer works; existing explicit `legacy` overrides still take precedence and should be changed to `makersuite` or removed. The configuration UI provides model ID rows with legacy / bridge selectors. Saved transport overrides require a restart; environment overrides remain JSON mappings:
 
 ```dotenv
-MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"legacy","gemini-4-argon":"makersuite"}
+MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"makersuite","gemini-4-argon":"makersuite"}
 ```
 
 Only canonical model IDs and `legacy` / `makersuite` are accepted. Requests keep their transport snapshot through retries and continuation rounds. There is no automatic channel fallback or model renaming. Argon uses the shared account tier policy and the current page’s real authentication and entitlement headers. Manual tiers do not grant upstream permissions.

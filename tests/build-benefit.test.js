@@ -316,7 +316,7 @@ test("Argon policy applies before WAA and native SSE intent remains separate", (
     assert.deepEqual(untrusted.headers, { "content-type": "application/json" });
     assert.equal(handler._effectiveStreamMode("gemini-4-argon", "real"), "fake");
     assert.equal(handler._effectiveStreamMode("gemini-4-argon", "early"), "early");
-    assert.equal(handler._effectiveStreamMode("gemini-4-other", "real"), "real");
+    assert.equal(handler._effectiveStreamMode("gemini-4-other", "real"), "fake");
     assert.equal(getModelDailyQuota("gemini-4-argon"), 0);
     assert.doesNotThrow(() => loadConfig({ ARGON_VERIFIED_ACCOUNTS: "invalid old config" }));
     assert.equal(loadConfig({ ARGON_VERIFIED_ACCOUNTS: "[0,2,2]" }).argonVerifiedAccounts, undefined);

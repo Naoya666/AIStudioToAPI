@@ -270,10 +270,10 @@ Camoufox 生产差异及后续修复见 [生产问题定位](docs/zh/gemini-4-ar
 
 ### 模型传输兼容
 
-默认 `gemini-3.7-flash` 保留原始 ID、旧 Proxy RPC 和 real 流式；`gemini-4-argon` 使用 MakerSuite GenerateContent 桥接，其他模型仍走 legacy。可在配置页逐行填写模型 ID 并选择“旧通道 / 桥接通道”，保存后重启生效；环境变量仍支持精确模型映射：
+所有模型默认使用 MakerSuite GenerateContent 桥接，保留原始模型 ID。旧版接口已失效，已有显式 `legacy` 配置仍会覆盖默认值，需要改为 `makersuite` 或删除覆盖。可在配置页逐行填写模型 ID 并选择“旧通道 / 桥接通道”，保存后重启生效；环境变量仍支持精确模型映射：
 
 ```dotenv
-MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"legacy","gemini-4-argon":"makersuite"}
+MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"makersuite","gemini-4-argon":"makersuite"}
 ```
 
 只接受无指令后缀的精确模型 ID 和 `legacy` / `makersuite`，不支持通配符、自动跨通道重试或模型改名。每个请求固定策略，重试和后续轮次不切换路径。Argon 使用统一账号层级准入，同时保留当前页面的真实认证及权益头；手动层级不授予真实上游权限。
