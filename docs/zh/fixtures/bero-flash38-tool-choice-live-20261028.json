@@ -1,0 +1,459 @@
+[
+  {
+    "case": "auto_baseline",
+    "config": {
+      "kind": "passthrough"
+    },
+    "mode": "AUTO",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:33:36.709421+00:00",
+    "status": 200,
+    "elapsed_s": 3.948,
+    "calls": [
+      {
+        "name": "tcprobe_weather",
+        "args": {
+          "city": "Shanghai"
+        }
+      }
+    ],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": false,
+    "constraint_obeyed": true,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"passthrough\",\"mode\":\"AUTO\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=1 request=req_1793187216714_t6it880ne attempt=req_1793187216714_t6it880ne_attempt_1_d19f0j model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "discarded_required_control",
+    "config": {
+      "kind": "passthrough"
+    },
+    "mode": "ANY",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:33:40.722993+00:00",
+    "status": 200,
+    "elapsed_s": 2.438,
+    "calls": [],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": true,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"passthrough\",\"mode\":\"ANY\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=0 request=req_1793187220726_22qk633o6 attempt=req_1793187220726_22qk633o6_attempt_1_rltskd model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "discarded_named_control",
+    "config": {
+      "kind": "passthrough"
+    },
+    "mode": "NAMED",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:33:43.228885+00:00",
+    "status": 200,
+    "elapsed_s": 3.423,
+    "calls": [
+      {
+        "name": "tcprobe_time",
+        "args": {
+          "city": "Shanghai"
+        }
+      }
+    ],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": false,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"passthrough\",\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=1 request=req_1793187223231_follvza6i attempt=req_1793187223231_follvza6i_attempt_1_j1piwn model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_8_0_required",
+    "config": {
+      "kind": "native",
+      "index": 8,
+      "layout": 0
+    },
+    "mode": "ANY",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:33:46.721299+00:00",
+    "status": 400,
+    "elapsed_s": 0.117,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":8,\"layout\":0,\"mode\":\"ANY\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=0 request=req_1793187226723_3u7yw0ap5 attempt=req_1793187226723_3u7yw0ap5_attempt_1_b1cjqz model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_8_1_required",
+    "config": {
+      "kind": "native",
+      "index": 8,
+      "layout": 1
+    },
+    "mode": "ANY",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:33:46.906551+00:00",
+    "status": 400,
+    "elapsed_s": 0.088,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":8,\"layout\":1,\"mode\":\"ANY\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=1 request=req_1793187226908_fmxw427hq attempt=req_1793187226908_fmxw427hq_attempt_1_og172u model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_9_0_required",
+    "config": {
+      "kind": "native",
+      "index": 9,
+      "layout": 0
+    },
+    "mode": "ANY",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:33:47.054431+00:00",
+    "status": 400,
+    "elapsed_s": 13.42,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":9,\"layout\":0,\"mode\":\"ANY\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=2 request=req_1793187227056_7p9vov403 attempt=req_1793187227056_7p9vov403_attempt_1_wwwzwx model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_9_1_required",
+    "config": {
+      "kind": "native",
+      "index": 9,
+      "layout": 1
+    },
+    "mode": "ANY",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:34:00.553665+00:00",
+    "status": 400,
+    "elapsed_s": 7.206,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":9,\"layout\":1,\"mode\":\"ANY\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=3 request=req_1793187240556_2cv07hq9f attempt=req_1793187240556_2cv07hq9f_attempt_1_tl5c9k model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "filtered_named_anti_tool",
+    "config": {
+      "kind": "filter"
+    },
+    "mode": "NAMED",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:34:07.825347+00:00",
+    "status": 200,
+    "elapsed_s": 8.856,
+    "calls": [],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": true,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"filter\",\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=4 request=req_1793187247827_zmbt4530w attempt=req_1793187247827_zmbt4530w_attempt_1_8ay7b2 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "filtered_named_conflict",
+    "config": {
+      "kind": "filter"
+    },
+    "mode": "NAMED",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:34:16.746732+00:00",
+    "status": 200,
+    "elapsed_s": 2.711,
+    "calls": [],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": false,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"filter\",\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=4 request=req_1793187256749_td8c819rv attempt=req_1793187256749_td8c819rv_attempt_1_8ag76d model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_8_0_named",
+    "config": {
+      "kind": "native",
+      "index": 8,
+      "layout": 0
+    },
+    "mode": "NAMED",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:35:10.333367+00:00",
+    "status": 400,
+    "elapsed_s": 0.643,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":8,\"layout\":0,\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_time\",\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=0 request=req_1793187310337_nmjk252oq attempt=req_1793187310337_nmjk252oq_attempt_1_dmizc3 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_8_1_named",
+    "config": {
+      "kind": "native",
+      "index": 8,
+      "layout": 1
+    },
+    "mode": "NAMED",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:35:11.042786+00:00",
+    "status": 400,
+    "elapsed_s": 0.135,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":8,\"layout\":1,\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_time\",\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=4 request=req_1793187311044_rxywww9m3 attempt=req_1793187311044_rxywww9m3_attempt_1_3r6mie model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_9_0_named",
+    "config": {
+      "kind": "native",
+      "index": 9,
+      "layout": 0
+    },
+    "mode": "NAMED",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:35:11.243843+00:00",
+    "status": 400,
+    "elapsed_s": 12.458,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":9,\"layout\":0,\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_time\",\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=1 request=req_1793187311246_nr6ciytj4 attempt=req_1793187311246_nr6ciytj4_attempt_1_lqe8a4 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "candidate_9_1_named",
+    "config": {
+      "kind": "native",
+      "index": 9,
+      "layout": 1
+    },
+    "mode": "NAMED",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:35:23.778448+00:00",
+    "status": 400,
+    "elapsed_s": 9.295,
+    "error_code": 400,
+    "error_categories": [],
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"native\",\"index\":9,\"layout\":1,\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_time\",\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":400,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=2 request=req_1793187323784_e4mjw77gw attempt=req_1793187323784_e4mjw77gw_attempt_1_xsbeyk model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "filtered_named_positive",
+    "config": {
+      "kind": "filter"
+    },
+    "mode": "NAMED",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:35:33.143109+00:00",
+    "status": 200,
+    "elapsed_s": 8.213,
+    "calls": [
+      {
+        "name": "tcprobe_weather",
+        "args": {
+          "city": "Shanghai"
+        }
+      }
+    ],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": false,
+    "constraint_obeyed": true,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"filter\",\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=3 request=req_1793187333145_htva9u4ax attempt=req_1793187333145_htva9u4ax_attempt_1_ijrsye model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "discarded_required_repeat_0",
+    "config": {
+      "kind": "passthrough"
+    },
+    "mode": "ANY",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:35:41.425769+00:00",
+    "status": 200,
+    "elapsed_s": 1.933,
+    "calls": [],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": true,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"passthrough\",\"mode\":\"ANY\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=3 request=req_1793187341428_6i0stvyut attempt=req_1793187341428_6i0stvyut_attempt_1_3m2ih6 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "filtered_named_anti_tool_repeat_0",
+    "config": {
+      "kind": "filter"
+    },
+    "mode": "NAMED",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:35:43.437215+00:00",
+    "status": 200,
+    "elapsed_s": 2.893,
+    "calls": [],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": true,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"filter\",\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=3 request=req_1793187343439_8teoggn0u attempt=req_1793187343439_8teoggn0u_attempt_1_u7f374 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "discarded_required_repeat_1",
+    "config": {
+      "kind": "passthrough"
+    },
+    "mode": "ANY",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:35:46.395052+00:00",
+    "status": 200,
+    "elapsed_s": 2.383,
+    "calls": [],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": true,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"passthrough\",\"mode\":\"ANY\",\"names\":[],\"wireTools\":[\"tcprobe_time\",\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=3 request=req_1793187346397_v5wpunsgx attempt=req_1793187346397_v5wpunsgx_attempt_1_3snl0a model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "filtered_named_anti_tool_repeat_1",
+    "config": {
+      "kind": "filter"
+    },
+    "mode": "NAMED",
+    "reverse_tools": true,
+    "started_at": "2026-10-28T11:35:48.846275+00:00",
+    "status": 200,
+    "elapsed_s": 1.936,
+    "calls": [],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": true,
+    "constraint_obeyed": false,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"filter\",\"mode\":\"ANY\",\"names\":[\"tcprobe_weather\"],\"wireTools\":[\"tcprobe_weather\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=3 request=req_1793187348849_dpt0djnhf attempt=req_1793187348849_dpt0djnhf_attempt_1_20n3vq model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  },
+  {
+    "case": "auto_final",
+    "config": {
+      "kind": "passthrough"
+    },
+    "mode": "AUTO",
+    "reverse_tools": false,
+    "started_at": "2026-10-28T11:35:50.847401+00:00",
+    "status": 200,
+    "elapsed_s": 2.316,
+    "calls": [
+      {
+        "name": "tcprobe_weather",
+        "args": {
+          "city": "Shanghai"
+        }
+      }
+    ],
+    "finish": "STOP",
+    "usage": true,
+    "plain_ok": false,
+    "constraint_obeyed": true,
+    "probe_evidence": [
+      "[ToolChoiceProbe] {\"stage\":\"encoded\",\"kind\":\"passthrough\",\"mode\":\"AUTO\",\"names\":[],\"wireTools\":[\"tcprobe_weather\",\"tcprobe_time\"]}",
+      "[ToolChoiceProbe] {\"stage\":\"upstream_result\",\"http\":200,\"fetchCompleted\":true,\"authState\":null}"
+    ],
+    "transport_evidence": [
+      "[Transport] account=3 request=req_1793187350849_a6h5v4nnf attempt=req_1793187350849_a6h5v4nnf_attempt_1_dpegoo model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+    ]
+  }
+]

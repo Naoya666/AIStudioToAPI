@@ -173,6 +173,33 @@ test("installs before navigation, bridges the full dotted RPC name and leaves no
     assert.match(f.logs[0], /buffered/);
 });
 
+test("forced/named choices reach upstream as AUTO for unary and buffered streamed requests", async t => {
+    for (const streamed of [false, true]) {
+        for (const functionCallingConfig of [{ mode: "ANY" }, { allowedFunctionNames: ["weather"], mode: "ANY" }]) {
+            const f = fixture(t);
+            await f.init();
+            const route = f.route({
+                body: {
+                    contents: [{ parts: [{ text: "hi" }], role: "user" }],
+                    toolConfig: { functionCallingConfig },
+                    tools: [{ functionDeclarations: [{ name: "weather" }, { name: "time" }] }],
+                },
+                streamed,
+            });
+            await f.bridge.handle(route);
+            assert.equal(route.outcomes[0].status, 200);
+            assert.equal(f.calls.length, 1);
+            const wire = JSON.parse(f.calls[0].init.body);
+            assert.deepEqual(
+                wire[6][0][1].map(d => d[0]),
+                ["weather", "time"]
+            );
+            assert.equal(wire[8], null);
+            assert.equal(wire[9], null);
+        }
+    }
+});
+
 test("two accounts and concurrent requests keep page authentication isolated", async t => {
     const a = fixture(t, 1),
         b = fixture(t, 2);

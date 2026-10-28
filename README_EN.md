@@ -201,6 +201,8 @@ See the [production diagnosis and fix report](docs/zh/gemini-4-argon-production-
 
 ### Model transport compatibility
 
+The bridge downgrades forced or named function selection to AUTO for preset/plugin compatibility. OpenAI `required` / named functions, Anthropic `any` / named tools, and Gemini `ANY` / `allowedFunctionNames` preserve tool declarations without enforcing a call or a particular name. These selectors no longer cause a bridge 400; neither tool execution nor a text response is guaranteed. This applies to JSON and buffered SSE. Disabling tools with `none` / `NONE` remains unsupported by the bridge. Legacy conversion is unchanged.
+
 All models default to the MakerSuite GenerateContent bridge and keep their original IDs. The legacy endpoint no longer works; existing explicit `legacy` overrides still take precedence and should be changed to `makersuite` or removed. The configuration UI provides model ID rows with legacy / bridge selectors. Saved transport overrides require a restart; environment overrides remain JSON mappings:
 
 ```dotenv

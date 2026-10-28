@@ -184,14 +184,15 @@ function buildBody(model, g) {
         }
         cfg[16] = fill(th);
     }
-    // AUTO is the native default; other tool-choice modes have no verified mapping yet.
+    // AUTO is the native default. Accept forced/named choices for client compatibility,
+    // but omit their constraints from the wire and preserve all tool declarations.
     const toolConfig = g.toolConfig || g.tool_config;
     if (toolConfig) {
         fields(toolConfig, ["functionCallingConfig"], "toolConfig");
         const fc = toolConfig.functionCallingConfig;
         if (fc) {
-            fields(fc, ["mode"], "functionCallingConfig");
-            if (fc.mode && String(fc.mode).toUpperCase() !== "AUTO")
+            fields(fc, ["mode", "allowedFunctionNames"], "functionCallingConfig");
+            if (fc.mode && !["AUTO", "ANY"].includes(String(fc.mode).toUpperCase()))
                 fail("MakerSuite bridge currently supports only AUTO tool choice");
         }
     }

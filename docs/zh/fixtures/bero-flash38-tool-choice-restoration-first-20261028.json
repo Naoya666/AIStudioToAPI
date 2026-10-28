@@ -1,0 +1,45 @@
+{
+  "code_hash_matches": {
+    "MakerSuiteCodec.js": true,
+    "MakerSuiteBridge.js": true
+  },
+  "configuration_hash_matches": {
+    ".env": true,
+    "compose.yaml": true,
+    "models.json": true
+  },
+  "managed_configuration_matches": true,
+  "health": {
+    "http": 200,
+    "status": "ok",
+    "browserConnected": true
+  },
+  "post_restore_calls": [
+    {
+      "mode": "AUTO",
+      "http": 403,
+      "local_guard_restored": false
+    },
+    {
+      "mode": "ANY",
+      "http": 400,
+      "local_guard_restored": true
+    },
+    {
+      "mode": "NAMED",
+      "http": 400,
+      "local_guard_restored": true
+    }
+  ],
+  "sqlite_checks": {
+    "accounts.sqlite": "ok",
+    "usage-stats.sqlite": "ok"
+  },
+  "container": {
+    "status": "running",
+    "health": "healthy",
+    "restart_count": 0
+  },
+  "automatic_rollback_timer": "inactive",
+  "probe_config_removed": true
+}

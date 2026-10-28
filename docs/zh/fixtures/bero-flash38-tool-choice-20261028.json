@@ -1,0 +1,197 @@
+{
+  "model": "gemini-3.8-flash",
+  "production_code_modified": false,
+  "production_config_modified": false,
+  "cases": 13,
+  "results": [
+    {
+      "case": "chat_auto",
+      "started_at": "2026-10-28T11:26:34.450635+00:00",
+      "status": 200,
+      "elapsed_s": 2.902,
+      "finish": "tool_calls",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Shanghai"
+          }
+        }
+      ],
+      "usage_present": true,
+      "transport_evidence": [
+        "[Transport] account=0 request=req_1793186794454_la4xdoe92 attempt=req_1793186794454_la4xdoe92_attempt_1_fs73v7 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "chat_auto_roundtrip",
+      "started_at": "2026-10-28T11:26:37.383735+00:00",
+      "status": 200,
+      "elapsed_s": 3.109,
+      "finish": "stop",
+      "tool_calls": [],
+      "usage_present": true,
+      "transport_evidence": [
+        "[Transport] account=1 request=req_1793186797385_q5i1gr949 attempt=req_1793186797385_q5i1gr949_attempt_1_bhtmja model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "chat_required",
+      "started_at": "2026-10-28T11:26:40.520186+00:00",
+      "status": 400,
+      "elapsed_s": 0.037,
+      "rejection": "local_AUTO_only",
+      "error_type": "api_error",
+      "transport_evidence": [
+        "[Transport] account=0 request=req_1793186800522_7p9z1u6se attempt=req_1793186800522_7p9z1u6se_attempt_1_rl7wnj model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "chat_named",
+      "started_at": "2026-10-28T11:26:40.591514+00:00",
+      "status": 400,
+      "elapsed_s": 0.037,
+      "rejection": "local_allowedFunctionNames_unsupported",
+      "error_type": "api_error",
+      "transport_evidence": [
+        "[Transport] account=1 request=req_1793186800593_4giflz1c9 attempt=req_1793186800593_4giflz1c9_attempt_1_na0fue model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "responses_auto",
+      "started_at": "2026-10-28T11:26:40.686645+00:00",
+      "status": 200,
+      "elapsed_s": 2.86,
+      "finish": "completed",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Shanghai"
+          }
+        }
+      ],
+      "usage_present": true,
+      "transport_evidence": [
+        "[Transport] account=0 request=req_1793186800689_lbcokrrt8 attempt=req_1793186800689_lbcokrrt8_attempt_1_f0qo8z model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "responses_required",
+      "started_at": "2026-10-28T11:26:43.578200+00:00",
+      "status": 400,
+      "elapsed_s": 0.53,
+      "rejection": "local_AUTO_only",
+      "error_type": "api_error",
+      "transport_evidence": [
+        "[Transport] account=1 request=req_1793186803580_dv8pznykn attempt=req_1793186803580_dv8pznykn_attempt_1_p2ld2h model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "responses_named",
+      "started_at": "2026-10-28T11:26:44.138819+00:00",
+      "status": 400,
+      "elapsed_s": 0.03,
+      "rejection": "local_allowedFunctionNames_unsupported",
+      "error_type": "api_error",
+      "transport_evidence": [
+        "[Transport] account=0 request=req_1793186804141_p9ycs7p54 attempt=req_1793186804141_p9ycs7p54_attempt_1_gt8zsx model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "anthropic_auto",
+      "started_at": "2026-10-28T11:26:44.195867+00:00",
+      "status": 200,
+      "elapsed_s": 3.382,
+      "finish": "tool_use",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Shanghai"
+          }
+        }
+      ],
+      "usage_present": true,
+      "transport_evidence": [
+        "[Transport] account=1 request=req_1793186804198_blhhd8x7q attempt=req_1793186804198_blhhd8x7q_attempt_1_60xg3p model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "anthropic_required",
+      "started_at": "2026-10-28T11:26:47.616355+00:00",
+      "status": 400,
+      "elapsed_s": 0.528,
+      "rejection": "local_AUTO_only",
+      "error_type": "api_error",
+      "transport_evidence": [
+        "[Transport] account=0 request=req_1793186807618_gkofmvatf attempt=req_1793186807618_gkofmvatf_attempt_1_mhqk7c model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "anthropic_named",
+      "started_at": "2026-10-28T11:26:48.177249+00:00",
+      "status": 400,
+      "elapsed_s": 0.031,
+      "rejection": "local_allowedFunctionNames_unsupported",
+      "error_type": "api_error",
+      "transport_evidence": [
+        "[Transport] account=1 request=req_1793186808179_xlj2w8cof attempt=req_1793186808179_xlj2w8cof_attempt_1_ccjbf5 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "gemini_auto",
+      "started_at": "2026-10-28T11:26:48.236176+00:00",
+      "status": 200,
+      "elapsed_s": 3.035,
+      "finish": "STOP",
+      "tool_calls": [
+        {
+          "name": "get_weather",
+          "args": {
+            "city": "Shanghai"
+          }
+        }
+      ],
+      "usage_present": true,
+      "transport_evidence": [
+        "[Transport] account=0 request=req_1793186808239_1ngz2jnow attempt=req_1793186808239_1ngz2jnow_attempt_1_kx7eje model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "gemini_required",
+      "started_at": "2026-10-28T11:26:51.300370+00:00",
+      "status": 400,
+      "elapsed_s": 0.527,
+      "rejection": "local_AUTO_only",
+      "error_type": null,
+      "transport_evidence": [
+        "[Transport] account=1 request=req_1793186811302_tuajt9kze attempt=req_1793186811302_tuajt9kze_attempt_1_2y4wga model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    },
+    {
+      "case": "gemini_named",
+      "started_at": "2026-10-28T11:26:51.859097+00:00",
+      "status": 400,
+      "elapsed_s": 0.029,
+      "rejection": "local_allowedFunctionNames_unsupported",
+      "error_type": null,
+      "transport_evidence": [
+        "[Transport] account=0 request=req_1793186811861_c2c427goc attempt=req_1793186811861_c2c427goc_attempt_1_d0ckd6 model=gemini-3.8-flash transport=makersuite rpc=GenerateContent policy=3085d8534180 requested_mode=real effective_mode=fake budget=buffered remaining_ms=404999"
+      ],
+      "makersuite_confirmed": true
+    }
+  ]
+}

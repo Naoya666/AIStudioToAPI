@@ -113,7 +113,8 @@ test("unsupported features are visible errors, safety enums never silently fall 
         { tools: [{ googleSearch: {} }] },
         { generationConfig: { responseSchema: { type: "object" } } },
         { generationConfig: { thinkingConfig: { thinkingLevel: "MEDIUM" } } },
-        { toolConfig: { functionCallingConfig: { mode: "ANY" } } },
+        { toolConfig: { functionCallingConfig: { mode: "NONE" } } },
+        { toolConfig: { functionCallingConfig: { mode: "UNKNOWN" } } },
         { safetySettings: [{ category: "UNKNOWN", threshold: "OFF" }] },
         { contents: [{ parts: [{ fileData: { fileUri: "file" } }] }] },
     ])
@@ -129,6 +130,77 @@ test("unsupported features are visible errors, safety enums never silently fall 
             }),
         /schema.anyOf/
     );
+});
+
+test("native forced/named choices use AUTO wire while preserving declarations and source constraints", () => {
+    const input = {
+        ...request(),
+        tools: [{ functionDeclarations: [{ name: "weather" }, { name: "time" }] }],
+    };
+    const expected = buildBody("gemini-3.8-flash", input);
+    for (const key of ["toolConfig", "tool_config"]) {
+        for (const functionCallingConfig of [
+            { mode: "ANY" },
+            { allowedFunctionNames: ["weather"], mode: "ANY" },
+            { allowedFunctionNames: ["weather"], mode: "AUTO" },
+        ]) {
+            const source = { ...input, [key]: { functionCallingConfig } };
+            const before = structuredClone(source);
+            assert.deepEqual(buildBody("gemini-3.8-flash", source), expected);
+            assert.deepEqual(source, before, "bridge downgrade must not mutate retries or other transports");
+        }
+    }
+    assert.deepEqual(
+        expected.body[6][0][1].map(d => d[0]),
+        ["weather", "time"]
+    );
+});
+
+test("Chat, Responses and Anthropic forced/named requests remain encodable through their real converters", async () => {
+    const converter = new FormatConverter(logger, {}, () => ({ forceThinking: false, safetySettingsThreshold: "OFF" }));
+    const declarations = ["weather", "time"].map(name => ({ name, parameters: { type: "object" } }));
+    const base = { max_tokens: 512, model: "gemini-3.8-flash" };
+    const messages = [{ content: "hello", role: "user" }];
+    for (const choice of ["required", { function: { name: "weather" }, type: "function" }]) {
+        const { googleRequest } = await converter.translateOpenAIToGoogle({
+            ...base,
+            messages,
+            tool_choice: choice,
+            tools: declarations.map(f => ({ function: f, type: "function" })),
+        });
+        assert.equal(googleRequest.toolConfig.functionCallingConfig.mode, "ANY");
+        assert.deepEqual(
+            buildBody(base.model, googleRequest).body[6][0][1].map(d => d[0]),
+            ["weather", "time"]
+        );
+        assert.equal(googleRequest.toolConfig.functionCallingConfig.mode, "ANY");
+    }
+    for (const choice of ["required", { name: "weather", type: "function" }]) {
+        const { googleRequest } = await converter.translateOpenAIResponseToGoogle({
+            ...base,
+            input: "hello",
+            tool_choice: choice,
+            tools: declarations.map(f => ({ ...f, type: "function" })),
+        });
+        assert.equal(googleRequest.toolConfig.functionCallingConfig.mode, "ANY");
+        assert.deepEqual(
+            buildBody(base.model, googleRequest).body[6][0][1].map(d => d[0]),
+            ["weather", "time"]
+        );
+    }
+    for (const choice of [{ type: "any" }, { name: "weather", type: "tool" }]) {
+        const { googleRequest } = await converter.translateClaudeToGoogle({
+            ...base,
+            messages,
+            tool_choice: choice,
+            tools: declarations.map(f => ({ input_schema: f.parameters, name: f.name })),
+        });
+        assert.equal(googleRequest.toolConfig.functionCallingConfig.mode, "ANY");
+        assert.deepEqual(
+            buildBody(base.model, googleRequest).body[6][0][1].map(d => d[0]),
+            ["weather", "time"]
+        );
+    }
 });
 
 test("unary and streamed envelopes decode independent fixtures and preserve usage unknowns", () => {

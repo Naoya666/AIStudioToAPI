@@ -1,0 +1,57 @@
+--- a/src/core/MakerSuiteCodec.js
++++ b/src/core/MakerSuiteCodec.js
+@@ -130,6 +130,11 @@
+     return [c.parts.map(toPart), c.role === "model" ? "model" : "user"];
+ }
+ function buildBody(model, g) {
++    // TEMPORARY production probe: only this model and the two private test declarations.
++    const probeNames = (g.tools || []).flatMap(t => t.functionDeclarations || t.function_declarations || []).map(d => d.name);
++    const isToolChoiceProbe = model === "gemini-3.8-flash" && probeNames.length === 2 &&
++        probeNames.every(n => ["tcprobe_weather", "tcprobe_time"].includes(n));
++    const probe = isToolChoiceProbe ? JSON.parse(require("node:fs").readFileSync("/tmp/tool-choice-probe.json", "utf8")) : null;
+     fields(
+         g,
+         [
+@@ -190,8 +195,8 @@
+         fields(toolConfig, ["functionCallingConfig"], "toolConfig");
+         const fc = toolConfig.functionCallingConfig;
+         if (fc) {
+-            fields(fc, ["mode"], "functionCallingConfig");
+-            if (fc.mode && String(fc.mode).toUpperCase() !== "AUTO")
++            fields(fc, probe ? ["mode", "allowedFunctionNames"] : ["mode"], "functionCallingConfig");
++            if (!probe && fc.mode && String(fc.mode).toUpperCase() !== "AUTO")
+                 fail("MakerSuite bridge currently supports only AUTO tool choice");
+         }
+     }
+@@ -225,6 +230,19 @@
+         null,
+         [[null, null, "UTC"]],
+     ];
++    if (probe) {
++        const fc = toolConfig?.functionCallingConfig || {};
++        const mode = String(fc.mode || "AUTO").toUpperCase();
++        const names = fc.allowedFunctionNames || [];
++        if (probe.kind === "native" && mode !== "AUTO") {
++            const functionConfig = names.length ? [mode === "NONE" ? 3 : 2, names] : [mode === "NONE" ? 3 : 2];
++            body[probe.index] = probe.layout === 1 ? [null, functionConfig] : [functionConfig];
++        }
++        if (probe.kind === "filter" && names.length) {
++            body[6][0][1] = body[6][0][1].filter(d => names.includes(d[0]));
++        }
++        console.log("[ToolChoiceProbe] " + JSON.stringify({stage:"encoded",kind:probe.kind,index:probe.index,layout:probe.layout,mode,names,wireTools:(body[6]?.[0]?.[1] || []).map(d=>d[0])}));
++    }
+     const ht = contents
+         .flatMap(c => c[0])
+         .map(p => (p[1] != null ? p[1] : p[2] ? p[2][1] : ""))
+--- a/src/core/MakerSuiteBridge.js
++++ b/src/core/MakerSuiteBridge.js
+@@ -661,6 +661,9 @@
+             });
+             const result = await Promise.race([pending, invalidated, expired]);
+             if (invalid || this.closed || epoch !== this.epoch || !result) return;
++            if ((g.tools || []).some(t => (t.functionDeclarations || t.function_declarations || []).some(d => d.name === "tcprobe_weather"))) {
++                console.log("[ToolChoiceProbe] " + JSON.stringify({stage:"upstream_result",http:result.status,fetchCompleted:!!result.authSource,authState:result.authState || null}));
++            }
+             keySource = result.authSource || "unknown";
+             let error;
+             try {

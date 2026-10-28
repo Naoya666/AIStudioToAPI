@@ -46,10 +46,10 @@
 | gemini-3-flash-preview、gemini-3.1-pro-preview                                   | 文本注入、转换及修饰符隔离验证通过                                      |
 | gemini-3.1-flash-lite-preview / gemini-3.1-flash-lite                            | 同上                                                                    |
 | gemini-3.5-flash / flash-lite、gemini-3.6/3.7/3.8-flash                          | 同上；依赖部署模型目录与账号实际可用性                                  |
-| gemini-4-argon                                                               | 已加入默认名单；真实 AUTO 合成函数、非流式及缓冲 SSE 正文还原通过。MakerSuite 当前只支持 AUTO 工具选择，none / required 等强制模式仍受桥接限制 |
+| gemini-4-argon                                                               | 已加入默认名单；真实 AUTO 合成函数、非流式及缓冲 SSE 正文还原通过。MakerSuite 将强制／指定函数选择降级为 AUTO，不保证调用 |
 | 普通回答、函数 auto / required、并行真实函数                                     | 保留真实工具、参数和已有调用 ID；synthetic 只还原成正文                 |
-| tool_choice none（含旧 function_call none）                                      | 本次声明只包含 synthetic，Gemini ANY 仅允许该内部函数，真实工具不可调用 |
-| 强制指定真实函数                                                                 | 跳过 anti，原指定工具语义保留，记录 forced_real_tool                    |
+| tool_choice none（含旧 function_call none）                                      | 本次声明只包含 synthetic，真实工具不可调用；旧通道 Gemini ANY 指定该函数，桥接按 AUTO 自主决定是否调用 |
+| 强制指定真实函数                                                                 | 跳过 anti，记录 forced_real_tool；旧通道保留指定语义，桥接降级为 AUTO                    |
 | 搜索、代码执行、URL context、其他托管工具及全局强制工具                          | 未实测组合；显式 anti 拒绝，prefer 跳过                                 |
 | 图片/音频输入、非 text 输出、response_format、旧 functions schema                | 第一阶段显式拒绝，prefer 跳过                                           |
 | Gemma、latest 动态别名、未知模型、图片/音频/embedding/robotics/computer-use 模型 | 不在准入名单                                                            |
