@@ -26,6 +26,8 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install browser for synthetic UI tests
+        run: npx playwright install --with-deps chromium
       - run: npm test
 
   build:
