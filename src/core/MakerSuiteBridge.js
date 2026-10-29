@@ -112,6 +112,79 @@ function installPageBridge({ direct = false } = {}) {
             excluded.clear();
         },
 
+        async drive({ id, token, method, fileId, name, mimeType, data, download = false }) {
+            const record = { controller: new AbortController() };
+            let settled;
+            record.done = new Promise(resolve => {
+                settled = resolve;
+            });
+            records.set(id, record);
+            const timer = setTimeout(() => record.controller.abort(), 120000);
+            try {
+                // Fixed Google endpoints only. No client-supplied fetch URL or headers.
+                let url = "https://www.googleapis.com/drive/v3/files";
+                const headers = { authorization: "Bearer " + token };
+                let body;
+                if (method === "POST") {
+                    url =
+                        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,size,createdTime";
+                    const boundary = "aistudio_" + crypto.randomUUID().replaceAll("-", "");
+                    headers["content-type"] = "multipart/related; boundary=" + boundary;
+                    const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+                    body = new Blob([
+                        "--" +
+                            boundary +
+                            "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" +
+                            JSON.stringify({ mimeType, name }) +
+                            "\r\n--" +
+                            boundary +
+                            "\r\nContent-Type: " +
+                            mimeType +
+                            "\r\n\r\n",
+                        bytes,
+                        "\r\n--" + boundary + "--\r\n",
+                    ]);
+                } else {
+                    if (!/^[a-zA-Z0-9_-]+$/.test(fileId)) throw new Error("Invalid file ID");
+                    url +=
+                        "/" +
+                        encodeURIComponent(fileId) +
+                        (download ? "?alt=media" : "?fields=id,name,mimeType,size,createdTime");
+                }
+                const response = await upstreamFetch(url, { body, headers, method, signal: record.controller.signal });
+                if (download && response.ok) {
+                    const reader = response.body.getReader(),
+                        chunks = [];
+                    let length = 0;
+                    // eslint-disable-next-line no-constant-condition
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        length += value.length;
+                        if (length > 64 * 1024 * 1024) {
+                            await reader.cancel();
+                            throw new Error("File exceeds download limit");
+                        }
+                        chunks.push(value);
+                    }
+                    let binary = "";
+                    for (const chunk of chunks)
+                        for (let offset = 0; offset < chunk.length; offset += 32768)
+                            binary += String.fromCharCode(...chunk.subarray(offset, offset + 32768));
+                    return {
+                        data: btoa(binary),
+                        mimeType: response.headers.get("content-type"),
+                        status: response.status,
+                    };
+                }
+                return { status: response.status, text: await response.text() };
+            } finally {
+                clearTimeout(timer);
+                settled();
+                if (records.get(id) === record) records.delete(id);
+            }
+        },
+
         hook() {
             const M = window.default_MakerSuite;
             if (!M) return "module_missing";
@@ -199,14 +272,14 @@ function installPageBridge({ direct = false } = {}) {
             observed.set(key, true);
             return true;
         },
-
         rejectStreamAuth(id) {
-            const key = records.get(id)?.authKey;
+            const key = records.get(id)?.authKey || streams.get(id)?.authKey;
             if (key) {
                 rejected.add(key);
                 observed.delete(key);
             }
         },
+
         release(id) {
             const state = streams.get(id);
             if (!state) return;
@@ -215,7 +288,6 @@ function installPageBridge({ direct = false } = {}) {
             state.take?.();
             streams.delete(id);
         },
-
         async run({
             id,
             body,
@@ -229,6 +301,8 @@ function installPageBridge({ direct = false } = {}) {
         }) {
             if (expectedDocumentId && window.__buildBenefit?.documentId !== expectedDocumentId)
                 return { status: 503, text: '[14,"MakerSuite document changed"]' };
+            if (service.proofBroken)
+                return { proofBroken: true, status: 503, text: '[14,"Playground proof runtime requires reload"]' };
             if (service.closed) return { status: 499, text: '[1,"MakerSuite bridge disposed"]' };
             const record = records.get(id) || { controller: new AbortController() };
             records.set(id, record);
@@ -277,7 +351,7 @@ function installPageBridge({ direct = false } = {}) {
                 check();
                 const M = window.default_MakerSuite,
                     tb = service.tb;
-                if (!["GenerateContent", "CountTokens"].includes(rpcMethod))
+                if (!["GenerateContent", "CountTokens", "GenerateAccessToken"].includes(rpcMethod))
                     throw new Error("Unsupported Playground RPC");
                 if (rpcMethod === "GenerateContent") {
                     // The official snapshot observes the prompt box. Serialize only proof creation;
@@ -300,9 +374,11 @@ function installPageBridge({ direct = false } = {}) {
                                 setter.call(textarea, ht.replace(/\r\n?/g, "\n"));
                                 textarea.dispatchEvent(new Event("input", { bubbles: true }));
                             }
+                            record.proving = true;
                             try {
                                 return await M[service.proofKey](tb, await M[service.hashKey](ht));
                             } finally {
+                                record.proving = false;
                                 record.clearPrompt?.();
                                 record.clearPrompt = null;
                             }
@@ -354,6 +430,7 @@ function installPageBridge({ direct = false } = {}) {
                     check();
                 }
                 record.authKey = auth.key;
+                if (streams.has(id)) streams.get(id).authKey = auth.key;
                 const response = await upstreamFetch(
                     endpoint + "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/" + rpcMethod,
                     {
@@ -413,8 +490,15 @@ function installPageBridge({ direct = false } = {}) {
                 }
                 return { authSource: auth.source, status: response.status, text };
             } catch (e) {
+                // A timed-out native proof may still own the prompt box. Retire
+                // this document instead of letting it overlap a replacement proof.
+                if (record.proving) {
+                    service.proofBroken = true;
+                    for (const pending of records.values()) pending.controller.abort();
+                }
                 // Do not return raw evaluation/transport errors which can include credentials or URLs.
                 return {
+                    proofBroken: service.proofBroken === true,
                     status: timedOut ? 504 : signal.aborted ? 499 : 502,
                     text: JSON.stringify([
                         timedOut ? 4 : signal.aborted ? 1 : 14,
@@ -874,7 +958,7 @@ class MakerSuiteBridge {
         try {
             const state = await Promise.race([
                 Promise.resolve().then(() => this.validateSession()),
-                invalidated,
+                ...(invalidated ? [invalidated] : []),
                 new Promise(resolve => {
                     timer = setTimeout(() => resolve("unverified"), this.diagnosticTimeoutMs);
                 }),

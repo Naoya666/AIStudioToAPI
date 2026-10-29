@@ -55,6 +55,7 @@ class MessageQueue extends EventEmitter {
     }
 
     _enqueue(message) {
+        if (message.upstreamOutputStarted) this.upstreamOutputStarted = true;
         if (message.event_type === "response_headers") this.receivedHeaders = true;
         if (isPromptBlocked(message)) this.blockedError = Object.assign(new Error(message.message), message);
         if (this.closed) return;
@@ -141,7 +142,10 @@ class MessageQueue extends EventEmitter {
         if (this.blockedError) return this.blockedError;
         const details = typeof this.closeReason === "object" ? this.closeReason : { reason: this.closeReason };
         const reason = details.reason || "unknown";
-        return new QueueClosedError(`Queue is closed (reason: ${reason})`, reason, details);
+        return Object.assign(
+            new QueueClosedError(`Queue is closed (reason: ${reason})`, reason, details),
+            this.upstreamOutputStarted ? { upstreamOutputStarted: true } : {}
+        );
     }
 }
 

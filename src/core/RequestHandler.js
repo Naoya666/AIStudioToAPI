@@ -14,7 +14,7 @@ const { isArgon, benefitError } = require("./BuildBenefitContext");
  * Main request handler that coordinates between other modules
  */
 const AntiTruncation = require("./AntiTruncation");
-const { normalizeError } = require("../utils/UpstreamError");
+const { geminiStatus, normalizeError } = require("../utils/UpstreamError");
 const { isPromptBlocked } = require("../utils/UpstreamBlock");
 const GenerationResponseGuard = require("../utils/GenerationResponseGuard");
 const AuthSwitcher = require("../auth/AuthSwitcher");
@@ -3229,7 +3229,7 @@ class RequestHandler {
                         );
                         this._markTrackedResponseError(res, message.message, 500);
                         hadStreamError = true;
-                        this._handleRequestError({ message: message.message }, res, proxyRequest.request_id);
+                        this._handleRequestError(message, res, proxyRequest.request_id);
                         break;
                     }
 
@@ -3766,7 +3766,16 @@ class RequestHandler {
                 }
                 let errorPayload;
                 try {
-                    errorPayload = JSON.parse(error.message);
+                    // Upstream messages may themselves be valid JSON. Their text
+                    // must not replace the structured transport error or replay flag.
+                    if (error.upstreamError || error.event_type === "error" || error.upstreamOutputStarted) {
+                        errorPayload = { ...error, message: error.message, status: error.status || 502 };
+                    } else {
+                        const parsed = JSON.parse(error.message);
+                        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+                            throw new Error("Not an error envelope");
+                        errorPayload = { ...error, ...parsed };
+                    }
                 } catch (e) {
                     // JSON parse failed - check if it's a timeout error
                     if (error.code === "QUEUE_TIMEOUT" || error instanceof QueueTimeoutError) {
@@ -4172,7 +4181,15 @@ class RequestHandler {
                             if (
                                 response.candidates?.some(candidate =>
                                     candidate.content?.parts?.some(
-                                        part => part.functionCall || part.text || part.inlineData
+                                        part =>
+                                            part.functionCall ||
+                                            part.text ||
+                                            part.inlineData ||
+                                            part.executableCode ||
+                                            part.codeExecutionResult ||
+                                            part.fileData ||
+                                            part.toolCall ||
+                                            part.toolResponse
                                     )
                                 )
                             ) {
@@ -4382,6 +4399,8 @@ class RequestHandler {
     }
 
     _addBlockedDetails(payload, error, format) {
+        const normalized = normalizeError(error || {});
+        if (normalized.details !== undefined) (payload.error || payload).details = normalized.details;
         if (!isPromptBlocked(error)) return payload;
         const target = payload.error || payload;
         target.upstream = error.upstream;
@@ -4478,18 +4497,18 @@ class RequestHandler {
                     },
                 };
             } else {
-                let statusText = statusCode === 400 ? "INVALID_ARGUMENT" : "INTERNAL";
-                if (statusCode === 504) statusText = "DEADLINE_EXCEEDED";
-                else if (statusCode === 503) statusText = "UNAVAILABLE";
+                const statusText = geminiStatus(details, statusCode);
                 errorPayload = {
                     error: {
                         code: statusCode,
                         message,
                         status: statusText,
+                        ...(normalized.details !== undefined ? { details: normalized.details } : {}),
                     },
                 };
             }
 
+            if (normalized.details !== undefined && errorPayload.error) errorPayload.error.details = normalized.details;
             if (isPromptBlocked(details)) this._addBlockedDetails(errorPayload, details, resolvedFormat);
             this._markTrackedResponseError(res, message, statusCode, "error", details);
             res.status(statusCode).type("application/json").send(JSON.stringify(errorPayload));
@@ -4572,16 +4591,9 @@ class RequestHandler {
                         )}\n\n`
                     );
                 } else if (format === "gemini") {
-                    const status =
-                        statusCode === 400
-                            ? "INVALID_ARGUMENT"
-                            : statusCode === 504
-                              ? "DEADLINE_EXCEEDED"
-                              : statusCode === 503
-                                ? "UNAVAILABLE"
-                                : "INTERNAL";
+                    const status = geminiStatus(details, statusCode);
                     res.write(
-                        `data: ${JSON.stringify(this._addBlockedDetails({ error: { code: statusCode, message, status } }, details, format))}\n\n`
+                        `data: ${JSON.stringify(this._addBlockedDetails({ error: { code: statusCode, message, status, ...(normalized.details !== undefined ? { details: normalized.details } : {}) } }, details, format))}\n\n`
                     );
                 } else {
                     res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
@@ -4979,6 +4991,7 @@ class RequestHandler {
     }
 
     _initializeProxyRequestAttempt(proxyRequest) {
+        this.serverSystem?.playgroundResources?.prepareRequest(proxyRequest);
         if (proxyRequest.is_generative && !proxyRequest.transport_policy) {
             proxyRequest.transport_policy = TransportPolicy.resolve(
                 this._extractModelFromPath(proxyRequest.path),

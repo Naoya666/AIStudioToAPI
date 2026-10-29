@@ -201,7 +201,7 @@ See the [production diagnosis and fix report](docs/zh/gemini-4-argon-production-
 
 ### Model transport compatibility
 
-The bridge downgrades forced or named function selection to AUTO for preset/plugin compatibility. OpenAI `required` / named functions, Anthropic `any` / named tools, and Gemini `ANY` / `allowedFunctionNames` preserve tool declarations without enforcing a call or a particular name. These selectors no longer cause a bridge 400; neither tool execution nor a text response is guaranteed. This applies to JSON and incremental SSE. Disabling tools with `none` / `NONE` remains unsupported by the bridge.
+The bridge downgrades forced or named function selection to AUTO for preset/plugin compatibility. OpenAI `required` / named functions, Anthropic `any` / named tools, and Gemini `ANY` / `allowedFunctionNames` preserve tool declarations without enforcing a call or a particular name. These selectors no longer cause a bridge 400; neither tool execution nor a text response is guaranteed. This applies to JSON and incremental SSE. Disabling tools with `none` / `NONE` omits tools from the upstream request.
 
 All models use Camoufox to call Playground GenerateContent directly. Build App, its relay WebSocket and legacy transport mapping are retired; old `MODEL_TRANSPORT_POLICY` values are ignored. `STREAMING_MODE=real|fake|early`, the configuration panel and per-model suffix overrides remain supported. The separate `legacy` account rotation strategy is unchanged.
 
@@ -224,3 +224,5 @@ Configure the channel controller with `aistudio.status_url: "http://aistudio:786
 See the [incremental streaming implementation and live validation record](docs/zh/playground-streaming-20261029.md).
 
 See the [mode preservation correction and validation record](docs/zh/playground-stream-modes-20261029.md).
+
+See [Playground capabilities](docs/zh/playground-capabilities.md) for tools, structured output, account-bound Drive files, local cachedContents, and proof recovery. Embeddings remain unsupported.

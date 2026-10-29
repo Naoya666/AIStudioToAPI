@@ -115,6 +115,8 @@ class ProxyServerSystem extends EventEmitter {
             this.browserManager.scheduler = this.scheduler;
             this.scheduler.browserManager = this.browserManager;
         }
+        this.playgroundResources = new (require("./PlaygroundResources").PlaygroundResources)(this);
+        this.browserManager.playgroundResources = this.playgroundResources;
         this.browserManager.setSystemBusyProvider(() => this.requestHandler?.isSystemBusy === true);
 
         this.proxyPoolService = new ProxyPoolService({
@@ -467,16 +469,21 @@ class ProxyServerSystem extends EventEmitter {
 
             const chunks = [];
             const management = req.path.startsWith("/api/account-management");
+            const resourceUpload = /^\/(?:upload\/)?v1(?:beta|alpha)?\/(?:files|cachedContents)(?:\/|$)/.test(
+                req.path.replace(/^\/proxy(?=\/)/, "")
+            );
             let size = 0,
                 tooLarge = false;
             req.on("data", chunk => {
                 size += chunk.length;
-                if (management && size > 2 * 1048576) {
+                if ((management && size > 2 * 1048576) || (resourceUpload && size > 65 * 1048576)) {
                     tooLarge = true;
                     chunks.length = 0;
                     if (!res.headersSent)
                         res.status(413).json({
-                            error: "Account management request exceeds 2 MiB (import content limit: 1 MiB)",
+                            error: management
+                                ? "Account management request exceeds 2 MiB (import content limit: 1 MiB)"
+                                : "File upload request exceeds 65 MiB",
                         });
                 } else if (!tooLarge) chunks.push(chunk);
             });
@@ -540,6 +547,9 @@ class ProxyServerSystem extends EventEmitter {
             res.once("close", release);
             return this.requestHandler.withConfigurationSnapshot(next);
         });
+
+        // Resource compatibility routes run after API authentication and admission.
+        app.use((req, res, next) => this.playgroundResources?.handle(req, res, next) || next());
 
         // API routes
         app.get(["/v1/models"], (req, res) => {
@@ -667,6 +677,7 @@ class ProxyServerSystem extends EventEmitter {
                 }
             });
 
+        this.playgroundResources?.close();
         await Promise.all([this.publicDashboardServer?.close(), closeServer(this.httpServer, "HTTP server")]);
     }
 }

@@ -45,7 +45,11 @@ class PlaygroundConnection extends EventEmitter {
                 });
                 headersSent = true;
             }
-            transmit({ data: `data: ${JSON.stringify(chunk)}\n\n`, event_type: "chunk" });
+            transmit({
+                data: `data: ${JSON.stringify(chunk)}\n\n`,
+                event_type: "chunk",
+                upstreamOutputStarted: chunk.candidates?.some(c => c.content?.parts?.length > 0) === true,
+            });
         };
         this.transport.generate(request, streamed ? onChunk : null).then(
             result => {
@@ -75,6 +79,7 @@ class PlaygroundConnection extends EventEmitter {
                     upstreamError: error.upstreamError,
                     upstreamOutputStarted: error.upstreamOutputStarted === true,
                 });
+                if (!this.transport.ready) this.close();
             }
         );
     }
@@ -229,6 +234,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
         } catch {
             throw fail("Invalid request JSON", 400);
         }
+        if (this.resources) this.resources.resolveFiles(input, this.authIndex);
         const { body, ht } =
             rpcMethod === "CountTokens"
                 ? { body: buildCountBody(match[1], input), ht: "" }
@@ -280,14 +286,22 @@ class PlaygroundTransport extends MakerSuiteBridge {
                 const output = structuredClone(chunk);
                 for (const candidate of output.candidates || []) {
                     if (candidate.finishReason) {
-                        finishes.set(candidate.index, { ...candidate, content: { parts: [], role: "model" } });
+                        finishes.set(candidate.index, {
+                            content: { parts: [], role: "model" },
+                            finishReason: candidate.finishReason,
+                            index: candidate.index,
+                        });
                         delete candidate.finishReason;
                     }
                 }
                 if (chunk.usageMetadata) terminal.usageMetadata = { ...terminal.usageMetadata, ...chunk.usageMetadata };
                 if (chunk.responseId) terminal.responseId = chunk.responseId;
                 if (chunk.promptFeedback) terminal.promptFeedback = chunk.promptFeedback;
-                if (output.candidates?.some(c => c.content.parts.length) || output.promptFeedback) onChunk(output);
+                if (
+                    output.candidates?.some(c => c.content.parts.length || c.groundingMetadata) ||
+                    output.promptFeedback
+                )
+                    onChunk(output);
             });
             let result;
             try {
@@ -334,6 +348,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
             this.logger.info(
                 `[Playground] account=${this.authIndex} attempt=${attemptId} rpc=${rpcMethod} fetch_completed=true status=${result.status}`
             );
+            if (result.proofBroken) this.ready = false;
             if (result.status !== 200) throw await this.upstreamError(result, invalidated);
             try {
                 return rpcMethod === "CountTokens"
@@ -359,8 +374,24 @@ class PlaygroundTransport extends MakerSuiteBridge {
             error.upstreamOutputStarted = outputStarted;
             cancelled = true;
             await this.cancel(id);
+            const broken = await withHardTimeout(
+                () => this.page.evaluate(pageEval, "window.__makerSuiteBridge?.proofBroken === true"),
+                2000
+            ).catch(() => true);
+            if (broken) {
+                if (epoch === this.epoch) this.ready = false;
+                error.kind = "transport";
+                error.reason = "proof_runtime_unavailable";
+                error.cooldown = false;
+                error.retryable = false;
+            }
             // Evaluation exceptions can contain serialized arguments and credentials.
-            if (!error.status) throw fail("Playground browser transport failed", 502);
+            if (!error.status)
+                throw Object.assign(fail("Playground browser transport failed", 502), {
+                    cooldown: false,
+                    kind: "transport",
+                    retryable: false,
+                });
             throw error;
         } finally {
             await withHardTimeout(
@@ -379,10 +410,21 @@ class PlaygroundTransport extends MakerSuiteBridge {
             normalized.body = tagStatus(normalized.body, await this.diagnoseAuth(invalidated));
         const rpc = JSON.parse(normalized.body);
         const statuses = {
+            1: "CANCELLED",
+            2: "UNKNOWN",
             3: "INVALID_ARGUMENT",
+            4: "DEADLINE_EXCEEDED",
             5: "NOT_FOUND",
+            6: "ALREADY_EXISTS",
             7: "PERMISSION_DENIED",
             8: "RESOURCE_EXHAUSTED",
+            9: "FAILED_PRECONDITION",
+            10: "ABORTED",
+            11: "OUT_OF_RANGE",
+            12: "UNIMPLEMENTED",
+            13: "INTERNAL",
+            14: "UNAVAILABLE",
+            15: "DATA_LOSS",
             16: "UNAUTHENTICATED",
         };
         const error = fail(rpc[1], normalized.status);

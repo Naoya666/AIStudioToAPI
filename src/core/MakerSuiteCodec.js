@@ -4,6 +4,7 @@
  * See docs/zh/makersuite-generate-content-protocol-repair-plan-20261016.md.
  * Positions below are observed protocol fields, not a public Google API contract.
  */
+const { encodeSchema } = require("./PlaygroundSchema");
 const { promptBlocked } = require("../utils/UpstreamBlock");
 const BLOCK = { 1: "SAFETY", 2: "OTHER", 3: "BLOCKLIST", 4: "PROHIBITED_CONTENT", 5: "IMAGE_SAFETY" };
 const PROB = { 0: "HARM_PROBABILITY_UNSPECIFIED", 1: "NEGLIGIBLE", 2: "LOW", 3: "MEDIUM", 4: "HIGH" };
@@ -16,7 +17,6 @@ const CAT = {
 };
 const THR = { BLOCK_LOW_AND_ABOVE: 1, BLOCK_MEDIUM_AND_ABOVE: 2, BLOCK_NONE: 4, BLOCK_ONLY_HIGH: 3, OFF: 5 };
 const FIN = { 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER" };
-const TYP = { array: 5, boolean: 4, integer: 3, number: 2, object: 6, string: 1 };
 const fail = (message, status = 400) => {
     throw Object.assign(new Error(message), { status });
 };
@@ -58,24 +58,45 @@ function decStruct(st) {
     if (!Array.isArray(st) || !Array.isArray(st[0])) return fail("Invalid MakerSuite Struct", 502);
     return Object.fromEntries(st[0].map(([k, v]) => [k, decVal(v)]));
 }
-function encSchema(sc) {
-    fields(sc, ["type", "format", "description", "nullable", "enum", "items", "properties", "required"], "schema");
-    const type = TYP[String(sc.type || "object").toLowerCase()];
-    if (!Number.isInteger(type)) fail("Unsupported MakerSuite schema type");
-    const a = [type];
-    if (sc.format) a[1] = sc.format;
-    if (sc.description) a[2] = sc.description;
-    if (sc.nullable != null) a[3] = !!sc.nullable;
-    if (sc.enum) a[4] = sc.enum.map(String);
-    if (sc.items) a[5] = encSchema(sc.items);
-    if (sc.properties) a[6] = Object.entries(sc.properties).map(([k, v]) => [k, encSchema(v)]);
-    if (sc.required) a[7] = sc.required;
-    return fill(a);
-}
+const encSchema = encodeSchema;
 function encTools(tools = []) {
-    const decls = [];
+    const decls = [],
+        builtins = [];
     for (const t of tools) {
-        fields(t, ["functionDeclarations", "function_declarations"], "tools");
+        fields(
+            t,
+            [
+                "functionDeclarations",
+                "function_declarations",
+                "googleSearch",
+                "google_search",
+                "googleSearchRetrieval",
+                "google_search_retrieval",
+                "urlContext",
+                "url_context",
+                "codeExecution",
+                "code_execution",
+            ],
+            "tools"
+        );
+        if (t.codeExecution || t.code_execution) builtins.push([[]]);
+        if (t.urlContext || t.url_context) builtins.push([null, null, null, null, null, null, null, []]);
+        const search = t.googleSearch || t.google_search || t.googleSearchRetrieval || t.google_search_retrieval;
+        if (search) {
+            fields(search, ["searchTypes", "timeRangeFilter"], "googleSearch");
+            const types = search.searchTypes || { webSearch: {} };
+            fields(types, ["webSearch", "imageSearch"], "searchTypes");
+            let range = null;
+            if (search.timeRangeFilter) {
+                range = [search.timeRangeFilter.startTime, search.timeRangeFilter.endTime].map(value => {
+                    if (!value) return null;
+                    const timestamp = Date.parse(value);
+                    if (!Number.isFinite(timestamp)) fail("Invalid search time range");
+                    return [String(Math.floor(timestamp / 1000))];
+                });
+            }
+            builtins.push([null, null, null, [range, types.imageSearch ? [types.webSearch ? [] : null, []] : [[]]]]);
+        }
         for (const d of t.functionDeclarations || t.function_declarations || []) {
             fields(d, ["name", "description", "parameters", "parametersJsonSchema"], "functionDeclaration");
             if (!d.name) fail("Function declaration requires a name");
@@ -85,7 +106,7 @@ function encTools(tools = []) {
             decls.push(x);
         }
     }
-    return decls.length ? [[null, decls]] : null;
+    return decls.length || builtins.length ? [...(decls.length ? [[null, decls]] : []), ...builtins] : null;
 }
 function toPart(p) {
     fields(
@@ -94,6 +115,12 @@ function toPart(p) {
             "text",
             "inlineData",
             "inline_data",
+            "fileData",
+            "file_data",
+            "executableCode",
+            "codeExecutionResult",
+            "toolCall",
+            "toolResponse",
             "functionCall",
             "function_call",
             "functionResponse",
@@ -106,12 +133,43 @@ function toPart(p) {
     );
     const a = [],
         d = p.inlineData || p.inline_data,
+        file = p.fileData || p.file_data,
         fc = p.functionCall || p.function_call,
         fr = p.functionResponse || p.function_response;
     if (typeof p.text === "string") a[1] = p.text;
     else if (d) {
         fields(d, ["mimeType", "mime_type", "data"], "inlineData");
         a[2] = [d.mimeType || d.mime_type, d.data];
+    } else if (file) {
+        const uri = file.fileUri || file.file_uri;
+        if (typeof uri !== "string" || !uri) fail("fileData requires fileUri");
+        const drive = /^drive:\/\/([a-zA-Z0-9_-]+)$/.exec(uri);
+        if (drive) a[5] = [drive[1]];
+        else {
+            if (!/^https?:\/\//.test(uri)) fail("Unsupported file URI");
+            a[6] = [file.mimeType || file.mime_type || "application/octet-stream", uri];
+        }
+    } else if (p.toolCall || p.toolResponse) {
+        const step = p.toolCall || p.toolResponse;
+        const code = { CUSTOM: 1, GOOGLE_MAPS: 8, GOOGLE_SEARCH_WEB: 2, MEDIA_PROCESSING: 13, URL_CONTEXT: 3 }[
+            step.toolType || step.type
+        ];
+        a[p.toolCall ? 25 : 26] = [
+            code || null,
+            step.name || null,
+            encStruct(step.args || step.response || {}),
+            step.id || null,
+        ];
+    } else if (p.executableCode) {
+        const language = { LANGUAGE_UNSPECIFIED: 0, PYTHON: 1 }[p.executableCode.language];
+        if (language === undefined) fail("Unsupported executable code language");
+        a[7] = [language, p.executableCode.code];
+    } else if (p.codeExecutionResult) {
+        const outcome = { OUTCOME_DEADLINE_EXCEEDED: 3, OUTCOME_FAILED: 2, OUTCOME_OK: 1, OUTCOME_UNSPECIFIED: 0 }[
+            p.codeExecutionResult.outcome
+        ];
+        if (outcome === undefined) fail("Unsupported code execution outcome");
+        a[8] = [outcome, p.codeExecutionResult.output || ""];
     } else if (fc) {
         fields(fc, ["name", "args", "id"], "functionCall");
         a[10] = [fc.name, encStruct(fc.args || {}), fc.id || null];
@@ -161,6 +219,8 @@ function buildBody(model, g) {
             "topP",
             "topK",
             "responseMimeType",
+            "responseSchema",
+            "responseJsonSchema",
             "thinkingConfig",
             "thinking_config",
         ],
@@ -173,6 +233,10 @@ function buildBody(model, g) {
     cfg[5] = gc.topP ?? 0.95;
     cfg[6] = gc.topK ?? 64;
     if (gc.responseMimeType) cfg[7] = gc.responseMimeType;
+    if (gc.responseSchema || gc.responseJsonSchema) {
+        cfg[7] = gc.responseMimeType || "application/json";
+        cfg[8] = encodeSchema(gc.responseSchema || gc.responseJsonSchema);
+    }
     cfg[13] = 1;
     if (tc) {
         fields(tc, ["includeThoughts", "thinkingBudget", "thinkingLevel"], "thinkingConfig");
@@ -191,11 +255,11 @@ function buildBody(model, g) {
     // but omit their constraints from the wire and preserve all tool declarations.
     const toolConfig = g.toolConfig || g.tool_config;
     if (toolConfig) {
-        fields(toolConfig, ["functionCallingConfig"], "toolConfig");
+        fields(toolConfig, ["functionCallingConfig", "includeServerSideToolInvocations"], "toolConfig");
         const fc = toolConfig.functionCallingConfig;
         if (fc) {
             fields(fc, ["mode", "allowedFunctionNames"], "functionCallingConfig");
-            if (fc.mode && !["AUTO", "ANY"].includes(String(fc.mode).toUpperCase()))
+            if (fc.mode && !["AUTO", "ANY", "NONE"].includes(String(fc.mode).toUpperCase()))
                 fail("MakerSuite bridge currently supports only AUTO tool choice");
         }
     }
@@ -220,7 +284,7 @@ function buildBody(model, g) {
         fill(cfg),
         null,
         sys,
-        encTools(g.tools),
+        String(toolConfig?.functionCallingConfig?.mode).toUpperCase() === "NONE" ? null : encTools(g.tools),
         null,
         null,
         null,
@@ -229,6 +293,12 @@ function buildBody(model, g) {
         null,
         [[null, null, "UTC"]],
     ];
+    if (
+        body[6] &&
+        (toolConfig?.includeServerSideToolInvocations ||
+            (body[6].some(t => t[1]?.length) && body[6].some(t => !t[1]?.length)))
+    )
+        body[13] = [[null, null, "UTC"], null, true];
     const ht = contents
         .flatMap(c => c[0])
         .map(p => (p[1] != null ? p[1] : p[2] ? p[2][1] : ""))
@@ -303,6 +373,31 @@ function rpcStatusOf(value) {
     if (Array.isArray(value) && value[0] == null && isRpcStatus(value[1])) return value[1];
     return undefined;
 }
+// GroundingMetadata positions from AIStudio2API tool_events.go (MIT).
+function decodeGrounding(value) {
+    const out = {};
+    if (value[0]) out.searchEntryPoint = { renderedContent: value[0][0], sdkBlob: value[0][1] };
+    if (value[1])
+        out.groundingChunks = value[1].map(chunk => {
+            const index = chunk.findIndex(Array.isArray),
+                data = chunk[index] || [];
+            return { [["web", "image", "maps"][index] || "web"]: { title: data[1], uri: data[0] } };
+        });
+    if (value[2])
+        out.groundingSupports = value[2].map(item => ({
+            confidenceScores: item[2] || [],
+            groundingChunkIndices: item[1] || [],
+            segment: {
+                endIndex: item[0]?.[2] || 0,
+                partIndex: item[0]?.[0] || 0,
+                startIndex: item[0]?.[1] || 0,
+                text: item[0]?.[3] || "",
+            },
+        }));
+    if (value[4]) out.webSearchQueries = value[4];
+    if (value[5]) out.imageSearchQueries = value[5];
+    return out;
+}
 function convChunk(m) {
     const out = {};
     const feedback = decFeedback(m[1]);
@@ -314,16 +409,52 @@ function convChunk(m) {
                 const o = {};
                 if (typeof p[1] === "string") o.text = p[1];
                 if (Array.isArray(p[2])) o.inlineData = { data: p[2][1], mimeType: p[2][0] };
+                if (Array.isArray(p[5])) o.fileData = { fileUri: "drive://" + p[5][0] };
+                if (Array.isArray(p[6])) o.fileData = { fileUri: p[6][1], mimeType: p[6][0] };
+                if (Array.isArray(p[7]))
+                    o.executableCode = {
+                        code: p[7][1],
+                        language: ["LANGUAGE_UNSPECIFIED", "PYTHON"][p[7][0]] || String(p[7][0]),
+                    };
+                if (Array.isArray(p[8]))
+                    o.codeExecutionResult = {
+                        outcome:
+                            ["OUTCOME_UNSPECIFIED", "OUTCOME_OK", "OUTCOME_FAILED", "OUTCOME_DEADLINE_EXCEEDED"][
+                                p[8][0]
+                            ] || String(p[8][0]),
+                        output: p[8][1] || "",
+                    };
                 if (Array.isArray(p[10])) {
                     o.functionCall = { args: decStruct(p[10][1]), name: p[10][0] };
                     if (p[10][2]) o.functionCall.id = p[10][2];
                 }
+                for (const [index, key] of [
+                    [25, "toolCall"],
+                    [26, "toolResponse"],
+                ])
+                    if (Array.isArray(p[index])) {
+                        const step = p[index];
+                        o[key] = {
+                            id: step[3],
+                            name: step[1],
+                            [key === "toolCall" ? "args" : "response"]: step[2] ? decStruct(step[2]) : {},
+                            toolType:
+                                {
+                                    1: "CUSTOM",
+                                    2: "GOOGLE_SEARCH_WEB",
+                                    3: "URL_CONTEXT",
+                                    8: "GOOGLE_MAPS",
+                                    13: "MEDIA_PROCESSING",
+                                }[step[0]] || "",
+                        };
+                    }
                 if (p[12] === 1 || p[12] === true) o.thought = true;
                 if (p[14]) o.thoughtSignature = p[14];
                 if (!Object.keys(o).length) fail("Unknown MakerSuite response part", 502);
                 return o;
             });
             const cand = { content: { parts, role: "model" }, index: i };
+            if (Array.isArray(c[7])) cand.groundingMetadata = decodeGrounding(c[7]);
             if (c[1]) cand.finishReason = Object.hasOwn(FIN, c[1]) ? FIN[c[1]] : "OTHER";
             return cand;
         });
@@ -351,6 +482,7 @@ function merge(chunks) {
                 dest = { content: { parts: [], role: "model" }, index: c.index };
                 candidates.set(c.index, dest);
             }
+            if (c.groundingMetadata) dest.groundingMetadata = c.groundingMetadata;
             if (c.finishReason) dest.finishReason = c.finishReason;
             for (const p of c.content.parts) {
                 const last = dest.content.parts.at(-1);
@@ -416,7 +548,15 @@ function decodeResponse(text) {
 }
 // CountTokens uses the same content/tool encoding, without generation defaults.
 function buildCountBody(model, request) {
-    const { body } = buildBody(model, request.generateContentRequest || request);
+    const source = request.generateContentRequest || request;
+    const empty = !source.contents?.length;
+    if (empty && !(source.systemInstruction || source.system_instruction))
+        fail("CountTokens requires contents or systemInstruction");
+    const { body } = buildBody(model, {
+        ...source,
+        contents: empty ? [{ parts: [{ text: "" }], role: "user" }] : source.contents,
+    });
+    if (empty) body[1] = [];
     const generate = [body[0], body[1], null, null, null, body[5], body[6]];
     const nested = body[5] || body[6] || body[1].some(c => c[0].some(p => p[1] == null));
     return nested ? [body[0], null, generate] : [body[0], body[1]];
@@ -437,7 +577,24 @@ function wrapResponse(text, streamed) {
     if (promptBlocked(merged)) return JSON.stringify([[[JSON.stringify(merged)]]]);
     return JSON.stringify([[...chunks.map(c => [JSON.stringify(c)]), ...(tail ? [tail] : [])]]);
 }
-const RPC_STATUS = { 3: 400, 5: 404, 7: 403, 8: 429, 9: 400, 13: 500, 14: 503, 16: 401 };
+const RPC_STATUS = {
+    1: 499,
+    2: 500,
+    3: 400,
+    4: 504,
+    5: 404,
+    6: 409,
+    7: 403,
+    8: 429,
+    9: 400,
+    10: 409,
+    11: 400,
+    12: 501,
+    13: 500,
+    14: 503,
+    15: 500,
+    16: 401,
+};
 function errorEnvelope(text, status) {
     let value;
     try {

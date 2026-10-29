@@ -2147,3 +2147,28 @@ test("observed MakerSuite quota messages reach daily classification while unknow
             }
         });
 });
+
+test("JSON-shaped upstream messages remain text and keep transport details in both runtimes", async t => {
+    const fields = {
+        code: 429,
+        details: [{ quota: "daily" }],
+        message: '{"message":"quota text"}',
+        type: "quota_error",
+    };
+    for (const legacy of [false, true]) {
+        const fixture = setup(
+            () => [{ event_type: "error", message: fields.message, status: 429, upstreamError: fields }],
+            { maxRetries: 1, scheduler: { maxRetries: 0, streamEarlyHeaders: false } }
+        );
+        t.after(() => fixture.scheduler.close());
+        if (legacy) {
+            useLegacy(fixture);
+            fixture.handler._ensureBrowserBackedRequestReady = async () => true;
+            fixture.handler.authSwitcher.handleRequestFailureAndSwitch = async () => {};
+        }
+        const res = new Response();
+        await fixture.handler.processOpenAIRequest(request("gemini-2.5-flash", false), res);
+        assert.equal(res.statusCode, 429);
+        assert.deepEqual(errorPayload(res), fields);
+    }
+});

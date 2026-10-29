@@ -3924,6 +3924,7 @@ class BrowserManager {
                 timeoutMs: this.config?.makerSuiteTimeoutMs,
                 validateSession: () => this._diagnoseMakerSuiteSession(page),
             });
+            bridge.resources = this.playgroundResources;
             page.makerSuiteBridge = bridge;
             page.playgroundTransport = bridge;
             await this._runInitOperation(attempt, "benefit.install", () => benefit.install());

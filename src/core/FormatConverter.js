@@ -404,20 +404,18 @@ class FormatConverter {
                 "$schema",
                 "additionalProperties",
                 "ref",
-                "$ref",
                 "propertyNames",
                 "patternProperties",
                 "unevaluatedProperties",
                 "exclusiveMinimum",
                 "exclusiveMaximum",
-                "const",
                 "$comment",
                 "enumDescriptions",
             ];
 
             if (isResponseSchema) {
                 // For Structured Outputs: stricter filtering of metadata that causes 400 errors
-                unsupportedKeys.push("default", "examples", "$defs", "id");
+                unsupportedKeys.push("default", "examples", "id");
             }
 
             // ONLY Filter metadata keywords if NOT a property name (isProperties is false)
@@ -513,7 +511,7 @@ class FormatConverter {
                 // - If key is 'properties', next level is a map of property NAMES. Set isProperties = true.
                 // - Otherwise, if we were currently in a properties map (isProperties is true),
                 //   the value is a schema definition. For its keys, isProperties MUST be false.
-                const nextIsProperties = key === "properties";
+                const nextIsProperties = ["properties", "$defs", "definitions"].includes(key);
                 const recursionFlag = isProperties ? false : nextIsProperties;
 
                 result[key] = this._convertSchemaToGemini(obj[key], isResponseSchema, recursionFlag);
@@ -779,6 +777,8 @@ class FormatConverter {
                     if (part.type === "text") {
                         const textPart = { text: part.text };
                         googleParts.push(textPart);
+                    } else if (part.type === "file") {
+                        googleParts.push(this._inputFilePart(part.file || part));
                     } else if (part.type === "image_url" && part.image_url) {
                         const dataUrl = this.normalizeImageUrl(part.image_url);
                         if (!dataUrl) {
@@ -1139,6 +1139,55 @@ class FormatConverter {
      * @param {string} modelName - The model name
      * @param {object} streamState - Optional state object to track thought mode
      */
+    _inputFilePart(file = {}) {
+        const id = file.file_id;
+        const uri = file.file_url || file.url;
+        const mimeType = file.media_type || file.mimeType || mime.lookup(file.filename || "") || "application/pdf";
+        if (id) return { fileData: { fileUri: "files/" + id.replace(/^files\//, ""), mimeType } };
+        if (uri) return { fileData: { fileUri: uri, mimeType } };
+        if (file.type === "text" && typeof file.data === "string") return { text: file.data };
+        const data = file.file_data || file.data;
+        if (typeof data === "string") {
+            const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(data);
+            return { inlineData: { data: match ? match[2] : data, mimeType: match ? match[1] : mimeType } };
+        }
+        throw Object.assign(new Error("File input requires file_id, file URL or base64 data"), { status: 400 });
+    }
+
+    // Gemini native keeps typed execution/grounding fields; text-oriented
+    // compatibility protocols receive readable code, results and source links.
+    _compatibilityParts(candidate) {
+        const parts = (candidate.content?.parts || []).map(part => {
+            if (part.executableCode)
+                return {
+                    ...part,
+                    text:
+                        "\n```" +
+                        (part.executableCode.language === "PYTHON" ? "python" : "") +
+                        "\n" +
+                        part.executableCode.code +
+                        "\n```\n",
+                };
+            if (part.codeExecutionResult)
+                return {
+                    ...part,
+                    text:
+                        "\n```text\n" +
+                        (part.codeExecutionResult.output || part.codeExecutionResult.outcome) +
+                        "\n```\n",
+                };
+            return part;
+        });
+        const links = (candidate.groundingMetadata?.groundingChunks || []).flatMap(chunk => {
+            const source = chunk.web || chunk.image || chunk.maps;
+            return source?.uri && /^https?:\/\//.test(source.uri)
+                ? [`[${source.title || source.uri}](${source.uri})`]
+                : [];
+        });
+        if (links.length) parts.push({ text: "\n\nSources: " + [...new Set(links)].join(" · ") });
+        return parts;
+    }
+
     translateGoogleToOpenAIStream(
         googleChunk,
         modelName = "gemini-2.5-flash-lite",
@@ -1200,7 +1249,7 @@ class FormatConverter {
 
         // Iterate over each part in the Gemini chunk and send it as a separate OpenAI chunk
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of candidate.content.parts) {
+            for (const part of this._compatibilityParts(candidate)) {
                 const delta = {};
                 let hasContent = false;
 
@@ -1622,7 +1671,7 @@ class FormatConverter {
 
             // Parts -> SSE events
             if (candidate.content && Array.isArray(candidate.content.parts)) {
-                for (const part of candidate.content.parts) {
+                for (const part of this._compatibilityParts(candidate)) {
                     // The Responses API exposes reasoning summaries via `summary` + `response.reasoning_summary_text.*`.
                     // Map Gemini "thought" parts to reasoning *summary* to match official expectations.
                     if (part?.thought === true) {
@@ -1847,7 +1896,7 @@ class FormatConverter {
         const tool_calls = [];
 
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of candidate.content.parts) {
+            for (const part of this._compatibilityParts(candidate)) {
                 if (part.thought === true) {
                     reasoning_content += part.text || "";
                 } else if (part.text) {
@@ -1981,7 +2030,7 @@ class FormatConverter {
         let messageContent = "";
         let reasoningContent = "";
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of candidate.content.parts) {
+            for (const part of this._compatibilityParts(candidate)) {
                 // Responses API supports reasoning output items; map Gemini "thought" parts into a reasoning *summary*.
                 if (part?.thought === true) {
                     if (part?.text) reasoningContent += part.text;
@@ -2350,6 +2399,8 @@ class FormatConverter {
                         for (const block of otherContent) {
                             if (block.type === "text") {
                                 pendingToolParts.push({ text: block.text });
+                            } else if (block.type === "document") {
+                                pendingToolParts.push(this._inputFilePart(block.source));
                             } else if (block.type === "image") {
                                 pendingToolParts.push({
                                     inlineData: {
@@ -2407,6 +2458,8 @@ class FormatConverter {
                     for (const block of message.content) {
                         if (block.type === "text") {
                             googleParts.push({ text: block.text });
+                        } else if (block.type === "document") {
+                            googleParts.push(this._inputFilePart(block.source));
                         } else if (block.type === "image") {
                             const source = block.source;
                             if (source.type === "base64") {
@@ -2785,7 +2838,7 @@ class FormatConverter {
 
         // Process content parts
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of candidate.content.parts) {
+            for (const part of this._compatibilityParts(candidate)) {
                 if (part.thought === true && part.text) {
                     // Thinking content
                     if (!streamState.thinkingBlockStarted) {
@@ -2977,7 +3030,7 @@ class FormatConverter {
         let hasToolUse = false;
 
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of candidate.content.parts) {
+            for (const part of this._compatibilityParts(candidate)) {
                 if (part.thought === true && part.text) {
                     const thinkingBlock = {
                         signature: part.thoughtSignature || FormatConverter.DUMMY_THOUGHT_SIGNATURE,
@@ -3301,9 +3354,7 @@ class FormatConverter {
                                         });
                                     }
                                 } else if (contentPart.type === "input_file") {
-                                    this.logger.debug(
-                                        "[Adapter] input_file content detected but not supported by Gemini, skipping..."
-                                    );
+                                    googleParts.push(this._inputFilePart(contentPart));
                                 }
                             }
                         }

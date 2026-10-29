@@ -36,6 +36,7 @@ async function fixture(t, streaming = false) {
         const req = route.request();
         traffic.push({ body: req.postData(), url: req.url() });
         if (req.url().startsWith(RPC)) {
+            if (req.url().endsWith("GenerateAccessToken")) return route.fulfill({ body: '["fixture-bearer"]' });
             if (req.url().endsWith("CountTokens")) return route.fulfill({ body: "[12]" });
             if (!req.url().endsWith("GenerateContent")) return route.fulfill({ body: "[]" });
             assert.match(req.headers().authorization, /^SAPISIDHASH \d+_[a-f0-9]{40}$/);
@@ -51,6 +52,17 @@ async function fixture(t, streaming = false) {
             );
             if (hold) return;
             return route.fulfill({ body, contentType: "application/json+protobuf", status });
+        }
+        if (req.url().startsWith("https://www.googleapis.com/")) {
+            assert.equal(req.headers().authorization, "Bearer fixture-bearer");
+            if (req.method() === "POST") {
+                assert.match(req.headers()["content-type"], /multipart\/related/);
+                return route.fulfill({
+                    body: JSON.stringify({ id: "drive-fixture", mimeType: "text/plain", name: "hello.txt" }),
+                });
+            }
+            if (req.method() === "DELETE") return route.fulfill({ status: 204 });
+            return route.fulfill({ body: "hello", contentType: "text/plain" });
         }
         await route.fulfill({
             body: `<!doctype html><title>AI Studio</title>
@@ -90,6 +102,8 @@ async function fixture(t, streaming = false) {
                                 },
                                 start(controller) {
                                     window.streamController = controller;
+                                    window.streamControllers ||= {};
+                                    window.streamControllers[JSON.parse(options.body)[1][0][0][0][1]] = controller;
                                     const candidate = [[[[null, "first你"]], "model"], null];
                                     const bytes = new TextEncoder().encode("[[" + JSON.stringify([[candidate]]));
                                     // Split a UTF-8 character across read boundaries.
@@ -219,9 +233,9 @@ test("cancellation while reading document context cannot start a late Google fet
     assert.equal(f.transport.active.size, 0);
 });
 
-test("unsupported endpoints fail locally without cooldown or cross-account retries", async t => {
+test("embeddings stay unsupported without network, cooldown or cross-account retries", async t => {
     const f = await fixture(t);
-    const r = request("unsupported", { method: "GET", path: "/v1beta/files" });
+    const r = request("unsupported", { path: "/v1beta/models/embedding-test:embedContent" });
     const q = f.registry.createMessageQueue(r.request_id, 0, r.request_attempt_id);
     const before = f.traffic.length;
     f.connection.dispatch(r);
@@ -306,4 +320,102 @@ test("a late RPC error after delivered content never emits a successful finish o
     assert.equal(error.upstreamOutputStarted, true);
     assert.equal(q.messages.length, 0);
     assert.equal(f.transport.active.size, 0);
+});
+
+test("a stuck proof retires the document and navigation restores the request lane", async t => {
+    const f = await fixture(t);
+    await f.page.evaluate(() =>
+        (window.wrappedJSObject || window).eval("window.__makerSuiteBridge.tb.snapshot = () => new Promise(() => {})")
+    );
+    await assert.rejects(f.transport.generate(request("stalled-proof", { remaining_budget_ms: 150 })), { status: 504 });
+    assert.equal(f.transport.ready, false);
+    await assert.rejects(f.transport.generate(request("after-stall")), { status: 503 });
+    assert.equal(f.traffic.filter(x => x.url.endsWith("GenerateContent")).length, 0);
+    await f.page.goto("https://aistudio.google.com/prompts/new_chat");
+    await f.transport.bootstrap(3000);
+    const result = await f.transport.generate(request("after-recovery"));
+    assert.equal(result.candidates[0].content.parts[0].text, "direct answer");
+});
+
+test("cancelling a queued proof does not cancel the active proof or a sibling fetch", async t => {
+    const f = await fixture(t);
+    await f.page.evaluate(() =>
+        (window.wrappedJSObject || window).eval(`
+        window.__makerSuiteBridge.tb.snapshot = async ({content}) => {
+            await new Promise(resolve => setTimeout(resolve, 150));
+            return 'proof:'+content;
+        };
+    `)
+    );
+    const active = f.transport.generate(request("active-proof"));
+    const queued = f.transport.generate(request("queued-proof"));
+    const rejected = assert.rejects(queued, { status: 499 });
+    await f.page.waitForTimeout(40);
+    f.transport.cancelAttempt("queued-proof", "queued-proof_attempt_1");
+    await rejected;
+    assert.equal((await active).candidates[0].content.parts[0].text, "direct answer");
+    assert.equal(f.transport.ready, true);
+    assert.equal((await f.transport.generate(request("next-proof"))).candidates[0].finishReason, "STOP");
+});
+
+test("file operations get a fresh token and use authenticated browser Drive requests", async t => {
+    const { PlaygroundResources } = require("../src/core/PlaygroundResources");
+    const f = await fixture(t);
+    const resources = Object.create(PlaygroundResources.prototype);
+    const uploaded = await resources.drive(f.transport, {
+        data: Buffer.from("hello").toString("base64"),
+        method: "POST",
+        mimeType: "text/plain",
+        name: "hello.txt",
+    });
+    assert.equal(JSON.parse(uploaded.text).id, "drive-fixture");
+    const downloaded = await resources.drive(f.transport, { download: true, fileId: "drive-fixture", method: "GET" });
+    assert.equal(Buffer.from(downloaded.data, "base64").toString(), "hello");
+    assert.equal((await resources.drive(f.transport, { fileId: "drive-fixture", method: "DELETE" })).status, 204);
+    assert.equal(f.traffic.filter(x => x.url.endsWith("GenerateAccessToken")).length, 3);
+    assert.ok(!f.traffic.some(x => /ProxyUnary|ProxyStreamed/.test(x.url)));
+});
+
+test("two generations overlap on one page and cancelling one leaves the other stream intact", async t => {
+    const f = await fixture(t, true),
+        firstChunks = [],
+        secondChunks = [];
+    const first = f.transport.generate(
+        request("parallel-first", {
+            body: JSON.stringify({ contents: [{ parts: [{ text: "First" }], role: "user" }] }),
+        }),
+        chunk => firstChunks.push(chunk)
+    );
+    const cancelled = assert.rejects(first, { status: 499 });
+    const second = f.transport.generate(
+        request("parallel-second", {
+            body: JSON.stringify({ contents: [{ parts: [{ text: "Second" }], role: "user" }] }),
+        }),
+        chunk => secondChunks.push(chunk)
+    );
+    while (!firstChunks.length || !secondChunks.length) await f.page.waitForTimeout(10);
+    assert.equal(f.transport.active.size, 2);
+    f.transport.cancelAttempt("parallel-first", "parallel-first_attempt_1");
+    await cancelled;
+    assert.equal(f.transport.active.size, 1);
+    await f.page.evaluate(() =>
+        (window.wrappedJSObject || window).eval(`
+        window.streamControllers.Second.enqueue(new TextEncoder().encode(',' + JSON.stringify([[[[[[null,'second done']], 'model'], 1]], null, [1,2,3]]) + ']]'));
+        window.streamControllers.Second.close();
+    `)
+    );
+    await second;
+    assert.ok(secondChunks.some(chunk => chunk.candidates?.some(candidate => candidate.finishReason === "STOP")));
+    assert.equal(f.transport.active.size, 0);
+    assert.equal(f.transport.ready, true);
+});
+
+test("HTTP 200 embedded auth errors reject the observed key even after browser run cleanup", async t => {
+    const f = await fixture(t);
+    f.set({ body: '[16,"expired"]', status: 200 });
+    await assert.rejects(f.transport.generate(request("embedded-auth")), { status: 401 });
+    const state = await f.page.evaluate(() =>
+        (window.wrappedJSObject || window).eval("window.__makerSuiteBridge.auth().state")
+    );
+    assert.equal(state, "key_missing");
 });

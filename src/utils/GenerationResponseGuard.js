@@ -105,7 +105,17 @@ class GenerationResponseGuard {
                     item.candidates.some(
                         candidate =>
                             Array.isArray(candidate?.content?.parts) &&
-                            candidate.content.parts.some(part => part?.text || part?.functionCall || part?.inlineData)
+                            candidate.content.parts.some(
+                                part =>
+                                    part?.text ||
+                                    part?.functionCall ||
+                                    part?.inlineData ||
+                                    part?.executableCode ||
+                                    part?.codeExecutionResult ||
+                                    part?.fileData ||
+                                    part?.toolCall ||
+                                    part?.toolResponse
+                            )
                     )
             );
             output.push({

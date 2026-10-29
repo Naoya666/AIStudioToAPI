@@ -110,10 +110,7 @@ test("Part supports inline media, signed function calls and tool responses", () 
 
 test("unsupported features are visible errors, safety enums never silently fall back", () => {
     for (const extra of [
-        { tools: [{ googleSearch: {} }] },
-        { generationConfig: { responseSchema: { type: "object" } } },
         { generationConfig: { thinkingConfig: { thinkingLevel: "MEDIUM" } } },
-        { toolConfig: { functionCallingConfig: { mode: "NONE" } } },
         { toolConfig: { functionCallingConfig: { mode: "UNKNOWN" } } },
         { safetySettings: [{ category: "UNKNOWN", threshold: "OFF" }] },
         { contents: [{ parts: [{ fileData: { fileUri: "file" } }] }] },

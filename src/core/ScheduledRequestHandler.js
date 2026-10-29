@@ -106,13 +106,22 @@ class ScheduledRequestHandler extends RequestHandler {
                                     dequeue = activeQueue.dequeue.bind(activeQueue);
                                 }
                             }
+                            if (message.upstreamOutputStarted) this.response.__upstreamOutputStarted = true;
                             if (this.response.__antiAttempt && message.data) {
                                 let hasOutput = false;
                                 try {
                                     const raw = JSON.parse(message.data.replace(/^data:\s*/, "").trim());
                                     hasOutput = raw.candidates?.some(candidate =>
                                         candidate.content?.parts?.some(
-                                            part => part.functionCall || part.text || part.inlineData
+                                            part =>
+                                                part.functionCall ||
+                                                part.text ||
+                                                part.inlineData ||
+                                                part.executableCode ||
+                                                part.codeExecutionResult ||
+                                                part.fileData ||
+                                                part.toolCall ||
+                                                part.toolResponse
                                         )
                                     );
                                 } catch {
@@ -380,6 +389,7 @@ class ScheduledRequestHandler extends RequestHandler {
     }
 
     async _retryTransportQueue(error, registry) {
+        if (error.upstreamOutputStarted) throw error;
         if (require("../utils/UpstreamBlock").isPromptBlocked(error)) throw error;
         if (isArgon(this.model) || !/:streamGenerateContent$/.test(this.proxyRequest?.path || ""))
             throw benefitError("Argon transport interrupted; generation was not replayed");

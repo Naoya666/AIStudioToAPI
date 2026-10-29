@@ -274,7 +274,7 @@ Camoufox 生产差异及后续修复见 [生产问题定位](docs/zh/gemini-4-ar
 
 Argon 使用统一账号层级准入，并使用当前页面真实权益头；手动层级不授予真实上游权限。
 
-桥接模式将强制或指定函数调用降级为 AUTO，兼容酒馆预设及插件中的 `tool_choice` 配置：OpenAI `required` / 指定函数、Anthropic `any` / 指定工具、Gemini `ANY` / `allowedFunctionNames` 均保留工具声明，由模型自主决定是否调用及调用哪个工具，不再因这些选择配置返回 400。此行为不保证工具一定执行，也不保证一定返回文本；JSON 和实时 SSE 使用相同规则。禁止调用（`none` / `NONE`）仍不受桥接支持。
+桥接模式将强制或指定函数调用降级为 AUTO，兼容酒馆预设及插件中的 `tool_choice` 配置：OpenAI `required` / 指定函数、Anthropic `any` / 指定工具、Gemini `ANY` / `allowedFunctionNames` 均保留工具声明，由模型自主决定是否调用及调用哪个工具，不再因这些选择配置返回 400。此行为不保证工具一定执行，也不保证一定返回文本；JSON 和实时 SSE 使用相同规则。禁止调用（`none` / `NONE`）通过不发送工具实现。
 
 real 流式请求通过浏览器 `ReadableStream` 逐段读取并增量解析 JSON+protobuf 消息，再转换为客户端协议；不等待完整响应。只有明确结束且上游正文校验通过后才提交成功结束事件。尾部错误、截断和取消不会伪造成功完成，正文输出后不自动重放生成。fake 等待完整结果后输出 SSE；early 在 Chat 入口提前发送空正文首块及等待心跳，其他入口沿用 fake 行为。非流式请求仍汇总为完整 JSON。
 
@@ -287,3 +287,5 @@ real 流式请求通过浏览器 `ReadableStream` 逐段读取并增量解析 JS
 实时流式实现及 bero 真实账号验收见 [改造记录](docs/zh/playground-streaming-20261029.md)。
 
 三种模式的最终行为及修正验收见 [模式保留修正记录](docs/zh/playground-stream-modes-20261029.md)。
+
+Playground 的工具、结构化输出、文件与本地缓存支持范围及迁移说明见 [能力补全说明](docs/zh/playground-capabilities.md)。embeddings 继续不支持。

@@ -219,10 +219,10 @@ test("two accounts and concurrent requests keep page authentication isolated", a
 test("unsupported requests fail before network; missing token is bounded and distinct", async t => {
     const f = fixture(t);
     await f.init({ capture: false });
-    const unsupported = f.route({ body: { contents: [{ parts: [{ text: "hi" }] }], tools: [{ googleSearch: {} }] } });
+    const unsupported = f.route({ body: { contents: [{ parts: [{ text: "hi" }] }], tools: [{ unknownTool: {} }] } });
     await f.bridge.handle(unsupported);
     assert.equal(unsupported.outcomes[0].status, 400);
-    assert.match(unsupported.outcomes[0].body, /does not support tools.googleSearch/);
+    assert.match(unsupported.outcomes[0].body, /does not support tools.unknownTool/);
     assert.equal(f.calls.length, 0);
     const unready = f.route();
     await f.bridge.handle(unready);

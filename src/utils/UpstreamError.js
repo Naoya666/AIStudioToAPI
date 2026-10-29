@@ -1,3 +1,18 @@
+const STATUS_NAMES = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHENTICATED",
+    403: "PERMISSION_DENIED",
+    404: "NOT_FOUND",
+    409: "ALREADY_EXISTS",
+    413: "RESOURCE_EXHAUSTED",
+    429: "RESOURCE_EXHAUSTED",
+    499: "CANCELLED",
+    500: "INTERNAL",
+    501: "UNIMPLEMENTED",
+    502: "INTERNAL",
+    503: "UNAVAILABLE",
+    504: "DEADLINE_EXCEEDED",
+};
 const nonemptyString = value => typeof value === "string" && value.trim().length > 0;
 const validCode = value => nonemptyString(value) || (typeof value === "number" && Number.isFinite(value));
 const httpStatus = value => {
@@ -22,7 +37,7 @@ function normalizeError(error = {}, fallbackStatus = 500) {
         [upstream?.message, error.message].find(nonemptyString) ||
         (isUpstream ? "Upstream generation failed" : "Request processing failed");
     const type = [upstream?.type, error.errorType].find(nonemptyString) || null;
-    return { code, message, status, type };
+    return { code, message, status, type, ...(upstream?.details !== undefined ? { details: upstream.details } : {}) };
 }
 
 function upstreamError(fields, status) {
@@ -30,8 +45,17 @@ function upstreamError(fields, status) {
     return Object.assign(new Error(normalized.message), {
         code: "upstream_error",
         status: normalized.status,
-        upstreamError: { code: normalized.code, message: normalized.message, type: normalized.type },
+        upstreamError: {
+            code: normalized.code,
+            message: normalized.message,
+            type: normalized.type,
+            ...(normalized.details !== undefined ? { details: normalized.details } : {}),
+            ...(fields?.status ? { status: fields.status } : {}),
+        },
     });
 }
 
-module.exports = { normalizeError, upstreamError };
+function geminiStatus(error, status) {
+    return error?.upstreamError?.status || error?.error?.status || STATUS_NAMES[status] || "INTERNAL";
+}
+module.exports = { geminiStatus, normalizeError, upstreamError };
