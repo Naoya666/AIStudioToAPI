@@ -166,6 +166,7 @@ class LoginPageHandlers {
             if (attempt === 3) throw failure("terms_or_consent_required");
             this.phase("aistudio_terms");
             this.termsOutcome = "identified";
+            this.termsDiagnostics = { attempt, checkboxes: [] };
             handled = true;
             try {
                 const boxes = found.locator('input[type="checkbox"], [role="checkbox"]').filter({ visible: true });
@@ -182,13 +183,21 @@ class LoginPageHandlers {
                             "",
                         required: node.required || node.getAttribute("aria-required") === "true",
                     }));
-                    if (optionalText.test(info.label)) continue;
-                    if (
-                        !info.checked &&
-                        (info.required ||
-                            ageAndPurposeText(info.label) ||
-                            (/agree|accept|同意|接受/i.test(info.label) && /terms|条款|條款/i.test(info.label)))
-                    ) {
+                    const optional = optionalText.test(info.label);
+                    const recognizedRequired =
+                        !!info.required ||
+                        ageAndPurposeText(info.label) ||
+                        (/agree|accept|同意|接受/i.test(info.label) && /terms|条款|條款/i.test(info.label));
+                    const diagnostic = {
+                        checkedBefore: info.checked,
+                        index,
+                        labelPresent: !!info.label,
+                        optional,
+                        recognizedRequired,
+                    };
+                    this.termsDiagnostics.checkboxes.push(diagnostic);
+                    if (optional) continue;
+                    if (!info.checked && recognizedRequired) {
                         this.operation = "terms_checkbox";
                         await this.interaction.click(box, { timeout: this.remaining(end) });
                     }
@@ -226,6 +235,22 @@ class LoginPageHandlers {
                 const before = await this.snapshot(found);
                 if (before === null) continue;
                 this.operation = "terms_confirm";
+                // Capture the actual checkbox states immediately before the
+                // confirmation attempt, including controls left untouched.
+                // Best-effort diagnostics never replace the business failure.
+                try {
+                    this.termsDiagnostics.checkboxStates = await boxes.evaluateAll(nodes =>
+                        nodes.slice(0, 10).map((node, index) => ({
+                            checked: node.checked === true || node.getAttribute("aria-checked") === "true",
+                            disabled: node.disabled === true || node.getAttribute("aria-disabled") === "true",
+                            index,
+                            required: node.required === true || node.getAttribute("aria-required") === "true",
+                        }))
+                    );
+                    this.termsDiagnostics.confirmationEnabled = await button.isEnabled();
+                } catch {
+                    this.termsDiagnostics.captureFailed = true;
+                }
                 try {
                     await this.interaction.click(button, { timeout: this.remaining(end) });
                     this.termsOutcome = "clicked";

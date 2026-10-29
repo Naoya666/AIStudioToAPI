@@ -3,6 +3,7 @@ const Totp = require("./TotpService");
 const LoginPageHandlers = require("./LoginPageHandlers");
 const LoginInteraction = require("./LoginInteraction");
 const TargetSessionValidator = require("./TargetSessionValidator");
+const { studioAccessState } = require("../auth/TargetServiceValidation");
 const { performance } = require("node:perf_hooks");
 /* eslint-env browser */
 const privateValues = new Set();
@@ -46,7 +47,7 @@ async function screenshot() {
     try {
         const buffer = await page.screenshot({
             mask: [
-                page.locator('input, textarea, [contenteditable="true"]'),
+                page.locator('input:not([type="checkbox"]), textarea, [contenteditable="true"]'),
                 page.getByText(/[^\s@]+@[^\s@]+\.[^\s@]+/),
                 ...[...privateValues].map(value => page.getByText(value, { exact: false })),
             ],
@@ -268,13 +269,13 @@ async function validateStudio(credentials) {
             email: typeof email === "string" ? email.trim().toLowerCase() : null,
             initializationFailed: /Failed to initialize applet|snapshot.*failed|concurrent updates/i.test(body),
             modelRestricted: /Upgrade to unlock|升级.*解锁/i.test(body),
-            permissionRequired: /Allow Drive access/i.test(body),
             unavailable: /Available regions|not available in your country|地区.*不支持/i.test(body),
         };
     });
+    const { permissionRequired } = await page.evaluate(studioAccessState);
     diagnostics.studioModelState = validation.modelRestricted ? "restricted" : "available";
     if (validation.unavailable) fail("service_region_restricted");
-    if (validation.permissionRequired) fail("service_permission_required");
+    if (permissionRequired) fail("service_permission_required");
     if (validation.initializationFailed) fail("service_initialization_failed", true);
     if (validation.email !== credentials.email)
         fail(validation.email ? "account_mismatch" : "account_identity_unverified");
@@ -728,6 +729,7 @@ process.on("message", input => {
                 ...interaction?.diagnostics,
                 ...cause.operationDiagnostics,
                 ...cause.onboardingDiagnostics,
+                ...(handlers?.termsDiagnostics ? { termsControls: handlers.termsDiagnostics } : {}),
                 operation:
                     cause.loginOperation ||
                     (handlers?.operation?.startsWith("terms_") && diagnostics.operation === "aistudio_terms"

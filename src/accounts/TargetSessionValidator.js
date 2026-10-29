@@ -1,6 +1,7 @@
 const BrowserManager = require("../core/BrowserManager");
 const ConnectionRegistry = require("../core/ConnectionRegistry");
 const { withHardTimeout } = require("../utils/TimeoutUtils");
+const { studioAccessState } = require("../auth/TargetServiceValidation");
 
 class TargetSessionValidator {
     constructor({
@@ -84,7 +85,8 @@ class TargetSessionValidator {
         const check = this.manager._checkPageErrors.bind(this.manager);
         this.manager._checkPageErrors = async (...args) => {
             const body = await args[0].locator("body").innerText({ timeout: stepTimeout });
-            const reason = /Allow Drive access/i.test(body)
+            const { permissionRequired } = await args[0].evaluate(studioAccessState);
+            const reason = permissionRequired
                 ? "service_permission_required"
                 : /captcha|verify you are human/i.test(body)
                   ? "manual_challenge"

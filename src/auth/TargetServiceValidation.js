@@ -8,4 +8,12 @@ function pageErrors() {
         snapshotFailed: bodyText.includes("Failed to create snapshot") || bodyText.includes("Please try again"),
     };
 }
-module.exports = { pageErrors };
+
+// Evaluated in the page by both login validation stages. The recent-apps
+// navigation hint describes an optional Drive feature, not a model access gate.
+function studioAccessState() {
+    const text = (document.body.innerText || "").replace(/\s+/g, " ");
+    const blockingText = text.replace(/Allow Drive access to see your recent apps\.?/gi, "");
+    return { permissionRequired: /Allow Drive access/i.test(blockingText) };
+}
+module.exports = { pageErrors, studioAccessState };

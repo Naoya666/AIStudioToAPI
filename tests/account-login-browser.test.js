@@ -41,6 +41,14 @@ async function run(options = {}) {
                     assert.equal(browser.contexts().length, 0, "previous context must close before creating the next");
                     const validationContext = contextsCreated++ % 2 === 1;
                     const context = await original(contextOptions);
+                    if (options.onScreenshot)
+                        context.on("page", target => {
+                            const screenshot = target.screenshot.bind(target);
+                            target.screenshot = async settings => {
+                                await options.onScreenshot(target, settings);
+                                return screenshot(settings);
+                            };
+                        });
                     if (!validationContext) {
                         assert.equal((await context.cookies()).length, 0, "each login starts without previous cookies");
                         await context.addCookies([
@@ -159,6 +167,13 @@ async function run(options = {}) {
                             );
                         if (options.studioDialog && url.hostname === "aistudio.google.com")
                             html += options.studioDialog;
+                        if (options.recentAppsHint && url.hostname === "aistudio.google.com")
+                            html += "<aside>Allow Drive access to see your recent apps.</aside>";
+                        if (options.termsBlocked && url.hostname === "aistudio.google.com")
+                            html = html.replace(
+                                "I agree to the terms of service</label>",
+                                "Unrecognized confirmation</label>"
+                            );
                         if (
                             options.finalDialog &&
                             validationContext &&
@@ -296,6 +311,77 @@ test("real browser: no-two-step success and account/app verification failures", 
     assert.equal((await run({ mismatch: true })).error, "account_mismatch");
     assert.equal((await run({ appFailure: true })).error, "service_initialization_failed");
 });
+test(
+    "real browser: optional recent-apps Drive hint permits login through both validation stages",
+    { skip: !executablePath },
+    async () => {
+        const result = await run({ fast: true, noTotp: true, recentAppsHint: true });
+        assert.ok(result.storageState, JSON.stringify(result));
+        assert.equal(result.targetInitialized, true);
+        const blocked = await run({ fast: true, noTotp: true, permissionRequired: true, recentAppsHint: true });
+        assert.equal(blocked.error, "service_permission_required");
+        assert.ok(!blocked.storageState);
+    }
+);
+test(
+    "real browser: target validation distinguishes the navigation hint from required Drive authorization",
+    { skip: !executablePath },
+    async t => {
+        const { page } = await handlerFixture(t, "<textarea></textarea>");
+        const Validator = require("../src/accounts/TargetSessionValidator");
+        const validator = new Validator({ stepTimeout: 1000, timeout: 3000 });
+        t.after(() => validator.close());
+        for (const hint of [
+            "Allow Drive access to see your recent apps.",
+            "Allow Drive access to see your\n recent apps",
+        ]) {
+            await page.setContent(`<textarea></textarea><aside>${hint}</aside>`);
+            await validator.manager._checkPageErrors(page);
+        }
+        await page.setContent(
+            "<aside>Allow Drive access to see your recent apps.</aside><main>Allow Drive access<button>Allow access</button></main>"
+        );
+        await assert.rejects(validator.manager._checkPageErrors(page), { reason: "service_permission_required" });
+    }
+);
+test(
+    "real browser: disabled terms confirmation reports checkbox decisions and actual states",
+    { skip: !executablePath },
+    async () => {
+        let screenshotChecked = false;
+        const result = await run({
+            fast: true,
+            noTotp: true,
+            onScreenshot: async (page, settings) => {
+                await page.evaluate(() => {
+                    document.body.insertAdjacentHTML(
+                        "beforeend",
+                        '<input type="password"><textarea></textarea><div contenteditable="true">Private input</div>'
+                    );
+                });
+                const masked = await settings.mask[0].evaluateAll(nodes => ({
+                    checkbox: nodes.some(node => node.matches('input[type="checkbox"]')),
+                    count: nodes.length,
+                }));
+                assert.equal(masked.checkbox, false, "checkbox states must remain visible in failure screenshots");
+                assert.equal(masked.count, 3, "password, textarea and editable content must remain masked");
+                screenshotChecked = true;
+            },
+            stepTimeout: 1000,
+            terms: true,
+            termsBlocked: true,
+        });
+        assert.equal(result.error, "ui_click_timeout", JSON.stringify(result));
+        assert.equal(screenshotChecked, true);
+        assert.equal(result.diagnostics.termsControls.confirmationEnabled, false);
+        assert.equal(result.diagnostics.termsControls.checkboxes[0].recognizedRequired, false);
+        assert.equal(result.diagnostics.termsControls.checkboxes[1].optional, true);
+        assert.deepEqual(
+            result.diagnostics.termsControls.checkboxStates.map(box => box.checked),
+            [false, false]
+        );
+    }
+);
 test(
     "real browser: dynamically created srcdoc and blob previews stay outside the request pool",
     { skip: !executablePath },
