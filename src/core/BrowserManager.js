@@ -2143,7 +2143,12 @@ class BrowserManager {
     }
 
     isContextClosing(authIndex) {
-        return this.isClosingIntentionally || this.closingContexts.has(authIndex);
+        const owner = this._closingContextOwners?.get(authIndex);
+        const current = this.contexts.get(authIndex);
+        return (
+            this.isClosingIntentionally ||
+            (this.closingContexts.has(authIndex) && (!current || !owner || current === owner))
+        );
     }
 
     markContextState(authIndex, state, details = {}) {
@@ -2240,6 +2245,13 @@ class BrowserManager {
             this.isContextReady(authIndex)
         )
             return;
+        if (
+            !model &&
+            this.scheduler.isAccountPoolResident?.(authIndex) === false &&
+            !this._foregroundContextWaiters?.has(authIndex) &&
+            !this._canKeepPooledContext(authIndex)
+        )
+            return;
         this.contextDemand ??= new Map();
         const previous = this.contextDemand.get(authIndex);
         const models = new Set(previous?.models || (previous?.model ? [previous.model] : []));
@@ -2274,7 +2286,12 @@ class BrowserManager {
         const account = this.scheduler.account(authIndex);
         if (account.disabled || account.healthy === false || this.authSource.isExpired?.(authIndex)) return false;
         if (this._foregroundContextWaiters?.has(authIndex)) return true;
-        if ((demand.unscoped || !demand.model) && demand.unscopedUntil > Date.now()) return true;
+        if (
+            (demand.unscoped || !demand.model) &&
+            demand.unscopedUntil > Date.now() &&
+            this.scheduler.isAccountPoolResident?.(authIndex) !== false
+        )
+            return true;
         return this._hasQueuedContextDemand(authIndex);
     }
 
@@ -3036,6 +3053,8 @@ class BrowserManager {
                     await this.closeContext(authIndex, { keepBrowser: true, skipInitWait: true });
                 }
                 this._assertCurrentInitAttempt(attempt);
+                if (!this._canKeepPooledContext(authIndex))
+                    throw new ContextAbortedError(authIndex, "account not eligible before initialization");
                 await this._initializeContext(authIndex, true, attempt);
                 this._assertCurrentInitAttempt(attempt);
                 if (!this._canKeepPooledContext(authIndex)) {
@@ -4334,6 +4353,12 @@ class BrowserManager {
             return false;
         }
 
+        const ownsContext = () =>
+            this.contexts.get(targetAuthIndex) === contextData &&
+            !this.isContextClosing(targetAuthIndex) &&
+            !contextData.draining;
+        const isCurrent = () => ownsContext() && (!this.scheduler || this._canKeepPooledContext(targetAuthIndex));
+        if (!isCurrent()) return false;
         const page = contextData.page;
 
         // Verify browser and page are still valid
@@ -4373,21 +4398,26 @@ class BrowserManager {
                 contextData.state = "RECONNECTING";
                 transport.connection?.close();
                 await this._navigateAndWakeUpPage(page, "[Reconnect]");
+                if (!isCurrent()) return false;
                 await this._checkPageStatusAndErrors(page, "[Reconnect]", targetAuthIndex);
+                if (!isCurrent()) return false;
                 await this._runInitOperation(
                     null,
                     "playground.bootstrap",
                     () => transport.bootstrap(),
                     WS_INIT_TIMEOUT_MS
                 );
-                if (this.contexts.get(targetAuthIndex) !== contextData || contextData.draining) return false;
+                if (!isCurrent()) return false;
                 await this._simulateHumanMovement(page, 1, 1);
+                if (!isCurrent()) return false;
                 transport.connect(this.connectionRegistry, contextData);
                 contextData.state = "READY";
                 await this._updateAuthFile(targetAuthIndex);
+                if (!isCurrent()) return false;
                 this._startHealthMonitor(targetAuthIndex);
                 return true;
             } catch (error) {
+                if (!ownsContext()) return false;
                 contextData.state = "UNAVAILABLE";
                 if (isAuthExpiredError(error)) await this.closeContext(targetAuthIndex);
                 return false;
@@ -4417,8 +4447,10 @@ class BrowserManager {
             await this._navigateAndWakeUpPage(page, "[Reconnect]");
 
             // Check for cookie expiration, region restrictions, and other errors
+            if (!isCurrent()) return false;
             await this._checkPageStatusAndErrors(page, "[Reconnect]", targetAuthIndex);
 
+            if (!isCurrent()) return false;
             // Wait for WebSocket initialization (no retry)
             // Check if initialization already succeeded (console listener may have detected it)
             if (reconnectAttempt.ws.success || this._hasNewOpenConnection(reconnectAttempt)) {
@@ -4439,7 +4471,9 @@ class BrowserManager {
                 }
             }
 
+            if (!isCurrent()) return false;
             await this._simulateHumanMovement(page, 1, 1);
+            if (!isCurrent()) return false;
             this._sendActiveTrigger("[Reconnect]", page);
 
             // [Auth Update] Save the refreshed cookies to the auth file immediately
@@ -4449,6 +4483,7 @@ class BrowserManager {
             this.logger.info(`✅ [Reconnect] Lightweight reconnect successful for account #${targetAuthIndex}!`);
             this.logger.info("==================================================");
 
+            if (!isCurrent()) return false;
             // Restart background tasks only if this is the current account
             if (isCurrentAccount) {
                 // Reset BackgroundWakeup state after reconnect
@@ -4459,6 +4494,7 @@ class BrowserManager {
 
             return true;
         } catch (error) {
+            if (!ownsContext()) return false;
             // Check if this is an abort error (context was deleted during reconnect)
             const isAbortError = isContextAbortedError(error);
             // Check if this is an auth expiration error
@@ -4478,7 +4514,7 @@ class BrowserManager {
                 // Auth is already marked as expired in _checkPageStatusAndErrors
                 await this._saveDebugArtifacts("reconnect_expired", targetAuthIndex, page);
                 // Close context for expired auth - it needs full re-initialization
-                await this.closeContext(targetAuthIndex);
+                if (ownsContext()) await this.closeContext(targetAuthIndex);
                 return false;
             }
 
@@ -4509,6 +4545,7 @@ class BrowserManager {
      */
     async closeContext(authIndex, { keepBrowser = false, skipInitWait = false } = {}) {
         this.pendingContextClosures.delete(authIndex);
+        this.connectionRegistry?.cancelReconnect?.(authIndex);
 
         // If context is being initialized in background, signal abort and wait
         if (!skipInitWait && this.initializingContexts.has(authIndex)) {
@@ -4530,8 +4567,6 @@ class BrowserManager {
         }
 
         const contextData = this.contexts.get(authIndex);
-        contextData.page?.makerSuiteBridge?.dispose();
-        contextData.page?.buildBenefit?.dispose();
         this._closingContextOwners ??= new Map();
         this._closingContextOwners.set(authIndex, contextData);
         this.closingContexts.add(authIndex);
@@ -4573,8 +4608,12 @@ class BrowserManager {
             this.logger.debug(`[Browser] Current context was closed, currentAuthIndex reset to -1.`);
         }
 
+        // Transport disposal can synchronously emit close. Logical teardown must precede it.
+        this.connectionRegistry?.cancelReconnect?.(authIndex);
         // Close the context AFTER removing from map
         try {
+            contextData.page?.makerSuiteBridge?.dispose();
+            contextData.page?.buildBenefit?.dispose();
             if (contextData.context) {
                 const closing = this._closeTrackedContext(contextData, authIndex);
                 await withHardTimeout(() => closing, this.contextCleanupTimeoutMs || 5000);
@@ -4608,8 +4647,18 @@ class BrowserManager {
      * Called when browser is closing or has disconnected
      */
     _cleanupAllContexts() {
-        // Clean up all context health monitors
-        for (const [authIndex, contextData] of this.contexts.entries()) {
+        // Detach every owner before disposal can synchronously emit connection close.
+        const contexts = [...this.contexts.entries()];
+        this.contexts.clear();
+        const registry = this.connectionRegistry;
+        for (const index of new Set([
+            ...contexts.map(([index]) => index),
+            ...(registry?.reconnectTasks?.keys() || []),
+        ])) {
+            registry?.cancelReconnect?.(index);
+            registry?.closeMessageQueuesForAuth?.(index, "context_closed");
+        }
+        for (const [authIndex, contextData] of contexts) {
             contextData.page?.makerSuiteBridge?.dispose();
             contextData.page?.buildBenefit?.dispose();
             if (contextData.healthMonitorInterval) {

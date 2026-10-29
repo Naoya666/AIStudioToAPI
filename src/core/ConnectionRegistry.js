@@ -39,6 +39,7 @@ class ConnectionRegistry extends EventEmitter {
         // Map: authIndex -> timeoutId, stores lightweight reconnect timeout timers
         this.lightweightReconnectTimeouts = new Map();
         this.connectionEpochs = new Map();
+        this.reconnectTasks = new Map();
     }
 
     addConnection(websocket, clientInfo) {
@@ -82,30 +83,7 @@ class ConnectionRegistry extends EventEmitter {
             this._safeCloseWebSocket(existingConnection, 1000, "Replaced by new connection");
         }
 
-        // Clear grace timer for this authIndex
-        if (this.reconnectGraceTimers.has(authIndex)) {
-            clearTimeout(this.reconnectGraceTimers.get(authIndex));
-            this.reconnectGraceTimers.delete(authIndex);
-            this.logger.debug(`[Server] Grace timer cleared for reconnected authIndex=${authIndex}`);
-        }
-
-        // Clear reconnecting status for this authIndex when connection is re-established
-        if (this.reconnectingAccounts.has(authIndex)) {
-            this.reconnectingAccounts.delete(authIndex);
-            this.logger.debug(`[Server] Cleared reconnecting status for reconnected authIndex=${authIndex}`);
-        }
-
-        // Clear lightweight reconnect timeout timer for this authIndex
-        if (this.lightweightReconnectTimeouts.has(authIndex)) {
-            const { timeoutId, timeoutReject } = this.lightweightReconnectTimeouts.get(authIndex);
-            clearTimeout(timeoutId);
-            // Reject the timeout promise to unblock Promise.race() - this is caught and ignored
-            if (timeoutReject) {
-                timeoutReject(new ReconnectCancelledError("Reconnect succeeded, timeout cancelled"));
-            }
-            this.lightweightReconnectTimeouts.delete(authIndex);
-            this.logger.debug(`[Server] Cleared lightweight reconnect timeout for reconnected authIndex=${authIndex}`);
-        }
+        this.cancelReconnect(authIndex);
 
         // Store connection by authIndex
         const connectionEpoch = (this.connectionEpochs.get(authIndex) || 0) + 1;
@@ -128,6 +106,20 @@ class ConnectionRegistry extends EventEmitter {
         this.browserManager?.markContextState(authIndex, "READY", { connectionEpoch });
     }
 
+    cancelReconnect(authIndex) {
+        // Invalidate running callbacks before rejecting their timeout promise.
+        this.reconnectTasks.delete(authIndex);
+        clearTimeout(this.reconnectGraceTimers.get(authIndex));
+        this.reconnectGraceTimers.delete(authIndex);
+        this.reconnectingAccounts.delete(authIndex);
+        const timeout = this.lightweightReconnectTimeouts.get(authIndex);
+        this.lightweightReconnectTimeouts.delete(authIndex);
+        if (timeout) {
+            clearTimeout(timeout.timeoutId);
+            timeout.timeoutReject?.(new ReconnectCancelledError("Reconnect cancelled"));
+        }
+    }
+
     _removeConnection(websocket) {
         const disconnectedAuthIndex = websocket._authIndex;
         const disconnectedEpoch = websocket._connectionEpoch;
@@ -139,9 +131,10 @@ class ConnectionRegistry extends EventEmitter {
         if (disconnectedAuthIndex !== undefined && disconnectedAuthIndex >= 0) {
             this.connectionsByAuth.delete(disconnectedAuthIndex);
             this.closeMessageQueuesForEpoch(disconnectedAuthIndex, disconnectedEpoch, "connection_lost");
-            this.browserManager?.markContextState(disconnectedAuthIndex, "RECONNECTING", {
-                lastDisconnectReason: "connection_lost",
-            });
+            if (!this.browserManager?.isContextClosing?.(disconnectedAuthIndex))
+                this.browserManager?.markContextState(disconnectedAuthIndex, "RECONNECTING", {
+                    lastDisconnectReason: "connection_lost",
+                });
             this.logger.info(`[Server] Internal WebSocket client disconnected (authIndex: ${disconnectedAuthIndex}).`);
         } else {
             this.logger.info("[Server] Internal WebSocket client disconnected.");
@@ -154,29 +147,16 @@ class ConnectionRegistry extends EventEmitter {
         // If page is closed/missing, it means the context was intentionally closed, skip reconnect
         if (this.browserManager) {
             const contextData = this.browserManager.contexts.get(disconnectedAuthIndex);
-            if (!contextData || !contextData.page || contextData.page.isClosed()) {
+            if (
+                this.browserManager.isContextClosing?.(disconnectedAuthIndex) ||
+                !contextData?.page ||
+                contextData.page.isClosed()
+            ) {
                 const intentionalClose = this.browserManager.isContextClosing?.(disconnectedAuthIndex);
                 this.logger.info(
                     `[Server] Account #${disconnectedAuthIndex} page is closed/missing, skipping reconnect logic.`
                 );
-                // Clear any existing grace timer
-                if (this.reconnectGraceTimers.has(disconnectedAuthIndex)) {
-                    clearTimeout(this.reconnectGraceTimers.get(disconnectedAuthIndex));
-                    this.reconnectGraceTimers.delete(disconnectedAuthIndex);
-                }
-                // Clear reconnecting status
-                if (this.reconnectingAccounts.has(disconnectedAuthIndex)) {
-                    this.reconnectingAccounts.delete(disconnectedAuthIndex);
-                }
-                // Clear lightweight reconnect timeout
-                if (this.lightweightReconnectTimeouts.has(disconnectedAuthIndex)) {
-                    const { timeoutId, timeoutReject } = this.lightweightReconnectTimeouts.get(disconnectedAuthIndex);
-                    clearTimeout(timeoutId);
-                    if (timeoutReject) {
-                        timeoutReject(new ReconnectCancelledError("Page closed, reconnect cancelled"));
-                    }
-                    this.lightweightReconnectTimeouts.delete(disconnectedAuthIndex);
-                }
+                this.cancelReconnect(disconnectedAuthIndex);
                 // Close pending message queues for this account to prevent in-flight requests
                 // from hanging until timeout
                 this.closeMessageQueuesForAuth(disconnectedAuthIndex, "page_closed");
@@ -190,15 +170,29 @@ class ConnectionRegistry extends EventEmitter {
             }
         }
 
-        // Clear any existing grace timer for THIS account before starting a new one
-        if (this.reconnectGraceTimers.has(disconnectedAuthIndex)) {
-            clearTimeout(this.reconnectGraceTimers.get(disconnectedAuthIndex));
-        }
+        this.cancelReconnect(disconnectedAuthIndex);
+        const owner = this.browserManager?.contexts.get(disconnectedAuthIndex);
+        const task = {};
+        this.reconnectTasks.set(disconnectedAuthIndex, task);
+        const isTaskCurrent = () => this.reconnectTasks.get(disconnectedAuthIndex) === task;
+        const isCurrent = () =>
+            isTaskCurrent() &&
+            (!this.browserManager ||
+                (!this.browserManager.isContextClosing?.(disconnectedAuthIndex) &&
+                    this.browserManager.contexts.get(disconnectedAuthIndex) === owner));
+        const canRecover = () =>
+            isCurrent() &&
+            !this.connectionsByAuth.has(disconnectedAuthIndex) &&
+            (!this.browserManager?.scheduler || this.browserManager._canKeepPooledContext(disconnectedAuthIndex));
 
         this.logger.info(
             `[Server] Starting ${RECONNECT_GRACE_PERIOD_MS / 1000}-second reconnect grace period for account #${disconnectedAuthIndex}...`
         );
         const graceTimerId = setTimeout(async () => {
+            if (!canRecover()) {
+                if (isTaskCurrent()) this.cancelReconnect(disconnectedAuthIndex);
+                return;
+            }
             this.logger.debug(
                 `[Server] Grace period ended for account #${disconnectedAuthIndex}, no reconnection detected.`
             );
@@ -218,7 +212,11 @@ class ConnectionRegistry extends EventEmitter {
                 let timeoutId;
                 let timeoutReject;
                 try {
-                    const callbackPromise = this.onConnectionLostCallback(disconnectedAuthIndex);
+                    // Defer invocation until cancellation is registered, including callbacks
+                    // that synchronously reconnect or intentionally close the context.
+                    const callbackPromise = Promise.resolve().then(() => {
+                        if (canRecover()) return this.onConnectionLostCallback(disconnectedAuthIndex);
+                    });
                     const timeoutPromise = new Promise((_, reject) => {
                         timeoutReject = reject;
                         timeoutId = setTimeout(
@@ -243,7 +241,7 @@ class ConnectionRegistry extends EventEmitter {
                     // Check if this is a cancellation (reconnect succeeded) or a real failure
                     if (isReconnectCancelledError(error)) {
                         this.logger.info(
-                            `[Server] Lightweight reconnect cancelled for account #${disconnectedAuthIndex} (connection re-established)`
+                            `[Server] Lightweight reconnect cancelled for account #${disconnectedAuthIndex}`
                         );
                     } else {
                         this.logger.error(
@@ -254,18 +252,20 @@ class ConnectionRegistry extends EventEmitter {
                     if (timeoutId) {
                         clearTimeout(timeoutId);
                     }
-                    this.lightweightReconnectTimeouts.delete(disconnectedAuthIndex);
-                    this.reconnectingAccounts.delete(disconnectedAuthIndex);
-                    if (!this.connectionsByAuth.has(disconnectedAuthIndex)) {
+                    if (isTaskCurrent()) {
+                        this.lightweightReconnectTimeouts.delete(disconnectedAuthIndex);
+                        this.reconnectingAccounts.delete(disconnectedAuthIndex);
+                    }
+                    if (canRecover()) {
                         this.browserManager?.markContextState(disconnectedAuthIndex, "UNAVAILABLE", {
                             lastDisconnectReason: "reconnect_failed",
                         });
-                        this.browserManager?.requestContext(disconnectedAuthIndex);
+                        if (canRecover()) this.browserManager?.requestContext(disconnectedAuthIndex);
                     }
                 }
             }
 
-            this.reconnectGraceTimers.delete(disconnectedAuthIndex);
+            if (isTaskCurrent()) this.cancelReconnect(disconnectedAuthIndex);
         }, RECONNECT_GRACE_PERIOD_MS);
 
         if (disconnectedAuthIndex !== undefined && disconnectedAuthIndex >= 0) {
@@ -424,6 +424,7 @@ class ConnectionRegistry extends EventEmitter {
      * @param {number} authIndex - The auth index to close connection for
      */
     closeConnectionByAuth(authIndex) {
+        this.cancelReconnect(authIndex);
         const connection = this.connectionsByAuth.get(authIndex);
         if (connection) {
             this.logger.info(`[Registry] Closing transport connection for authIndex=${authIndex}`);
@@ -434,29 +435,8 @@ class ConnectionRegistry extends EventEmitter {
             }
             // Remove from map immediately (the close event will also trigger _removeConnection)
             this.connectionsByAuth.delete(authIndex);
-
-            // Clear any grace timers for this account
-            if (this.reconnectGraceTimers.has(authIndex)) {
-                clearTimeout(this.reconnectGraceTimers.get(authIndex));
-                this.reconnectGraceTimers.delete(authIndex);
-            }
-
-            // Clear reconnecting status for this account
-            if (this.reconnectingAccounts.has(authIndex)) {
-                this.reconnectingAccounts.delete(authIndex);
-                this.logger.debug(`[Registry] Cleared reconnecting status for authIndex=${authIndex}`);
-            }
-
-            // Clear lightweight reconnect timeout for this account
-            if (this.lightweightReconnectTimeouts.has(authIndex)) {
-                const { timeoutId, timeoutReject } = this.lightweightReconnectTimeouts.get(authIndex);
-                clearTimeout(timeoutId);
-                if (timeoutReject) {
-                    timeoutReject(new ReconnectCancelledError("Connection closed manually, reconnect cancelled"));
-                }
-                this.lightweightReconnectTimeouts.delete(authIndex);
-                this.logger.debug(`[Registry] Cleared lightweight reconnect timeout for authIndex=${authIndex}`);
-            }
+            // A synchronous close event may have scheduled recovery while the page still exists.
+            this.cancelReconnect(authIndex);
         } else {
             this.logger.debug(`[Registry] No transport connection to close for authIndex=${authIndex}`);
         }
