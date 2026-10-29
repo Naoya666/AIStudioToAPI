@@ -25,11 +25,11 @@
 
 ## 快速开始
 
-推荐使用 Docker Compose 从本仓库源码构建。本版本的部署示例使用本地镜像 `aistudio-to-api:local`。
+推荐使用 Docker Compose 拉取本仓库发布的预构建镜像，服务器无需安装 Node.js 或编译源码。也可以继续使用仓库自带的 Compose 在本地构建。
 
-### Docker Compose 本地构建
+### Docker Compose 拉取预构建镜像（推荐）
 
-需要 Docker Engine / Docker Desktop 和 Docker Compose v2。容器镜像支持 Linux amd64、arm64；Dockerfile 会下载 Node.js 基础镜像、系统依赖、Camoufox 和 Mihomo，首次构建需要访问对应下载源。
+需要 Docker Engine / Docker Desktop 和 Docker Compose v2。公开镜像 [`ghcr.io/naoya666/aistudiotoapi`](https://github.com/Naoya666/AIStudioToAPI/pkgs/container/aistudiotoapi) 支持 Linux amd64、arm64，可直接拉取。
 
 ```bash
 git clone https://github.com/Naoya666/AIStudioToAPI.git
@@ -37,7 +37,7 @@ cd AIStudioToAPI
 cp .env.example .env
 ```
 
-编辑 `.env`，至少设置自己的 API 密钥和控制台密码：
+编辑 `.env`，设置自己的 API 密钥和控制台密码：
 
 ```dotenv
 API_KEYS=replace-with-your-api-key
@@ -47,7 +47,41 @@ TZ=Asia/Shanghai
 CHECK_UPDATE=false
 ```
 
-不要使用示例密码。`CHECK_UPDATE=false` 用于关闭继承自上游的版本检查，本版本通过拉取源码和重新构建更新。
+`CHECK_UPDATE=false` 用于关闭继承自上游的版本检查。本仓库通过 GitHub Actions 发布镜像，更新方式见下文。
+
+在同一目录新建 `compose.image.yaml`：
+
+```yaml
+services:
+  app:
+    image: ghcr.io/naoya666/aistudiotoapi:main
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:7860:7860"
+    volumes:
+      - ./configs/auth:/app/configs/auth
+      - ./data:/app/data
+```
+
+```bash
+mkdir -p configs/auth data
+docker compose -f compose.image.yaml pull app
+docker compose -f compose.image.yaml up -d --no-build app
+docker compose -f compose.image.yaml logs -f app
+```
+
+浏览器访问 `http://localhost:7860`，使用控制台用户名和密码登录，然后添加 Google 账号。远程访问方式见下文的反向代理说明。
+
+`main` 指向主分支最近一次成功发布。指定版本使用 `:sha-<完整提交号>`，发布的 `v*` 标签也有同名镜像；生产部署建议将 `image` 固定为 Actions 成功运行摘要中的 `ghcr.io/naoya666/aistudiotoapi@sha256:...`，便于确认版本和回退。
+
+已有部署应在原 Compose 中修改 Build 服务的 `image`，移除该服务的 `build` 和 `pull_policy: never`，沿用原服务名、端口、环境、网络及全部挂载；不要直接用上述新实例示例覆盖生产配置。仓库自带的 `docker-compose.yml` 仍用于本地构建，不会自动改用 GHCR 镜像。
+
+### Docker Compose 本地构建
+
+准备好上述源码和 `.env` 后，使用仓库自带的 [docker-compose.yml](docker-compose.yml)。Dockerfile 会下载 Node.js 基础镜像、系统依赖、Camoufox 和 Mihomo，首次构建需要访问对应下载源；后续构建可复用缓存。
 
 ```bash
 docker compose up -d --build
@@ -93,7 +127,7 @@ docker run -d \
 ```bash
 git clone https://github.com/Naoya666/AIStudioToAPI.git
 cd AIStudioToAPI
-npm install
+npm ci
 cp .env.example .env
 ```
 
@@ -198,7 +232,20 @@ PUBLIC_DASHBOARD_PORT=7861
 
 ## 更新与维护
 
-### Docker Compose
+### Docker Compose 预构建镜像
+
+更新前记录当前镜像引用，检查并备份 `.env`、`configs/auth/`、`data/` 及自己增加的挂载。复制数据库前应停止对应服务并验证备份。固定 digest 部署时，先将原 Compose 中的 `image` 改为新发布的 digest；使用 `main` 标签时，拉取后重建容器即可更新：
+
+```bash
+docker compose -f compose.image.yaml pull app
+# 按现有备份流程停止服务、完成并验证备份后，再切换镜像。
+docker compose -f compose.image.yaml up -d --no-deps --no-build --pull never app
+docker compose -f compose.image.yaml logs --tail=100 app
+```
+
+使用自己现有的 Compose 文件和服务名时，请替换命令中的文件名与 `app`。升级后检查启动、账号、配置及接口；保留旧镜像用于回退。代码回退时切回旧镜像引用，保留当前账号和用量数据库。
+
+### Docker Compose 本地构建
 
 ```bash
 git pull --ff-only
@@ -206,7 +253,7 @@ docker compose up -d --build
 docker compose logs --tail=100 app
 ```
 
-每次更新都重新构建本仓库源码，无需 `docker compose pull`。更新前备份 `.env`、`configs/auth/` 和 `data/`，备份数据库时先停止服务。
+本地构建方式每次更新重新构建当前源码，使用上述预构建镜像方式时则直接拉取镜像。更新前备份 `.env`、`configs/auth/` 和 `data/`，备份数据库时先停止服务。
 
 ```bash
 docker compose stop
@@ -220,7 +267,7 @@ docker compose up -d
 
 ```bash
 git pull --ff-only
-npm install
+npm ci
 npm start
 ```
 
@@ -235,7 +282,17 @@ npm run lint
 npm run build:ui
 ```
 
-自动化测试不替代真实 Google 账号登录和上游请求验收。仓库的 Docker 工作流仅提供手动构建检查，不发布镜像，也不需要上游的仓库凭据。
+### 云端构建与浏览器验证
+
+[Build and publish Docker image](https://github.com/Naoya666/AIStudioToAPI/actions/workflows/docker.yml) 工作流在推送 `main` 或 `v*` 标签后自动测试、构建并发布 GHCR 镜像；其他分支和 PR 运行验证但不发布。需要重试时，可在 Actions 页面选择该工作流，点击 **Run workflow** 并选择 `main`。发布使用 GitHub 自带的 `GITHUB_TOKEN`，无需另配个人令牌或仓库 Secrets；工作流只发布镜像，生产服务的备份和切换另行执行。
+
+镜像通过多阶段构建生成，每版从固定 digest 的 Node.js 基础镜像构建，使用 `npm ci` 安装锁定依赖，不继承上一版应用镜像；BuildKit 缓存可复用未变化的依赖和浏览器层，层数不会随发布次数累积。
+
+- **源码测试**：CI 在测试 runner 安装标准 Firefox 和 Chromium，运行协议、调度、界面等集成测试；这些测试浏览器不会因 CI 安装而进入生产镜像。
+- **镜像验收**：AMD64、ARM64 候选镜像分别执行 [离线验收脚本](scripts/ci/image-smoke.sh)，实际启动镜像内的 Camoufox 加载合成页面，并检查服务启动、API 鉴权、前端产物及 SQLite。
+- **生产浏览器**：镜像仍使用 `/app/camoufox-linux/camoufox`，由 `CAMOUFOX_EXECUTABLE_PATH` 指定。Playwright 的 `firefox.launch()` 在指定该路径时启动的是 Camoufox；源码测试使用标准 Firefox 不会替换生产浏览器。
+
+自动化测试及镜像离线验收不访问真实 Google 账号，不替代生产账号登录、上游生成和实际业务兼容性验收。完整发布说明见 [云端镜像发布指南（英文）](docs/en/container-publishing.md)。
 
 - [API 示例](docs/zh/api-examples.md)
 - [账号登录与恢复](docs/zh/account-auto-login-operations.md)

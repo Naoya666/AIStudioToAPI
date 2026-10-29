@@ -20,9 +20,11 @@ This version adds or improves:
 - Persistent console configuration, effective-state feedback and managed restarts.
 - Mobile layouts and batch operations for account, proxy and status pages.
 
-## Local Docker build
+## Quick start
 
-Use Docker Engine / Docker Desktop and Docker Compose v2. The Dockerfile supports Linux amd64 and arm64 and downloads the Node.js base image, system packages, Camoufox and Mihomo during the build.
+Use Docker Engine / Docker Desktop and Docker Compose v2. Prebuilt images are published to [`ghcr.io/naoya666/aistudiotoapi`](https://github.com/Naoya666/AIStudioToAPI/pkgs/container/aistudiotoapi) for Linux amd64 and arm64. Deployment hosts can pull them without installing Node.js or compiling source.
+
+### Pull a prebuilt image (recommended)
 
 ```bash
 git clone https://github.com/Naoya666/AIStudioToAPI.git
@@ -40,7 +42,41 @@ TZ=Asia/Shanghai
 CHECK_UPDATE=false
 ```
 
-Keep `CHECK_UPDATE=false`: the inherited checker refers to upstream releases and images. Update this version by pulling source and rebuilding locally.
+Keep `CHECK_UPDATE=false`: the inherited checker refers to upstream releases and images. This repository publishes its own images through GitHub Actions.
+
+Create `compose.image.yaml` in the repository directory:
+
+```yaml
+services:
+  app:
+    image: ghcr.io/naoya666/aistudiotoapi:main
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:7860:7860"
+    volumes:
+      - ./configs/auth:/app/configs/auth
+      - ./data:/app/data
+```
+
+```bash
+mkdir -p configs/auth data
+docker compose -f compose.image.yaml pull app
+docker compose -f compose.image.yaml up -d --no-build app
+docker compose -f compose.image.yaml logs -f app
+```
+
+Open `http://localhost:7860`, sign in with your console credentials, and add a Google account.
+
+`main` tracks the latest successful main-branch publication. Use `:sha-<full-commit-id>` for a source revision, or a published `v*` tag. For production, pin `image` to the `ghcr.io/naoya666/aistudiotoapi@sha256:...` reference shown in the successful Actions run summary.
+
+For an existing deployment, update the Build service's `image` in its original Compose file, remove that service's `build` and `pull_policy: never`, and retain its service name, ports, environment, networks and every mount. Do not replace a production configuration with the new-instance example above. The repository's `docker-compose.yml` continues to build locally.
+
+### Build locally with Compose
+
+After preparing source and `.env` as above, use the included Compose file. The first build downloads the Node.js base, system packages, Camoufox and Mihomo; later builds can reuse cached layers.
 
 ```bash
 docker compose up -d --build
@@ -85,7 +121,7 @@ Node.js **22.13.0 or newer** is required; Node.js 24 matches the Dockerfile. The
 ```bash
 git clone https://github.com/Naoya666/AIStudioToAPI.git
 cd AIStudioToAPI
-npm install
+npm ci
 cp .env.example .env
 # Edit .env before continuing.
 npm run setup-auth
@@ -144,7 +180,20 @@ Set `PUBLIC_DASHBOARD_ENABLED=true` and `PUBLIC_DASHBOARD_PORT=7861` in `.env`, 
 
 ## Updates and backups
 
-For Compose:
+### Prebuilt images with Compose
+
+Record the current image reference and inspect and back up `.env`, `configs/auth/`, `data/` and any additional mounts before updating. Stop the service before copying databases and verify the backup. For digest-pinned deployments, first set `image` to the new published digest; when using `main`, pull and recreate to update:
+
+```bash
+docker compose -f compose.image.yaml pull app
+# Follow the existing procedure to stop the service and create and verify a backup before switching.
+docker compose -f compose.image.yaml up -d --no-deps --no-build --pull never app
+docker compose -f compose.image.yaml logs --tail=100 app
+```
+
+Substitute your existing Compose filename and service name where appropriate. Verify startup, accounts, saved configuration and API access. Retain the previous image for rollback; switch back to its reference while keeping current account and usage databases.
+
+### Local builds with Compose
 
 ```bash
 git pull --ff-only
@@ -152,7 +201,7 @@ docker compose up -d --build
 docker compose logs --tail=100 app
 ```
 
-Updates rebuild this repository locally; `docker compose pull` is unnecessary. Back up `.env`, `configs/auth/` and `data/` before upgrading. Stop the service before copying databases:
+Local-build deployments rebuild the current source; prebuilt-image deployments pull the published image instead. Back up `.env`, `configs/auth/` and `data/` before upgrading. Stop the service before copying databases:
 
 ```bash
 docker compose stop
@@ -162,7 +211,7 @@ docker compose up -d
 
 `docker compose down` removes containers but preserves host bind directories. Do not delete those directories or share one account/data set between multiple instances.
 
-For source installs, run `git pull --ff-only`, `npm install`, then `npm start`. For Docker CLI installs, rebuild the image, stop and remove the old container, then recreate it using the same bind mounts.
+For source installs, run `git pull --ff-only`, `npm ci`, then `npm start`. For Docker CLI installs, rebuild the image, stop and remove the old container, then recreate it using the same bind mounts.
 
 ## Development
 
@@ -173,7 +222,17 @@ npm run lint
 npm run build:ui
 ```
 
-Automated tests do not replace real Google login and upstream request validation. The Docker workflow is a manual build check only: it does not publish images or require upstream registry credentials.
+### Cloud builds and browser validation
+
+The [Build and publish Docker image](https://github.com/Naoya666/AIStudioToAPI/actions/workflows/docker.yml) workflow tests, builds and publishes GHCR images on pushes to `main` or `v*` tags. Other branches and pull requests validate without publishing. To retry, open the workflow in Actions, select **Run workflow**, and choose `main`. Publication uses GitHub's built-in `GITHUB_TOKEN`, with no additional personal token or repository secret. The workflow publishes images; production backup and deployment happen separately.
+
+Multi-stage builds start from a Node.js base pinned by digest and use `npm ci` with the committed lockfile. Releases never inherit the previous application image, so layer depth does not accumulate. BuildKit reuses unchanged dependency and browser layers.
+
+- **Source tests:** the CI runner installs standard Firefox and Chromium for protocol, scheduler and UI integration tests. Installing these browsers on the runner does not include them in the production image.
+- **Image acceptance:** each AMD64 and ARM64 candidate runs the [offline smoke script](scripts/ci/image-smoke.sh), launching the bundled Camoufox against synthetic HTML and checking application startup, API authentication, frontend assets and SQLite.
+- **Production browser:** the image uses `/app/camoufox-linux/camoufox` via `CAMOUFOX_EXECUTABLE_PATH`. Playwright's `firefox.launch()` starts Camoufox when given that executable path. Standard Firefox in source tests does not replace the production browser.
+
+Automated tests and offline image checks do not access live Google accounts or establish real-account login, generation or production compatibility. See the [container publishing guide](docs/en/container-publishing.md) for the full process.
 
 ## Attribution and license
 
