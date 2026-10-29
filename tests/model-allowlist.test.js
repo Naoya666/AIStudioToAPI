@@ -217,7 +217,7 @@ test("legacy and scheduled final sends recheck live permissions before writing o
     const f = fixture(t);
     const { scheduler, auth } = schedulerFor(t, f, ["free"]);
     let sends = 0;
-    const registry = { getConnectionByAuth: () => ({ send: () => sends++ }) };
+    const registry = { getConnectionByAuth: () => ({ dispatch: () => sends++ }) };
     const legacy = new RequestHandler(f.system, registry, logger, {}, f.system.config, auth);
     const proxy = { body: "{}", path: "/v1beta/models/gemini-3.5-flash:generateContent", request_id: "test" };
     legacy.authSwitcher.currentAuthIndex = 0;

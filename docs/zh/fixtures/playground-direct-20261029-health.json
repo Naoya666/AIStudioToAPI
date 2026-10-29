@@ -1,0 +1,68 @@
+{
+    "isolated": {
+        "browserConnected": true,
+        "contextPool": {
+            "browserState": "RUNNING",
+            "cleanupPending": 0,
+            "generation": 1,
+            "initializing": 0,
+            "metrics": {
+                "capacity_skips": 0,
+                "demand_batches": 3,
+                "scans": 62
+            },
+            "oldestInitializingMs": 0,
+            "ready": 1,
+            "recovering": false,
+            "recoveryAttempts": 0,
+            "staleInitializing": 0
+        },
+        "runtime": {
+            "event_loop_max_ms": 22.54,
+            "event_loop_p99_ms": 20.4,
+            "updated_at": "2026-10-29T05:23:37.526Z"
+        },
+        "scheduler": {
+            "drain_rounds": 50,
+            "last_drain_ms": 0.021810999998706393,
+            "oldest_wait_ms": 0,
+            "queued": 0
+        },
+        "status": "ok",
+        "timestamp": "2026-10-29 13:23:39.448 [Asia/Shanghai]",
+        "uptime": 122.246633312
+    },
+    "production": {
+        "browserConnected": true,
+        "contextPool": {
+            "browserState": "RUNNING",
+            "cleanupPending": 0,
+            "generation": 1,
+            "initializing": 0,
+            "metrics": {
+                "capacity_skips": 14,
+                "demand_batches": 0,
+                "scans": 127
+            },
+            "oldestInitializingMs": 0,
+            "ready": 2,
+            "recovering": false,
+            "recoveryAttempts": 0,
+            "staleInitializing": 0
+        },
+        "runtime": {
+            "event_loop_max_ms": 20.68,
+            "event_loop_p99_ms": 20.45,
+            "updated_at": "2026-10-29T05:23:39.259Z"
+        },
+        "scheduler": {
+            "drain_rounds": 134,
+            "last_drain_ms": 0.03180000185966492,
+            "oldest_wait_ms": 0,
+            "queued": 0
+        },
+        "status": "ok",
+        "timestamp": "2026-10-29 13:23:39.445 [Asia/Shanghai]",
+        "uptime": 64057.121323834
+    }
+}

@@ -1,0 +1,50 @@
+[
+    {
+        "content_events": 28,
+        "distinct_arrival_times": 28,
+        "errors": 0,
+        "first_content_s": 3.294,
+        "last_content_s": 7.063,
+        "passed": true,
+        "protocol": "chat",
+        "status": 200,
+        "terminal": true,
+        "total_s": 7.086
+    },
+    {
+        "content_events": 29,
+        "distinct_arrival_times": 29,
+        "errors": 0,
+        "first_content_s": 2.72,
+        "last_content_s": 6.274,
+        "passed": true,
+        "protocol": "responses",
+        "status": 200,
+        "terminal": true,
+        "total_s": 6.294
+    },
+    {
+        "content_events": 28,
+        "distinct_arrival_times": 28,
+        "errors": 0,
+        "first_content_s": 3.561,
+        "last_content_s": 7.353,
+        "passed": true,
+        "protocol": "anthropic",
+        "status": 200,
+        "terminal": true,
+        "total_s": 7.374
+    },
+    {
+        "content_events": 29,
+        "distinct_arrival_times": 29,
+        "errors": 0,
+        "first_content_s": 2.404,
+        "last_content_s": 5.59,
+        "passed": true,
+        "protocol": "gemini",
+        "status": 200,
+        "terminal": true,
+        "total_s": 5.628
+    }
+]

@@ -59,6 +59,9 @@ class ConfigurationService {
             Array.isArray(this.document.overrides)
         )
             throw fail("Invalid managed configuration storage");
+        // The retired transport mapping must not prevent an existing installation from starting.
+        // They have no runtime effect and disappear on the next configuration save.
+        delete this.document.overrides.MODEL_TRANSPORT_POLICY;
         for (const [name, value] of Object.entries(this.document.overrides)) this.validateField(name, value);
         this.defaults = this.load({}, {});
         try {
@@ -167,13 +170,6 @@ class ConfigurationService {
         if (d.type === "modelAllowlist") {
             try {
                 require("../accounts/ModelAllowlistPolicy").parsePolicy(value);
-            } catch (error) {
-                throw fail(error.message);
-            }
-        }
-        if (d.type === "transport") {
-            try {
-                require("../core/ModelTransportPolicy").parsePolicy(value);
             } catch (error) {
                 throw fail(error.message);
             }

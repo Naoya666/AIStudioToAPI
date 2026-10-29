@@ -2,11 +2,11 @@
 
 中文文档 | [English](README_EN.md)
 
-将 Google AI Studio Build App 网页端封装为兼容 OpenAI、Gemini 和 Anthropic 格式的 API，通过浏览器自动化转发请求，并提供账号、模型调度、代理节点及用量管理界面。
+将 Google AI Studio Playground 封装为兼容 OpenAI、Gemini 和 Anthropic 格式的 API，通过 Camoufox 页面直连生成接口，并提供账号、模型调度、代理节点及用量管理界面。
 
 本仓库是基于 [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI) 二次开发的独立维护版本，非上游官方版本。上游进一步基于 [Ellinav/ais2api](https://github.com/Ellinav/ais2api) 开发。本版本保留上游署名和许可说明，沿用 **CC BY-NC 4.0**，仅限符合许可证的非商业用途。
 
-抗截断文本传输：支持 `anti-` 模型前缀、请求级覆盖及独立全局策略，兼容非流式和 fake/early/real。默认 off，范围及限制见 [使用说明](docs/zh/anti-truncation.md) 和 [实施验证记录](docs/zh/anti-truncation-implementation.md)。
+抗截断文本传输：支持 `anti-` 模型前缀、请求级覆盖及独立全局策略，兼容非流式和 real/fake/early 三种流式模式。默认 off，范围及限制见 [使用说明](docs/zh/anti-truncation.md) 和 [实施验证记录](docs/zh/anti-truncation-implementation.md)。
 
 ## 功能与本版本改动
 
@@ -19,7 +19,7 @@
 - **代理节点池**：集成 Mihomo，管理节点及账号出口绑定，支持在首次登录前指定出口。
 - **实时用量统计**：记录请求成功率、模型用量、延迟和调度状态，统计存储于 SQLite。
 - **匿名公开看板**：可选的独立端口只读页面，展示聚合用量及分模型时间窗口统计。
-- **提前发送空首块**：OpenAI Chat Completions 可立即收到空正文开始块，等待期间保活，结果就绪后整段填充；详见[使用说明](docs/zh/early-empty-chunk-streaming.md)。
+- **流式模式**：保留 Camoufox；real 直接读取 Playground 增量消息，fake 缓冲后输出 SSE，early 保留 Chat 空首块及等待心跳。
 - **可视化配置**：控制台保存管理配置，显示生效状态及待重启项，配置随数据目录持久化。
 - **界面改进**：账号、节点及状态页面的移动端布局与批量操作体验优化。
 
@@ -108,11 +108,11 @@ npm start
 
 `npm start` 会构建管理界面及公开看板。前端已经构建且源码未变化时，可用 `npm run quick-start` 启动服务。源码运行的数据位于仓库的 `data/`，不是宿主机根目录 `/data`。
 
-## 自建 Build App
+## Playground 直连
 
-想使用自己的 App，可在 Google AI Studio Build 网页端上传与部署版本一致的 [build.js](scripts/client/build.js) 和 [index.html](scripts/client/index.html)，再发送[可直接复制的完整提示词](docs/zh/build-app-prompt.md)。提示词要求复用原客户端协议、保留作者信息，并实际创建项目文件及执行编译检查。
+服务保留 Camoufox，但不再需要创建或维护 Build App，也不再启动用于 Build 客户端的 9998 WebSocket 服务。账号登录后打开 Playground 临时对话页，初始化官方 WAA 服务；初始化生成在出站前中止。业务请求由服务端直接通过对应页面发送 `GenerateContent`，返回结果直接进入现有账号调度和协议适配流程。
 
-创建后，将 `src/core/BrowserManager.js` 中的 `this.targetUrl` 改为自己的 AI Studio App 页面地址，重建并重启服务。完整步骤见[自建 Build App 教程](docs/zh/build-app-guide.md)。编辑器预览缺少账号身份注入和本地 WebSocket 服务，身份等待或连接失败不等于编译失败；接入后需分别验证握手、真实连接及 API 请求。
+旧自建 Build App 和 `scripts/client/build.js` 不参与当前请求链路。升级只需部署服务端新版本并重启。实现、验收及接口范围见 [改造记录](docs/zh/playground-direct-20261029.md)。
 
 ## 添加账号
 
@@ -262,7 +262,7 @@ Docker 中包含的 Node.js、Camoufox、Mihomo 等第三方组件遵循各自�
 
 本地每模型日额度基数（Flash / Pro / Argon）：未知或 Free 为 100 / 10 / 不准入，Pro 为 100 / 50 / 50，Ultra 5x 为 500 / 100 / 100，Ultra 20x 为 500 / 200 / 200。按各账号当日上游尝试数扣减，失败尝试也计数；采用 America/Los_Angeles 自然日。公开及管理看板逐账号聚合，属于本地预估，并非实时上游余额，估算归零不会新增调度拦截。
 
-Chat Completions、Responses、Anthropic 和 Gemini native 均支持原有 JSON/SSE 响应格式。此模型的流式请求（包括全局 `real`、`-real` 后缀和原生 `alt=sse`）实际使用 unary 并缓冲输出；不是实时增量流。其他模型沿用原有流模式。桥接使用当前宿主页真实权益与认证，为转换后的载荷生成新的 WAA，不自动跨通道回退。Argon 的额度按上述层级预估，实际 429 保留现有限流处理。
+Chat Completions、Responses、Anthropic 和 Gemini native 均支持 JSON 和实时增量 SSE。Camoufox 使用当前页面真实认证及权益信息，为每次请求生成 WAA；Argon 额度按上述层级预估，上游 429 仍按限流处理。
 
 离线测试包含真实 Firefox 与本地 TLS/CONNECT fixture，运行 `node --test tests/build-benefit.test.js`（需安装 Playwright Firefox 和 OpenSSL）；测试不访问 Google。代码及 fixture 通过不等同于真实账号已通过上游验收，具体记录见 [适配方案](docs/zh/gemini-4-argon-legacy-build-adaptation-plan-20261017.md)。
 
@@ -270,18 +270,20 @@ Camoufox 生产差异及后续修复见 [生产问题定位](docs/zh/gemini-4-ar
 
 ### 模型传输兼容
 
-所有模型默认使用 MakerSuite GenerateContent 桥接，保留原始模型 ID。旧版接口已失效，已有显式 `legacy` 配置仍会覆盖默认值，需要改为 `makersuite` 或删除覆盖。可在配置页逐行填写模型 ID 并选择“旧通道 / 桥接通道”，保存后重启生效；环境变量仍支持精确模型映射：
+所有模型统一通过 Camoufox 直连 Playground GenerateContent，保留原始模型 ID。Build App、中转 WebSocket 和 `legacy` 传输配置已退出生成路径；`MODEL_TRANSPORT_POLICY` 已移除，旧值在启动时忽略。`STREAMING_MODE=real|fake|early`、配置页模式选择和模型后缀覆盖均继续支持。账号轮换策略中的 `legacy` 属于独立调度功能，不受本次改造影响。
 
-```dotenv
-MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"makersuite","gemini-4-argon":"makersuite"}
-```
+Argon 使用统一账号层级准入，并使用当前页面真实权益头；手动层级不授予真实上游权限。
 
-只接受无指令后缀的精确模型 ID 和 `legacy` / `makersuite`，不支持通配符、自动跨通道重试或模型改名。每个请求固定策略，重试和后续轮次不切换路径。Argon 使用统一账号层级准入，同时保留当前页面的真实认证及权益头；手动层级不授予真实上游权限。
+桥接模式将强制或指定函数调用降级为 AUTO，兼容酒馆预设及插件中的 `tool_choice` 配置：OpenAI `required` / 指定函数、Anthropic `any` / 指定工具、Gemini `ANY` / `allowedFunctionNames` 均保留工具声明，由模型自主决定是否调用及调用哪个工具，不再因这些选择配置返回 400。此行为不保证工具一定执行，也不保证一定返回文本；JSON 和实时 SSE 使用相同规则。禁止调用（`none` / `NONE`）仍不受桥接支持。
 
-桥接模式将强制或指定函数调用降级为 AUTO，兼容酒馆预设及插件中的 `tool_choice` 配置：OpenAI `required` / 指定函数、Anthropic `any` / 指定工具、Gemini `ANY` / `allowedFunctionNames` 均保留工具声明，由模型自主决定是否调用及调用哪个工具，不再因这些选择配置返回 400。此行为不保证工具一定执行，也不保证一定返回文本；JSON 和缓冲 SSE 使用相同规则。禁止调用（`none` / `NONE`）仍不受桥接支持。旧通道的工具选择转换不变。
+real 流式请求通过浏览器 `ReadableStream` 逐段读取并增量解析 JSON+protobuf 消息，再转换为客户端协议；不等待完整响应。只有明确结束且上游正文校验通过后才提交成功结束事件。尾部错误、截断和取消不会伪造成功完成，正文输出后不自动重放生成。fake 等待完整结果后输出 SSE；early 在 Chat 入口提前发送空正文首块及等待心跳，其他入口沿用 fake 行为。非流式请求仍汇总为完整 JSON。
 
-桥接先等待完整结果，再输出 JSON 或 SSE；`-real` 和全局 real 在桥接时转为缓冲，Chat 可选择 early 提前开始并发送心跳，其他入口保留原有缓冲 SSE 行为。桥接生成总预算以面板“桥接生成超时”（`MAKERSUITE_TIMEOUT_MS`，默认 295000 毫秒）为准，覆盖认证、WAA、fetch 和正文读取；不再受默认 300 秒的普通缓冲响应设置限制。响应结算另预留最多 5000 毫秒。`FAKE_STREAM_TIMEOUT_MS`（默认 300000 毫秒）独立控制普通通道的缓冲生成预算。两项均支持 1–2147478647 毫秒，保存后用于新请求，已有请求保留快照；重试、后续轮次、正文块和心跳均不延长固定预算。`STREAM_TIMEOUT_MS` 仍用于 legacy real 的增量空闲等待。排队期限独立；网关及调用方需要覆盖排队、生成与结算时间。
+`MAKERSUITE_TIMEOUT_MS`（默认 295000 毫秒）是含认证、WAA 和正文读取的固定生成总预算，支持 1–2147478647 毫秒；另预留最多 5000 毫秒结算时间。`STREAM_TIMEOUT_MS` 限制 real 首段正文后的增量等待时间；`FAKE_STREAM_TIMEOUT_MS` 保留缓冲队列等待设置，Playground 的固定总预算优先。排队期限独立，重试、正文块和保活均不续期。保存预算只影响新请求。
 
-例如，将“桥接生成超时”设置为 `600000` 即可获得十分钟桥接生成预算，无须同时修改“缓冲响应超时”。浏览器端必须使用本版本的 [build.js](scripts/client/build.js)，以接收服务端下发的剩余预算；已保存的自建 Build App 需要同步客户端代码，旧版客户端仍可能在 300 秒时中止。项目不会自动修改已保存的 Build App。内部关联标记仅用于已拦截的桥接请求，不发送给 Google；旧通道出站移除本地标记。日志记录传输与请求/有效模式，不记录认证、权益不透明值、WAA 或载荷。
+例如，将 `MAKERSUITE_TIMEOUT_MS` 设为 `600000` 可等待十分钟。预算在服务端和页面 fetch 两侧固定执行，重试和正文读取不续期，无需更新 Build App。认证、Cookie、WAA proof 和请求正文不会写入传输日志。
 
 离线回归使用 `npm test`；浏览器验证使用 `npm run test:transport:browser`；真实超过 60 秒的本地 TLS 验证使用 `npm run test:transport:long`。可用 `BUILD_BENEFIT_BROWSER_EXECUTABLE_PATH` 指向生产 Camoufox 执行同一 TLS fixture；fixture 限制 CONNECT 目的地，不访问 Google 或生产 9998。离线通过不代表真实账号生成验收通过，部署与单账号切换须另行授权。实施记录见 [双通道修复记录](docs/zh/model-transport-compatibility-implementation-20261017.md)。
+
+实时流式实现及 bero 真实账号验收见 [改造记录](docs/zh/playground-streaming-20261029.md)。
+
+三种模式的最终行为及修正验收见 [模式保留修正记录](docs/zh/playground-stream-modes-20261029.md)。

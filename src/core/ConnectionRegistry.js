@@ -1,6 +1,6 @@
 /**
  * File: src/core/ConnectionRegistry.js
- * Description: Connection registry that manages WebSocket connections and routes messages to appropriate message queues
+ * Description: Connection registry that manages transport connections and routes messages to appropriate message queues
  *
  * Author: Ellinav, iBenzene, bbbugg
  */
@@ -14,7 +14,7 @@ const LIGHTWEIGHT_RECONNECT_TIMEOUT_MS = 120000;
 
 /**
  * Connection Registry Module
- * Responsible for managing WebSocket connections and message queues
+ * Responsible for managing transport connections and message queues
  */
 class ConnectionRegistry extends EventEmitter {
     /**
@@ -28,7 +28,7 @@ class ConnectionRegistry extends EventEmitter {
         this.onConnectionLostCallback = onConnectionLostCallback;
         this.getCurrentAuthIndex = getCurrentAuthIndex;
         this.browserManager = browserManager;
-        // Map: authIndex -> WebSocket connection
+        // Map: authIndex -> transport connection
         this.connectionsByAuth = new Map();
         // Map: requestId -> { queue: MessageQueue, authIndex: number, createdAt: number }
         this.messageQueues = new Map();
@@ -112,7 +112,7 @@ class ConnectionRegistry extends EventEmitter {
         this.connectionEpochs.set(authIndex, connectionEpoch);
         this.connectionsByAuth.set(authIndex, websocket);
         this.logger.info(
-            `[Server] Internal WebSocket client connected (from: ${clientInfo.address}, authIndex: ${authIndex})`
+            `[Server] ${websocket.isPlayground ? "Playground transport" : "Internal WebSocket client"} connected (from: ${clientInfo.address}, authIndex: ${authIndex})`
         );
 
         // Store authIndex on websocket for cleanup
@@ -122,7 +122,7 @@ class ConnectionRegistry extends EventEmitter {
         websocket.on("message", data => this._handleIncomingMessage(data.toString(), authIndex, connectionEpoch));
         websocket.on("close", () => this._removeConnection(websocket));
         websocket.on("error", error =>
-            this.logger.error(`[Server] Internal WebSocket connection error: ${error.message}`)
+            this.logger.error(`[Server] Browser transport connection error: ${error.message}`)
         );
         this.emit("connectionAdded", websocket);
         this.browserManager?.markContextState(authIndex, "READY", { connectionEpoch });
@@ -356,10 +356,10 @@ class ConnectionRegistry extends EventEmitter {
         }
 
         if (connection) {
-            this.logger.debug(`[Registry] Found WebSocket connection for authIndex=${authIndex}`);
+            this.logger.debug(`[Registry] Found transport connection for authIndex=${authIndex}`);
         } else if (this.logger.getLevel?.() === "DEBUG") {
             this.logger.debug(
-                `[Registry] No WebSocket connection found for authIndex=${authIndex}. Available: [${Array.from(this.connectionsByAuth.keys()).join(", ")}]`
+                `[Registry] No transport connection found for authIndex=${authIndex}. Available: [${Array.from(this.connectionsByAuth.keys()).join(", ")}]`
             );
         }
 
@@ -377,15 +377,15 @@ class ConnectionRegistry extends EventEmitter {
     }
 
     /**
-     * Get all active WebSocket connections
-     * @returns {Map<number, WebSocket>} Map of authIndex -> WebSocket connection
+     * Get all active transport connections
+     * @returns {Map<number, WebSocket>} Map of authIndex -> transport connection
      */
     getAllConnections() {
         return this.connectionsByAuth;
     }
 
     /**
-     * Broadcast a message to all active WebSocket connections
+     * Broadcast a message to all active transport connections
      * @param {string} message - JSON string to broadcast
      * @returns {number} Number of connections the message was sent to
      */
@@ -411,7 +411,7 @@ class ConnectionRegistry extends EventEmitter {
     }
 
     /**
-     * Close WebSocket connection for a specific account
+     * Close transport connection for a specific account
      *
      * IMPORTANT: When deleting an account, always call BrowserManager.closeContext() BEFORE this method
      * Calling order: closeContext() -> closeConnectionByAuth()
@@ -426,7 +426,7 @@ class ConnectionRegistry extends EventEmitter {
     closeConnectionByAuth(authIndex) {
         const connection = this.connectionsByAuth.get(authIndex);
         if (connection) {
-            this.logger.info(`[Registry] Closing WebSocket connection for authIndex=${authIndex}`);
+            this.logger.info(`[Registry] Closing transport connection for authIndex=${authIndex}`);
             try {
                 connection.close();
             } catch (e) {
@@ -458,7 +458,7 @@ class ConnectionRegistry extends EventEmitter {
                 this.logger.debug(`[Registry] Cleared lightweight reconnect timeout for authIndex=${authIndex}`);
             }
         } else {
-            this.logger.debug(`[Registry] No WebSocket connection to close for authIndex=${authIndex}`);
+            this.logger.debug(`[Registry] No transport connection to close for authIndex=${authIndex}`);
         }
     }
 
@@ -500,7 +500,7 @@ class ConnectionRegistry extends EventEmitter {
 
         const connectionEpoch = this.getConnectionEpoch(authIndex);
         if (connectionEpoch == null) {
-            throw Object.assign(new Error(`No ready WebSocket for account #${authIndex}`), {
+            throw Object.assign(new Error(`No ready browser transport for account #${authIndex}`), {
                 kind: "transport",
                 reason: "connection_lost",
                 status: 503,
@@ -679,7 +679,7 @@ class ConnectionRegistry extends EventEmitter {
     }
 
     /**
-     * Safely close a WebSocket connection with readyState check
+     * Safely close a transport connection with readyState check
      * @param {WebSocket} ws - The WebSocket to close
      * @param {number} code - Close code (e.g., 1000, 1008)
      * @param {string} reason - Close reason

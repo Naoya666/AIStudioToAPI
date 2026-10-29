@@ -166,35 +166,6 @@
                             placeholder="如 429,503；空值关闭"
                             :disabled="busy"
                         />
-                        <div v-else-if="d.type === 'transport'">
-                            <div class="model-columns"><span>真实上游模型 ID</span><span>调用通道</span></div>
-                            <div v-for="(row, index) in draft[d.name]" :key="index" class="model-row transport-row">
-                                <input
-                                    v-model="row.model"
-                                    :list="`models-${d.name}`"
-                                    aria-label="真实上游模型 ID"
-                                    :disabled="busy"
-                                    placeholder="可手动输入上游模型 ID"
-                                />
-                                <ElSelect v-model="row.transport" aria-label="调用通道" :disabled="busy">
-                                    <ElOption value="legacy" label="旧通道（legacy）" />
-                                    <ElOption value="makersuite" label="桥接通道（makersuite）" />
-                                </ElSelect>
-                                <ElButton :disabled="busy" @click="draft[d.name].splice(index, 1)">删除</ElButton>
-                            </div>
-                            <datalist :id="`models-${d.name}`">
-                                <option v-for="model in models" :key="model" :value="model" />
-                            </datalist>
-                            <ElButton
-                                :disabled="busy"
-                                @click="draft[d.name].push({ model: '', transport: 'makersuite' })"
-                                >增加模型</ElButton
-                            >
-                            <p>
-                                默认 Gemini 4 Argon
-                                使用桥接通道，其他模型使用旧通道。删除配置后恢复默认规则；桥接通道缓冲输出，不提供上游实时增量。保存后需重启生效。
-                            </p>
-                        </div>
                         <div v-else-if="d.type === 'models'">
                             <div class="model-columns">
                                 <span>真实上游模型 ID</span
@@ -418,7 +389,6 @@ async function api(url = "/api/configuration", method = "GET", body) {
 function toDraft(d, value) {
     if (d.type === "modelAllowlist") return JSON.parse(JSON.stringify(value));
     if (d.type === "agents") return JSON.parse(JSON.stringify(value || []));
-    if (d.type === "transport") return Object.entries(value || {}).map(([model, transport]) => ({ model, transport }));
     if (d.type === "models")
         return Object.entries(value || {}).map(([model, limit]) => ({
             min_workers: limit?.min_workers ?? 0,
@@ -497,7 +467,7 @@ function encode(d) {
             .map(key => key.trim())
             .filter(Boolean);
     if (d.type === "codes") return value.trim() ? value.split(",").map(code => Number(code.trim())) : [];
-    if (!["models", "transport"].includes(d.type)) return value;
+    if (d.type !== "models") return value;
     const entries = [],
         seen = new Set();
     for (const row of value) {
@@ -506,11 +476,9 @@ function encode(d) {
         seen.add(model);
         entries.push([
             model,
-            d.type === "transport"
-                ? row.transport
-                : d.name === "MODEL_WORKER_ALLOCATION"
-                  ? { min_workers: row.min_workers, preferred_workers: row.value }
-                  : row.value,
+            d.name === "MODEL_WORKER_ALLOCATION"
+                ? { min_workers: row.min_workers, preferred_workers: row.value }
+                : row.value,
         ]);
     }
     return Object.fromEntries(entries);
@@ -767,9 +735,7 @@ useDraftGuard(() => dirtyNames.value.length > 0 || visibilityDirty.value);
     gap: 8px;
     margin: 12px 0;
 }
-.transport-row .el-select {
-    width: 200px;
-}
+
 .model-row input {
     min-width: 180px;
     padding: 8px;

@@ -27,7 +27,7 @@ const WS_CONNECTION_READY_TIMEOUT_MS = 10000;
 
 // Default timeout constants (in milliseconds)
 const DEFAULT_TIMEOUTS = {
-    FAKE_STREAM: 300000, // 300 seconds (5 minutes) - timeout for fake streaming (buffered response)
+    FAKE_STREAM: 300000,
     STREAM_CHUNK: 60000, // 60 seconds - timeout between stream chunks
 };
 
@@ -398,12 +398,6 @@ class RequestHandler {
         return true;
     }
 
-    /**
-     * Classify and handle fake stream errors
-     * @param {Error} error - The error object
-     * @param {Object} res - Express response object
-     * @throws {Error} Rethrows unexpected errors for outer handler
-     */
     _handleFakeStreamError(error, res) {
         if (isPromptBlocked(error)) return this._handleRequestError(error, res, error.requestId);
         const format = this._resolveErrorFormat(res);
@@ -674,9 +668,9 @@ class RequestHandler {
         return this._readInitialMessage(queue);
     }
 
-    _shouldRetryError(error, proxyRequest) {
+    _shouldRetryError(error) {
         if (isPromptBlocked(error)) return false;
-        if (proxyRequest?.transport_policy?.transport === "makersuite") return false;
+        if (error.upstreamOutputStarted) return false;
         if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return false;
         return this.config.immediateSwitchStatusCodes.includes(Number(error?.status));
     }
@@ -1065,7 +1059,7 @@ class RequestHandler {
         res.__proxyResponseStreamMode = null;
 
         try {
-            if (!(await this._ensureBrowserBackedRequestReady(res, { waitErrorType: "service_unavailable" }))) {
+            if (!(await this._ensureRequestReady(res))) {
                 return;
             }
 
@@ -1080,7 +1074,7 @@ class RequestHandler {
                 path,
                 query_params: req.query || {},
                 request_id: requestId,
-                streaming_mode: "fake",
+                streaming_mode: "real",
                 tracking_model: cleanModelName,
             };
             this._initializeProxyRequestAttempt(proxyRequest);
@@ -1152,7 +1146,7 @@ class RequestHandler {
                 path: req.path.replace(/^\/proxy/, ""),
                 query_params: req.query || {},
                 request_id: requestId,
-                streaming_mode: "fake", // Uploads always return a single JSON response
+                streaming_mode: "real", // Uploads always return a single JSON response
             };
             this._initializeProxyRequestAttempt(proxyRequest);
             if (this.scheduled) {
@@ -1343,6 +1337,26 @@ class RequestHandler {
         if (sendKeepalive()) schedule();
     }
 
+    async _ensureRequestReady(res) {
+        let onClose;
+        const disconnected = new Promise(resolve => {
+            onClose = () => {
+                this._markTrackedClientAbort(res);
+                resolve(false);
+            };
+            res.once("close", onClose);
+        });
+        try {
+            if (!this._isResponseWritable(res)) return false;
+            return await Promise.race([
+                this._ensureBrowserBackedRequestReady(res, { waitErrorType: "service_unavailable" }),
+                disconnected,
+            ]);
+        } finally {
+            res.removeListener("close", onClose);
+        }
+    }
+
     // Process OpenAI format requests
     async processOpenAIRequest(req, res) {
         if (this.serverSystem.scheduler && !this.scheduled) {
@@ -1389,11 +1403,7 @@ class RequestHandler {
                 FormatConverter.parseModelBuiltInToolSuffixes(req.body.model).cleanModelName
             ).streamingMode;
             const wantsEarlyStream = req.body.stream === true && (suffixMode || this.config.streamingMode) === "early";
-            if (
-                !wantsEarlyStream &&
-                !(await this._ensureBrowserBackedRequestReady(res, { waitErrorType: "service_unavailable" }))
-            )
-                return;
+            if (!wantsEarlyStream && !(await this._ensureRequestReady(res))) return;
             const isOpenAIStream = req.body.stream === true;
             const systemStreamMode = this.config.streamingMode;
 
@@ -1594,6 +1604,7 @@ class RequestHandler {
                             "Cache-Control": "no-cache",
                             Connection: "keep-alive",
                             "Content-Type": "text/event-stream",
+                            "X-Accel-Buffering": "no",
                         });
                     }
                     this.logger.info(`[Request] OpenAI streaming response (Real Mode) started...`);
@@ -1611,6 +1622,7 @@ class RequestHandler {
                                         "Cache-Control": "no-cache",
                                         Connection: "keep-alive",
                                         "Content-Type": "text/event-stream",
+                                        "X-Accel-Buffering": "no",
                                     });
                                 }
                                 if (!res.writableEnded) {
@@ -1674,6 +1686,7 @@ class RequestHandler {
                                     "Cache-Control": "no-cache",
                                     Connection: "keep-alive",
                                     "Content-Type": "text/event-stream",
+                                    "X-Accel-Buffering": "no",
                                 });
                             }
                             // Clear keep-alive timer as we are about to send real data
@@ -1851,7 +1864,7 @@ class RequestHandler {
         res.__proxyResponseStreamMode = null;
 
         try {
-            if (!(await this._ensureBrowserBackedRequestReady(res, { waitErrorType: "service_unavailable" }))) {
+            if (!(await this._ensureRequestReady(res))) {
                 return;
             }
 
@@ -2088,6 +2101,7 @@ class RequestHandler {
                             "Cache-Control": "no-cache",
                             Connection: "keep-alive",
                             "Content-Type": "text/event-stream",
+                            "X-Accel-Buffering": "no",
                         });
                     }
                     this.logger.info(`[Request] OpenAI Response API streaming response (Real Mode) started...`);
@@ -2108,6 +2122,7 @@ class RequestHandler {
                                         "Cache-Control": "no-cache",
                                         Connection: "keep-alive",
                                         "Content-Type": "text/event-stream",
+                                        "X-Accel-Buffering": "no",
                                     });
                                 }
                                 if (!res.writableEnded) {
@@ -2175,6 +2190,7 @@ class RequestHandler {
                                     "Cache-Control": "no-cache",
                                     Connection: "keep-alive",
                                     "Content-Type": "text/event-stream",
+                                    "X-Accel-Buffering": "no",
                                 });
                             }
                             // Clear keep-alive timer as we are about to send real data
@@ -2486,6 +2502,7 @@ class RequestHandler {
                             "Cache-Control": "no-cache",
                             Connection: "keep-alive",
                             "Content-Type": "text/event-stream",
+                            "X-Accel-Buffering": "no",
                         });
                     }
                     this.logger.info(`[Request] Claude streaming response (Real Mode) started...`);
@@ -2502,6 +2519,7 @@ class RequestHandler {
                                         "Cache-Control": "no-cache",
                                         Connection: "keep-alive",
                                         "Content-Type": "text/event-stream",
+                                        "X-Accel-Buffering": "no",
                                     });
                                 }
                                 if (!res.writableEnded) {
@@ -2555,6 +2573,7 @@ class RequestHandler {
                                     "Cache-Control": "no-cache",
                                     Connection: "keep-alive",
                                     "Content-Type": "text/event-stream",
+                                    "X-Accel-Buffering": "no",
                                 });
                             }
                             if (connectionMaintainer) clearTimeout(connectionMaintainer);
@@ -2840,7 +2859,7 @@ class RequestHandler {
         this._setResponseApiFormat(res, "response_api");
 
         try {
-            if (!(await this._ensureBrowserBackedRequestReady(res, { waitErrorType: "service_unavailable" }))) {
+            if (!(await this._ensureRequestReady(res))) {
                 return;
             }
 
@@ -3419,7 +3438,7 @@ class RequestHandler {
                 proxyRequest.is_generative &&
                 !isUserAbortedError(headerMessage) &&
                 Number.isFinite(headerStatus) &&
-                this._shouldRetryError(headerMessage, proxyRequest)
+                this._shouldRetryError(headerMessage)
             ) {
                 this.logger.warn(`[Request] Gemini real stream received ${headerStatus}, preparing retry...`);
                 this._cancelCurrentAttemptBeforeRetry(proxyRequest, currentQueueAuthIndex);
@@ -3851,7 +3870,7 @@ class RequestHandler {
                 lastError = errorPayload;
                 this._cancelCurrentAttemptBeforeRetry(proxyRequest, currentQueueAuthIndex);
 
-                if (proxyRequest.transport_policy?.transport === "makersuite") {
+                if (errorPayload.upstreamOutputStarted) {
                     lastError = { ...errorPayload, skipAccountSwitch: true };
                     break;
                 }
@@ -4873,16 +4892,9 @@ class RequestHandler {
             bodyObj.safetySettings = this.formatConverter.getDefaultSafetySettings();
         }
 
-        const bufferedGeneration =
-            req.method === "POST" &&
-            TransportPolicy.resolve(
-                this._extractModelFromPath(cleanPath),
-                modelStreamingMode || this.config.streamingMode,
-                this.config.modelTransportPolicy
-            ).transport === "makersuite" &&
-            /:(?:generateContent|streamGenerateContent)$/.test(cleanPath);
+        const outputMode = (modelStreamingMode || this.config.streamingMode) === "real" ? "real" : "fake";
         const query = { ...(req.query || {}) };
-        if (bufferedGeneration) {
+        if (outputMode === "fake" && cleanPath.endsWith(":streamGenerateContent")) {
             cleanPath = cleanPath.replace(":streamGenerateContent", ":generateContent");
             delete query.alt;
         }
@@ -4897,16 +4909,8 @@ class RequestHandler {
             query_params: query,
             request_id: requestId,
             response_transform: responseTransform,
-            streaming_mode: bufferedGeneration
-                ? "fake"
-                : (modelStreamingMode || this.config.streamingMode) === "early"
-                  ? "fake"
-                  : modelStreamingMode || this.config.streamingMode,
-            transport_policy: TransportPolicy.resolve(
-                this._extractModelFromPath(cleanPath),
-                modelStreamingMode || this.config.streamingMode,
-                this.config.modelTransportPolicy
-            ),
+            streaming_mode: outputMode,
+            transport_policy: TransportPolicy.resolve(this._extractModelFromPath(cleanPath), outputMode),
         };
     }
 
@@ -4934,7 +4938,7 @@ class RequestHandler {
     }
 
     _effectiveStreamMode(model, mode) {
-        return TransportPolicy.resolve(model, mode, this.config.modelTransportPolicy).effectiveMode;
+        return TransportPolicy.resolve(model, mode).effectiveMode;
     }
 
     _assertModelPermission(proxyRequest, authIndex = this.currentAuthIndex) {
@@ -4978,8 +4982,7 @@ class RequestHandler {
         if (proxyRequest.is_generative && !proxyRequest.transport_policy) {
             proxyRequest.transport_policy = TransportPolicy.resolve(
                 this._extractModelFromPath(proxyRequest.path),
-                proxyRequest.streaming_mode || "fake",
-                this.config.modelTransportPolicy
+                proxyRequest.streaming_mode || "real"
             );
             proxyRequest.streaming_mode = proxyRequest.transport_policy.effectiveMode;
         }
@@ -5044,18 +5047,14 @@ class RequestHandler {
             const bridge = this.browserManager.contexts?.get(authIndex)?.page?.makerSuiteBridge;
             if (!bridge) throw benefitError("MakerSuite bridge unavailable");
         }
-        if (policy?.timeoutCategory === "buffered" || policy?.transport === "makersuite") {
+        if (policy) {
             // Capture the panel's budget once; retries, chunks and keepalives do not renew it.
             if (!proxyRequest.__generationDeadline) {
                 const startedAt = performance.now();
-                const bridge = policy.transport === "makersuite";
-                const budget = bridge
-                    ? this.config.makerSuiteTimeoutMs || DEFAULT_MAKERSUITE_TIMEOUT_MS
-                    : this.timeouts.FAKE_STREAM;
-                const reserve = bridge ? Math.min(BRIDGE_SETTLEMENT_MS, budget * 0.05) : 0;
+                const budget = this.config.makerSuiteTimeoutMs || DEFAULT_MAKERSUITE_TIMEOUT_MS;
+                const reserve = Math.min(BRIDGE_SETTLEMENT_MS, budget * 0.05);
                 Object.defineProperty(proxyRequest, "__generationDeadline", { value: startedAt + budget + reserve });
-                if (bridge)
-                    Object.defineProperty(proxyRequest, "__bridgeGenerationDeadline", { value: startedAt + budget });
+                Object.defineProperty(proxyRequest, "__bridgeGenerationDeadline", { value: startedAt + budget });
             }
             const remaining = Math.floor(proxyRequest.__generationDeadline - performance.now());
             if (remaining <= 0) throw Object.assign(new Error("Generation deadline exceeded"), { status: 504 });
@@ -5063,6 +5062,7 @@ class RequestHandler {
             const entry = this.connectionRegistry.messageQueues?.get(proxyRequest.request_id);
             if (entry?.queue) {
                 entry.queue.generationDeadline = proxyRequest.__generationDeadline;
+                entry.queue.incremental = /:streamGenerateContent$/.test(proxyRequest.path);
                 entry.transportPolicy = policy;
             }
         }
@@ -5071,40 +5071,23 @@ class RequestHandler {
         if (proxyRequest.is_generative && isArgon(this._extractModelFromPath(proxyRequest.path))) {
             const benefit = this.browserManager.contexts?.get(authIndex)?.page?.buildBenefit;
             if (!benefit || benefit.disposed || benefit.isCurrent?.() === false)
-                throw benefitError("No qualified Build account for gemini-4-argon");
+                throw benefitError("No qualified Playground account for gemini-4-argon");
             this.logger.info(
-                `[Build] account=${authIndex} request=${proxyRequest.request_id} attempt=${proxyRequest.request_attempt_id} model=gemini-4-argon transport=${policy?.transport || "legacy"} rpc=${policy?.transport === "makersuite" ? "GenerateContent" : "ProxyUnaryCall"} policy=${policy?.version || "unknown"} benefit_source=${benefit.source || "unknown"} benefit_state=${benefit.state} stream_mode=${proxyRequest.streaming_mode} buffered=true`
+                `[Playground] account=${authIndex} request=${proxyRequest.request_id} attempt=${proxyRequest.request_attempt_id} model=gemini-4-argon transport=makersuite rpc=GenerateContent policy=${policy?.version || "unknown"} benefit_source=${benefit.source || "unknown"} benefit_state=${benefit.state} stream_mode=${proxyRequest.streaming_mode} incremental=true`
             );
         }
         if (policy)
             this.logger.info(
-                `[Transport] account=${authIndex} request=${proxyRequest.request_id} attempt=${proxyRequest.request_attempt_id} model=${policy.model} transport=${policy.transport} rpc=${policy.transport === "makersuite" ? "GenerateContent" : proxyRequest.streaming_mode === "real" ? "ProxyStreamedCall" : "ProxyUnaryCall"} policy=${policy.version} requested_mode=${policy.requestedMode} effective_mode=${policy.effectiveMode} budget=${policy.timeoutCategory} remaining_ms=${proxyRequest.remaining_budget_ms ?? "incremental"}`
+                `[Transport] account=${authIndex} request=${proxyRequest.request_id} attempt=${proxyRequest.request_attempt_id} model=${policy.model} transport=${policy.transport} rpc=GenerateContent policy=${policy.version} requested_mode=${policy.requestedMode} effective_mode=${policy.effectiveMode} budget=${policy.timeoutCategory} remaining_ms=${proxyRequest.remaining_budget_ms ?? "incremental"}`
             );
         const connection = this.connectionRegistry.getConnectionByAuth(authIndex);
-        if (connection) {
-            const wireRequest =
-                policy?.transport === "makersuite"
-                    ? this.browserManager.contexts
-                          .get(authIndex)
-                          .page.makerSuiteBridge.prepare(
-                              proxyRequest,
-                              proxyRequest.__generationDeadline,
-                              this.config.makerSuiteTimeoutMs
-                          ) || proxyRequest
-                    : proxyRequest;
-            this.logger.debug(
-                `[Request] Forwarding request #${proxyRequest.request_id} via connection for authIndex=${authIndex}` +
-                    ` (attempt=${proxyRequest.request_attempt_id})`
-            );
-            connection.send(
-                JSON.stringify({
-                    event_type: "proxy_request",
-                    ...wireRequest,
-                })
-            );
-        } else {
-            throw new Error(`Unable to forward request: No WebSocket connection found for authIndex=${authIndex}`);
-        }
+        if (!connection?.dispatch)
+            throw Object.assign(new Error(`Playground transport unavailable for account #${authIndex}`), {
+                status: 503,
+            });
+        // Pass the original request, including its non-enumerable fixed deadlines.
+        // No Build RPC envelope, URL marker or browser WebSocket is involved.
+        connection.dispatch(proxyRequest);
     }
 
     _generateRequestId() {

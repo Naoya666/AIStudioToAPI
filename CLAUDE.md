@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AIStudioToAPI is a proxy server that exposes Google AI Studio Build App quota as API endpoints compatible with OpenAI, Gemini, and Anthropic API formats. It is not a reverse proxy for the regular AI Studio web UI or AI Studio Playground. The system uses browser automation (Playwright with Camoufox/Firefox) to translate API requests into in-app requests inside a dedicated AI Studio Build App.
+AIStudioToAPI exposes Google AI Studio Playground through OpenAI, Gemini, Responses and Anthropic compatible APIs. Camoufox/Firefox holds each account's cookies and official WAA runtime. PlaygroundTransport submits requests directly through Playwright and publishes response events to ConnectionRegistry in-process. Build Apps, iframe relays and the browser WebSocket client are no longer used. See docs/zh/playground-direct-20261029.md for the current architecture; the Build sections below describe historical implementation details.
 
 ## Common Commands
 
@@ -135,10 +135,11 @@ The system maintains multiple browser contexts simultaneously:
 Key variables (see `.env.example` for full list):
 
 - `PORT`: API server port (default: 7860)
-- `WS_PORT`: WebSocket port for browser communication (default: 9998)
 - `API_KEYS`: Comma-separated API keys for client authentication
 - `INITIAL_AUTH_INDEX`: Starting account index (default: 0)
-- `STREAMING_MODE`: "real" or "fake" streaming
+- `STREAMING_MODE`: `real` (incremental Playground output), `fake` (buffered SSE), or `early` (Chat empty start and waiting heartbeats).
+- `FAKE_STREAM_TIMEOUT_MS`: Buffered queue wait timeout; fixed Playground generation budgets take precedence.
+- `MAKERSUITE_TIMEOUT_MS`: Fixed Playground generation budget. `MODEL_TRANSPORT_POLICY` is retired.
 - `SWITCH_ON_USES`: Auto-switch after N requests (default: 40)
 - `FAILURE_THRESHOLD`: Switch after N consecutive failures (default: 3)
 - `IMMEDIATE_SWITCH_STATUS_CODES`: Status codes triggering immediate switch (default: 429,503)

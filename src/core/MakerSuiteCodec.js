@@ -383,7 +383,17 @@ function merge(chunks) {
         fail("MakerSuite response ended without a confirmed finish reason", 502);
     return out;
 }
-function wrapResponse(text, streamed) {
+const isCandidateList = x =>
+    Array.isArray(x) && x.every(c => Array.isArray(c) && (c[0] == null || c[0][1] === "model"));
+const isChunk = x =>
+    Array.isArray(x) &&
+    ((promptBlocked({ promptFeedback: decFeedback(x[1]) }) && (x[0] == null || isCandidateList(x[0]))) ||
+        (Array.isArray(x[0]) &&
+            x[0].length > 0 &&
+            x[0].every(c => Array.isArray(c?.[0]?.[0]) && c[0][1] === "model")) ||
+        ((x[0] == null || (Array.isArray(x[0]) && x[0].length === 0)) && (Array.isArray(x[2]) || Array.isArray(x[1]))));
+
+function decodeResponse(text) {
     let root;
     try {
         root = parseWire(text);
@@ -393,16 +403,6 @@ function wrapResponse(text, streamed) {
     const status = rpcStatusOf(root);
     if (status) throw Object.assign(new Error(status[1]), { rpcStatus: status, status: RPC_STATUS[status[0]] || 502 });
     // Observed envelopes: [chunk, ...] or [[chunk, ...]]. A chunk may contain usage only.
-    const isCandidateList = x =>
-        Array.isArray(x) && x.every(c => Array.isArray(c) && (c[0] == null || c[0][1] === "model"));
-    const isChunk = x =>
-        Array.isArray(x) &&
-        ((promptBlocked({ promptFeedback: decFeedback(x[1]) }) && (x[0] == null || isCandidateList(x[0]))) ||
-            (Array.isArray(x[0]) &&
-                x[0].length > 0 &&
-                x[0].every(c => Array.isArray(c?.[0]?.[0]) && c[0][1] === "model")) ||
-            ((x[0] == null || (Array.isArray(x[0]) && x[0].length === 0)) &&
-                (Array.isArray(x[2]) || Array.isArray(x[1]))));
     const arr = Array.isArray(root) && root.some(isChunk) ? root : root?.[0];
     if (!Array.isArray(arr)) fail("Unrecognized MakerSuite response envelope", 502);
     const chunks = arr.filter(isChunk).map(convChunk);
@@ -412,10 +412,29 @@ function wrapResponse(text, streamed) {
         }
     }
     const merged = merge(chunks); // Validate completion even when returning the old streamed envelope.
+    return { chunks, merged, tail: arr.length && !isChunk(arr.at(-1)) ? arr.at(-1) : null };
+}
+// CountTokens uses the same content/tool encoding, without generation defaults.
+function buildCountBody(model, request) {
+    const { body } = buildBody(model, request.generateContentRequest || request);
+    const generate = [body[0], body[1], null, null, null, body[5], body[6]];
+    const nested = body[5] || body[6] || body[1].some(c => c[0].some(p => p[1] == null));
+    return nested ? [body[0], null, generate] : [body[0], body[1]];
+}
+function decodeCountResponse(text) {
+    const root = parseWire(text);
+    const status = rpcStatusOf(root);
+    if (status) throw Object.assign(new Error(status[1]), { rpcStatus: status, status: RPC_STATUS[status[0]] || 502 });
+    if (!Array.isArray(root) || !Number.isSafeInteger(root[0]) || root[0] < 0)
+        fail("Invalid Playground CountTokens response", 502);
+    const role = Number.isSafeInteger(root[1]?.[1]) ? root[1][1] : 0;
+    return { totalTokens: Math.max(0, root[0] - role) };
+}
+function wrapResponse(text, streamed) {
+    const { chunks, merged, tail } = decodeResponse(text);
     if (!streamed) return JSON.stringify([JSON.stringify(merged)]);
     // Deliver a block with all received usage/responseId, before any candidates.
     if (promptBlocked(merged)) return JSON.stringify([[[JSON.stringify(merged)]]]);
-    const tail = arr.length && !isChunk(arr.at(-1)) ? arr.at(-1) : null;
     return JSON.stringify([[...chunks.map(c => [JSON.stringify(c)]), ...(tail ? [tail] : [])]]);
 }
 const RPC_STATUS = { 3: 400, 5: 404, 7: 403, 8: 429, 9: 400, 13: 500, 14: 503, 16: 401 };
@@ -439,4 +458,19 @@ function errorEnvelope(text, status) {
         status: status >= 400 ? status : 502,
     };
 }
-module.exports = { buildBody, decStruct, encStruct, errorEnvelope, merge, wrapResponse };
+module.exports = {
+    buildBody,
+    buildCountBody,
+    convChunk,
+    decodeCountResponse,
+    decodeResponse,
+    decStruct,
+    encStruct,
+    errorEnvelope,
+    isChunk,
+    merge,
+    parseWire,
+    RPC_STATUS,
+    rpcStatusOf,
+    wrapResponse,
+};

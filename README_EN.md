@@ -2,7 +2,7 @@
 
 [中文文档](README.md) | English
 
-A browser automation service that exposes Google AI Studio Build App through OpenAI, Gemini and Anthropic compatible APIs, with account management, model scheduling, proxy nodes and usage dashboards.
+A browser automation service that exposes Google AI Studio Playground through OpenAI, Gemini and Anthropic compatible APIs, with account management, model scheduling, proxy nodes and usage dashboards.
 
 This repository is independently maintained and derived from [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI), which is itself based on [Ellinav/ais2api](https://github.com/Ellinav/ais2api). It is not an official upstream release. Existing attribution is retained, and this version uses **CC BY-NC 4.0** for noncommercial use under the license terms.
 
@@ -96,11 +96,11 @@ The setup script checks dependencies, downloads Camoufox and guides you through 
 
 `npm start` builds both frontends. Use `npm run quick-start` only when the frontends are already built and unchanged. Source installs store runtime data in the repository's `data/` directory.
 
-## Create your own Build App
+## Direct Playground transport
 
-Attach [build.js](scripts/client/build.js) and [index.html](scripts/client/index.html) from the same version as your deployment in Google AI Studio Build, then send the [complete copyable prompt](docs/zh/build-app-prompt.md) (Chinese). It requires the original protocol and author information to be preserved, with actual project files and compilation checks.
+Camoufox remains required. The service opens a temporary Playground chat and initializes the official WAA service, aborting the bootstrap generation before it leaves the browser. Business requests go directly from the server through the account page to `GenerateContent`, then return to the existing scheduler and API adapters.
 
-After creating the App, set `this.targetUrl` in `src/core/BrowserManager.js` to its AI Studio App page URL, then rebuild and restart the service. Follow the [Build App guide](docs/en/build-app-guide.md) for the full steps. Preview identity or connection failures do not imply compilation failure: the editor lacks service-injected identity and the local WebSocket. Validate identity, a real connection and API processing separately after integration.
+No custom Build App, client script update, iframe relay or port 9998 WebSocket service is required. Deploy the new server and restart. See the [implementation and acceptance record](docs/zh/playground-direct-20261029.md) for supported endpoints and limits.
 
 ## Account management
 
@@ -193,7 +193,7 @@ Manual tiers control local admission and quota estimates only. They never forge 
 
 Per-model daily estimate bases (Flash / Pro / Argon) are 100 / 10 / ineligible for unknown or Free, 100 / 50 / 50 for Pro, 500 / 100 / 100 for Ultra 5x, and 500 / 200 / 200 for Ultra 20x. Each account’s upstream attempts, including failures, are subtracted independently using America/Los_Angeles calendar days. Admin and public dashboards aggregate individual account bases. Estimates are not live upstream balances; reaching zero does not add a dispatch block.
 
-Chat Completions, Responses, Anthropic and native Gemini retain JSON/SSE compatibility. Streaming for this exact model is buffered unary output, including global `real`, the `-real` suffix and native `alt=sse`. Other models keep their streaming behavior. The bridge uses the current host page’s real benefit and authentication context and generates a new WAA for the converted payload. There is no automatic cross-channel fallback. Local quota follows the tier estimates above; upstream 429 handling remains active.
+Chat Completions, Responses, Anthropic and native Gemini support JSON and incremental SSE. Camoufox uses the current page’s authentication and entitlement context and generates a fresh WAA for each request. Tier estimates and upstream 429 handling remain in effect.
 
 `node --test tests/build-benefit.test.js` runs real Firefox against a local TLS/CONNECT fixture without contacting Google (requires Playwright Firefox and OpenSSL). Offline success does not establish live account or Build model availability; live acceptance remains separate.
 
@@ -201,22 +201,17 @@ See the [production diagnosis and fix report](docs/zh/gemini-4-argon-production-
 
 ### Model transport compatibility
 
-The bridge downgrades forced or named function selection to AUTO for preset/plugin compatibility. OpenAI `required` / named functions, Anthropic `any` / named tools, and Gemini `ANY` / `allowedFunctionNames` preserve tool declarations without enforcing a call or a particular name. These selectors no longer cause a bridge 400; neither tool execution nor a text response is guaranteed. This applies to JSON and buffered SSE. Disabling tools with `none` / `NONE` remains unsupported by the bridge. Legacy conversion is unchanged.
+The bridge downgrades forced or named function selection to AUTO for preset/plugin compatibility. OpenAI `required` / named functions, Anthropic `any` / named tools, and Gemini `ANY` / `allowedFunctionNames` preserve tool declarations without enforcing a call or a particular name. These selectors no longer cause a bridge 400; neither tool execution nor a text response is guaranteed. This applies to JSON and incremental SSE. Disabling tools with `none` / `NONE` remains unsupported by the bridge.
 
-All models default to the MakerSuite GenerateContent bridge and keep their original IDs. The legacy endpoint no longer works; existing explicit `legacy` overrides still take precedence and should be changed to `makersuite` or removed. The configuration UI provides model ID rows with legacy / bridge selectors. Saved transport overrides require a restart; environment overrides remain JSON mappings:
+All models use Camoufox to call Playground GenerateContent directly. Build App, its relay WebSocket and legacy transport mapping are retired; old `MODEL_TRANSPORT_POLICY` values are ignored. `STREAMING_MODE=real|fake|early`, the configuration panel and per-model suffix overrides remain supported. The separate `legacy` account rotation strategy is unchanged.
 
-```dotenv
-MODEL_TRANSPORT_POLICY={"gemini-3.7-flash":"makersuite","gemini-4-argon":"makersuite"}
-```
+In real mode, the browser reads `ReadableStream` incrementally, parses complete JSON+protobuf messages and forwards protocol events before upstream EOF. Successful completion is sent only after EOF validation. Late errors, truncated responses and cancellations cannot produce success; generation is not replayed after output. Fake mode buffers the full result before emitting SSE. Early mode retains Chat empty start events and waiting heartbeats; other protocols retain their previous fake behavior. Non-stream requests return aggregated JSON.
 
-Only canonical model IDs and `legacy` / `makersuite` are accepted. Requests keep their transport snapshot through retries and continuation rounds. There is no automatic channel fallback or model renaming. Argon uses the shared account tier policy and the current page’s real authentication and entitlement headers. Manual tiers do not grant upstream permissions.
+`MAKERSUITE_TIMEOUT_MS` (default 295000 ms, range 1–2147478647 ms) is the fixed generation budget covering authentication, WAA and body reading, with up to 5000 ms reserved for settlement. `STREAM_TIMEOUT_MS` limits real incremental idle waits after initial content. `FAKE_STREAM_TIMEOUT_MS` remains available for buffered queue waits, with the fixed Playground budget taking precedence. Queue deadlines are separate. Retries, chunks and keepalives cannot renew the budget. Saved changes apply to new requests.
 
-The bridge buffers the upstream result. JSON and SSE formats remain available; requested real streaming becomes buffered output. Chat supports early headers and keepalives; other adapters retain buffered SSE. The panel’s bridge generation timeout (`MAKERSUITE_TIMEOUT_MS`, default 295000 ms) controls the complete bridge generation budget, including authentication, WAA, fetch and body reading. It is independent of `FAKE_STREAM_TIMEOUT_MS` (default 300000 ms), which controls ordinary buffered generation. Up to 5000 ms is added for bridge response settlement. Both settings accept 1–2147478647 ms, within JavaScript’s timer range. Saved values apply to new requests; accepted requests retain their snapshot. Retries, continuation rounds, chunks and keepalives never renew the fixed budget. `STREAM_TIMEOUT_MS` remains the legacy real-stream idle timeout. Queue deadlines are separate; configure gateways and callers to cover queueing, generation and settlement.
-
-For example, set the bridge generation timeout to `600000` for ten minutes without changing the ordinary buffered timeout. The browser must run this version’s [build.js](scripts/client/build.js) to honor the server’s remaining budget. Synchronize the client code in existing custom Build Apps; older clients may still abort after 300 seconds. The project does not automatically modify saved Build Apps. Internal correlation markers are removed before outbound Google calls. Credentials, opaque benefit data, proof and payloads are not logged by the transport.
+Set `MAKERSUITE_TIMEOUT_MS=600000` for a ten-minute generation budget. Both the server and page fetch enforce the fixed budget through body reading. Build client synchronization is no longer necessary. Credentials, opaque entitlement data, proof and payloads are not logged by the transport.
 
 Run `npm test`, `npm run test:transport:browser`, and `npm run test:transport:long` for regressions, browser checks, and a real local TLS response taking over 60 seconds. Set `BUILD_BENEFIT_BROWSER_EXECUTABLE_PATH` to test production Camoufox with the TLS fixture. CONNECT destinations are restricted; the fixture cannot connect to Google or production port 9998. Offline results do not establish real-account availability. Deployment and account switching require separate authorization. See the [implementation record](docs/zh/model-transport-compatibility-implementation-20261017.md).
-
 
 ### Authenticated local model health
 
@@ -225,3 +220,7 @@ Master and agent expose the same `GET /api/internal/model-health` on the public 
 The endpoint projects only the existing local cache, including `schema_version: 1`, original `generated_at`, persistent `node_id`, `snapshot_sequence`, `service_status`, `usage_window`, and each model's `realtime.available_accounts`. It contains no account details or remote agent totals and triggers no statistics queries. Missing/incorrect credentials return 401; missing/expired cache or a service that is not ready returns 503. Existing cached responses retain their source timestamp and identity even on 503. Public display and master-to-agent collection endpoints retain their existing purposes.
 
 Configure the channel controller with `aistudio.status_url: "http://aistudio:7861/api/internal/model-health"` and `aistudio.token_env: "AISTUDIO_HEALTH_TOKEN"`; inject the matching credential through that environment variable, including in dry-run. Channel switching policy remains unchanged.
+
+See the [incremental streaming implementation and live validation record](docs/zh/playground-streaming-20261029.md).
+
+See the [mode preservation correction and validation record](docs/zh/playground-stream-modes-20261029.md).

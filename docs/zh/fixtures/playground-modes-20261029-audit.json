@@ -1,0 +1,44 @@
+{
+    "contexts": [
+        {
+            "contexts": [
+                {
+                    "active": 0,
+                    "index": 1,
+                    "inProcess": true,
+                    "queueCount": 0,
+                    "ready": true,
+                    "realDecoder": true,
+                    "realReader": true,
+                    "resources": {
+                        "buildFrames": 0,
+                        "countTokens": 1,
+                        "generate": 13,
+                        "oldProxy": 0
+                    },
+                    "transport": "PlaygroundTransport",
+                    "url": "https://aistudio.google.com/prompts/new_chat?temporary=true"
+                }
+            ]
+        }
+    ],
+    "internal9998Listening": false,
+    "source_sha256": {
+        "BrowserManager.js": "941df158662d1ef1adce2a90ca40aa84cb3445e6dc047ce7d050d8b59afe9080",
+        "config/ConfigurationService.js": "b7ffc997af4b314d6f4eee561dda437163e1fc2526fc5cc7681b1b49d7724d0d",
+        "config/definitions.js": "dd386b64051111c2ebbfcbd3d494b0b86c37e6d43266a85d16e0cefae36e7128",
+        "ConnectionRegistry.js": "6e9f0e6bad9ef9915da6473e790021f40fe9cf3bc992aeedc4e871241323aebd",
+        "MakerSuiteBridge.js": "60d4ac404e2902481cd817ee6a05e2ec104ca4cdded1bbb6f5b7c2fd84411d24",
+        "MakerSuiteCodec.js": "f4acd01161e8565ed51cf478dad2da7efd636ea55ba03f1b9c42ac7103cfa89b",
+        "ModelScheduler.js": "22f3415c39b726f834450e8a6dd6c7bb563f5358b0eeb9f1e847877eb51f29e1",
+        "ModelTransportPolicy.js": "3d0aa8443bbf9917a25a304997dac375e6dd03eb69c18df24a9ac6388a9bd667",
+        "PlaygroundStreamDecoder.js": "fc7576a553e1de9a07e9b46fd116b13529b4134b45dae1a7d4e911725a4c944a",
+        "PlaygroundTransport.js": "a6f9db806c14dff008a998e2e079dfe09e297dff4cf08af545514bc615b43615",
+        "ProxyServerSystem.js": "68060bb2ef475dae1f4d0fabe9144164d228de3b1a526b1ec28addf95809904a",
+        "RequestHandler.js": "0347ec0593cd883969195083cac5f599f6410d47e4f59c02e956f2b3ccad1831",
+        "ScheduledRequestHandler.js": "a88d49d0de17827d8f7131cf387e48bcac75ec4e1d1237c669baa8cba6f346d5",
+        "TargetSessionValidator.js": "0eef9b603003611f3cc43b85a9d0835a137d66408da80b210e08833c971cce68",
+        "utils/ConfigLoader.js": "a1d9741676a640dd24ad56b590abea8aae24867d24b8421ca0cb9b9258e2d159",
+        "utils/MessageQueue.js": "afc4f41263b082c8cf892de316bf439c248fda784f92d5b6e399a0e7095af44a"
+    }
+}

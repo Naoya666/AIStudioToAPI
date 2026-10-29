@@ -1,0 +1,91 @@
+[
+    {
+        "elapsed_s": 6.391,
+        "name": "gemini_json",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 0.062,
+        "name": "count_tokens",
+        "passed": true,
+        "status": 200,
+        "usage_present": false
+    },
+    {
+        "elapsed_s": 2.66,
+        "name": "chat_json",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 3.338,
+        "name": "responses_json",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "categories": [],
+        "elapsed_s": 1.156,
+        "error_code": null,
+        "error_type": "api_error",
+        "name": "anthropic_json",
+        "passed": false,
+        "status": 400
+    },
+    {
+        "elapsed_s": 4.332,
+        "name": "chat_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 3.505,
+        "name": "responses_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 3.094,
+        "name": "anthropic_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 3.183,
+        "name": "gemini_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 2.021,
+        "name": "tool_auto",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 2.74,
+        "name": "anthropic_json_repeat_1",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 2.81,
+        "name": "anthropic_json_repeat_2",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 2.067,
+        "name": "anthropic_json_repeat_3",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    }
+]

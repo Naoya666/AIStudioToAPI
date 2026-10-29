@@ -55,6 +55,7 @@ class MessageQueue extends EventEmitter {
     }
 
     _enqueue(message) {
+        if (message.event_type === "response_headers") this.receivedHeaders = true;
         if (isPromptBlocked(message)) this.blockedError = Object.assign(new Error(message.message), message);
         if (this.closed) return;
         if (this.waitingResolvers.length > 0) {
@@ -81,7 +82,8 @@ class MessageQueue extends EventEmitter {
 
     async _dequeue(timeoutMs = this.defaultTimeout) {
         if (this.generationDeadline !== undefined) {
-            timeoutMs = Math.floor(this.generationDeadline - performance.now());
+            const remaining = Math.floor(this.generationDeadline - performance.now());
+            timeoutMs = this.incremental && this.receivedHeaders ? Math.min(timeoutMs, remaining) : remaining;
             if (timeoutMs <= 0) throw this.blockedError || new QueueTimeoutError("Generation deadline exceeded");
         }
         if (this.closed) {

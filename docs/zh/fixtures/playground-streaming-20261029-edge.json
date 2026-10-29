@@ -1,0 +1,14 @@
+[
+    {
+        "name": "stream_tool",
+        "passed": true,
+        "terminal": true,
+        "tool_arguments_valid": true,
+        "usage_present": true
+    },
+    {
+        "first_content_s": 4.426,
+        "name": "cancel_after_content_then_reuse",
+        "passed": true
+    }
+]

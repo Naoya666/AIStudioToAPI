@@ -19,10 +19,11 @@ const ATTEMPT_FIELD = "__aistudio_attempt";
 // Serialized into the MAIN page realm, including Firefox's wrapped page window.
 // No Node closures may be referenced here.
 /* eslint-env browser */
-function installPageBridge() {
+function installPageBridge({ direct = false } = {}) {
     if (window.top && window !== window.top) return;
     if (window.__makerSuiteBridge) return;
     const records = new Map();
+    const streams = new Map();
     const nativeFetch = window.fetch.bind(window);
     const upstreamFetch = (window.__buildBenefit?.nativeFetch || nativeFetch).bind(window);
     const endpoint = "https://alkalimakersuite-pa.clients6.google.com";
@@ -57,11 +58,13 @@ function installPageBridge() {
         auth(clientKeys = []) {
             let metadata;
             try {
-                metadata = new Headers(service.tb?.getMetadata() || {});
+                metadata = new Headers(
+                    service.tb?.getMetadata?.() || (direct ? window.__buildBenefit?.auth : null) || {}
+                );
             } catch {
                 return { state: "metadata_missing" };
             }
-            const exclude = metadata.get("x-goog-api-key");
+            const exclude = typeof service.tb?.getMetadata === "function" ? metadata.get("x-goog-api-key") : null;
             if (exclude) excluded.add(exclude);
             const permitted = key =>
                 keyPattern.test(key || "") && !excluded.has(key) && !clientKeys.includes(key) && !rejected.has(key);
@@ -103,6 +106,7 @@ function installPageBridge() {
                 service.module[service.proofKey] = service.proofOriginal;
             for (const r of records.values()) r.controller.abort();
             records.clear();
+            for (const id of streams.keys()) service.release(id);
             observed.clear();
             rejected.clear();
             excluded.clear();
@@ -147,7 +151,11 @@ function installPageBridge() {
             if (M[service.proofKey] !== service.proofWrapper) {
                 const original = M[service.proofKey];
                 const wrapped = function (a) {
-                    if (typeof a?.getMetadata === "function") service.tb = a;
+                    if (
+                        typeof a?.getMetadata === "function" ||
+                        (direct && a && ["object", "function"].includes(typeof a))
+                    )
+                        service.tb = a;
                     return original.apply(this, arguments);
                 };
                 service.proofOriginal = original;
@@ -156,11 +164,31 @@ function installPageBridge() {
             }
             return service.tb ? "ready" : "token_pending";
         },
+
+        async next(id) {
+            const state = streams.get(id);
+            if (!state || state.closed) return { result: { status: 499, text: '[1,"Stream retired"]' } };
+            if (!state.event)
+                await new Promise(resolve => {
+                    state.take = resolve;
+                });
+            const event = state.event;
+            state.event = null;
+            state.take = null;
+            state.release?.();
+            state.release = null;
+            if (event?.result) streams.delete(id);
+            return event;
+        },
+
         // Observations belong to this page realm; they cannot survive navigation.
         observe(url, headers) {
             if (
                 !validUrl(url) ||
-                /\/(?:GenerateContent|GetAiStudioBenefitTier)(?:\?|$)/.test(String(url)) ||
+                (direct
+                    ? /\/GetAiStudioBenefitTier(?:\?|$)/
+                    : /\/(?:GenerateContent|GetAiStudioBenefitTier)(?:\?|$)/
+                ).test(String(url)) ||
                 service.closed
             )
                 return false;
@@ -171,7 +199,34 @@ function installPageBridge() {
             observed.set(key, true);
             return true;
         },
-        async run({ id, body, ht, timeoutMs, readyTimeoutMs, expectedDocumentId, excludedKeys = [] }) {
+
+        rejectStreamAuth(id) {
+            const key = records.get(id)?.authKey;
+            if (key) {
+                rejected.add(key);
+                observed.delete(key);
+            }
+        },
+        release(id) {
+            const state = streams.get(id);
+            if (!state) return;
+            state.closed = true;
+            state.release?.();
+            state.take?.();
+            streams.delete(id);
+        },
+
+        async run({
+            id,
+            body,
+            ht,
+            timeoutMs,
+            readyTimeoutMs,
+            expectedDocumentId,
+            excludedKeys = [],
+            rpcMethod = "GenerateContent",
+            onChunk,
+        }) {
             if (expectedDocumentId && window.__buildBenefit?.documentId !== expectedDocumentId)
                 return { status: 503, text: '[14,"MakerSuite document changed"]' };
             if (service.closed) return { status: 499, text: '[1,"MakerSuite bridge disposed"]' };
@@ -222,8 +277,39 @@ function installPageBridge() {
                 check();
                 const M = window.default_MakerSuite,
                     tb = service.tb;
-                body[4] = await abortable(M[service.proofKey](tb, await abortable(M[service.hashKey](ht))));
-                check();
+                if (!["GenerateContent", "CountTokens"].includes(rpcMethod))
+                    throw new Error("Unsupported Playground RPC");
+                if (rpcMethod === "GenerateContent") {
+                    // The official snapshot observes the prompt box. Serialize only proof creation;
+                    // fetches may overlap once their per-request proof has been generated.
+                    const proof = (service.proofTail = (service.proofTail || Promise.resolve())
+                        .catch(() => {})
+                        .then(async () => {
+                            check();
+                            let textarea, setter;
+                            if (direct) {
+                                textarea = [...document.querySelectorAll("ms-prompt-box textarea")].find(
+                                    el => el.getClientRects().length
+                                );
+                                if (!textarea) throw new Error("Playground prompt box unavailable");
+                                setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+                                record.clearPrompt = () => {
+                                    setter.call(textarea, "");
+                                    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+                                };
+                                setter.call(textarea, ht.replace(/\r\n?/g, "\n"));
+                                textarea.dispatchEvent(new Event("input", { bubbles: true }));
+                            }
+                            try {
+                                return await M[service.proofKey](tb, await M[service.hashKey](ht));
+                            } finally {
+                                record.clearPrompt?.();
+                                record.clearPrompt = null;
+                            }
+                        }));
+                    body[4] = await abortable(proof);
+                    check();
+                }
                 // Refresh metadata after token generation; never reuse Authorization across calls.
                 auth = service.auth(excludedKeys);
                 if (auth.state !== "ready")
@@ -232,9 +318,44 @@ function installPageBridge() {
                         status: 503,
                         text: '[14,"MakerSuite page authentication not ready"]',
                     };
+                if (direct) {
+                    // The Playground WAA service need not expose getMetadata().
+                    // Sign the current page's cookies for each call, as AIStudio2API
+                    // does, instead of replaying an initialization Authorization.
+                    const cookies = new Map(
+                        document.cookie.split(";").map(entry => {
+                            const at = entry.indexOf("=");
+                            return [entry.slice(0, at).trim(), entry.slice(at + 1)];
+                        })
+                    );
+                    const timestamp = Math.floor(Date.now() / 1000);
+                    const tokens = [];
+                    for (const [cookie, label] of [
+                        ["SAPISID", "SAPISIDHASH"],
+                        ["__Secure-1PAPISID", "SAPISID1PHASH"],
+                        ["__Secure-3PAPISID", "SAPISID3PHASH"],
+                    ]) {
+                        const value = cookies.get(cookie);
+                        if (!value) continue;
+                        const source = new TextEncoder().encode(`${timestamp} ${value} https://aistudio.google.com`);
+                        const digest = await abortable(crypto.subtle.digest("SHA-1", source));
+                        const hex = [...new Uint8Array(digest)]
+                            .map(byte => byte.toString(16).padStart(2, "0"))
+                            .join("");
+                        tokens.push(`${label} ${timestamp}_${hex}`);
+                    }
+                    if (!tokens.length)
+                        return {
+                            authState: "cookie_missing",
+                            status: 503,
+                            text: '[14,"Playground signing cookies unavailable"]',
+                        };
+                    auth.authorization = tokens.join(" ");
+                    check();
+                }
+                record.authKey = auth.key;
                 const response = await upstreamFetch(
-                    endpoint +
-                        "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/GenerateContent",
+                    endpoint + "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/" + rpcMethod,
                     {
                         body: JSON.stringify(body),
                         credentials: "include",
@@ -255,7 +376,25 @@ function installPageBridge() {
                         signal,
                     }
                 );
-                const text = await response.text();
+                let text = "";
+                if (onChunk && rpcMethod === "GenerateContent" && response.status === 200) {
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    try {
+                        // eslint-disable-next-line no-constant-condition
+                        while (true) {
+                            const { value, done } = await abortable(reader.read());
+                            check();
+                            const block = decoder.decode(value, { stream: !done });
+                            for (let offset = 0; offset < block.length; offset += 65536)
+                                await abortable(onChunk({ text: block.slice(offset, offset + 65536) }));
+                            if (done) break;
+                        }
+                    } finally {
+                        await reader.cancel().catch(() => {});
+                        reader.releaseLock();
+                    }
+                } else text = await response.text();
                 check();
                 // Do not learn from this nativeFetch: it deliberately bypasses observe().
                 let rpcCode;
@@ -288,9 +427,24 @@ function installPageBridge() {
                 };
             } finally {
                 clearTimeout(timer);
+                record.clearPrompt?.();
                 settled();
                 if (records.get(id) === record) records.delete(id);
             }
+        },
+        // One pending block per request. The next pull releases the producer;
+        // no response text or credentials are sent through console messages.
+        start(args) {
+            const state = { closed: false, event: null, release: null, take: null };
+            streams.set(args.id, state);
+            const publish = event =>
+                new Promise(resolve => {
+                    if (state.closed) return resolve();
+                    state.event = event;
+                    state.release = resolve;
+                    state.take?.();
+                });
+            void service.run({ ...args, onChunk: publish }).then(result => publish({ result }));
         },
     };
     window.__makerSuiteBridge = service;
@@ -300,7 +454,7 @@ function installPageBridge() {
     // cross-origin preflight requirements.
     window.fetch = function (input, init) {
         const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
-        if (!rpc(url)) {
+        if (direct || !rpc(url)) {
             service.observe(url, init?.headers || input?.headers);
             return nativeFetch(input, init);
         }
@@ -329,7 +483,7 @@ function installPageBridge() {
         proto.open = function (method, url) {
             const previous = state.get(this);
             if (previous?.id) service.cancel(previous.id);
-            const matches = rpc(String(url));
+            const matches = !direct && rpc(String(url));
             const entry = { headers: {}, matches, url: String(url) };
             if (matches) {
                 entry.id = `${prefix}:${++sequence}`;
@@ -380,7 +534,8 @@ function pageEval(source) {
     return target.eval(source);
 }
 const INSTALL = `(${installPageBridge.toString()})()`;
-const INIT = `(${pageEval.toString()})(${JSON.stringify(INSTALL)})`;
+const directInit = direct =>
+    `(${pageEval.toString()})(${JSON.stringify(`(${installPageBridge.toString()})(${JSON.stringify({ direct })})`)})`;
 
 class MakerSuiteBridge {
     constructor({
@@ -397,12 +552,14 @@ class MakerSuiteBridge {
         readyTimeoutMs = 10000,
         validateSession = async () => "unverified",
         diagnosticTimeoutMs = 2000,
+        direct = false,
     }) {
         Object.assign(this, {
             authIndex,
             benefit,
             context,
             diagnosticTimeoutMs,
+            direct,
             logger,
             page,
             policy,
@@ -477,7 +634,7 @@ class MakerSuiteBridge {
         this.page.on("framenavigated", this.onNavigation);
         this.context.on("requestfailed", this.onFailed);
         this.context.on("request", this.onRequest);
-        await this.page.addInitScript({ content: INIT });
+        await this.page.addInitScript({ content: directInit(this.direct) });
         if (this.closed) return this;
         if (this.registerRoute) await this.page.route(RPC, this.route);
         if (this.closed) {
@@ -485,7 +642,7 @@ class MakerSuiteBridge {
             return this;
         }
         this.logger.info(
-            `[MakerSuite] account #${this.authIndex}: GenerateContent bridge installed; streamed RPC responses are buffered`
+            `[MakerSuite] account #${this.authIndex}: ${this.direct ? "Playground transport" : "GenerateContent bridge"} installed; responses are ${this.direct ? "incremental" : "buffered"}`
         );
         return this;
     }
@@ -747,4 +904,4 @@ class MakerSuiteBridge {
         if (this.registerRoute) this.page.unroute(RPC, this.route).catch(() => {});
     }
 }
-module.exports = { installPageBridge, MakerSuiteBridge };
+module.exports = { installPageBridge, MakerSuiteBridge, pageEval };

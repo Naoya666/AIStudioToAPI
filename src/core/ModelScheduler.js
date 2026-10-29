@@ -98,6 +98,7 @@ function isDailyQuotaError(error) {
 }
 
 function classifyError(error = {}) {
+    if (error.kind === "capability") return "capability";
     if (require("../utils/UpstreamBlock").isPromptBlocked(error)) return "prompt_blocked";
     if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return "bridge_auth";
     if (isUserAbortedError(error) || error.reason === "client_disconnect") return "aborted";
@@ -939,7 +940,7 @@ class ModelScheduler {
             kind = "unsupported";
         if (["BUILD_BENEFIT_NOT_READY", "MODEL_TIER_DENIED", "MODEL_DISABLED", "UNKNOWN_MODEL"].includes(error.code))
             return;
-        if (kind === "aborted" || kind === "bridge_auth") return;
+        if (kind === "aborted" || kind === "bridge_auth" || kind === "capability") return;
         if (kind === "transport") {
             lease.recorded = true;
             lease.account.local_transport_failures = (lease.account.local_transport_failures || 0) + 1;

@@ -61,17 +61,8 @@ function setup(reply, overrides = {}) {
     const config = {
         fakeStreamTimeoutMs: 100,
         immediateSwitchStatusCodes: [429, 503],
-        makerSuiteTimeoutMs: 100,
+        makerSuiteTimeoutMs: 300000,
         maxRetries: 3,
-        // These fixtures exercise legacy incremental frames and disconnects.
-        // Bridge fixtures below use models without an explicit legacy override.
-        modelTransportPolicy: {
-            a: "legacy",
-            b: "legacy",
-            flash: "legacy",
-            "gemini-2.5-flash": "legacy",
-            other: "legacy",
-        },
         retryDelay: 1,
         streamingMode: "real",
         streamTimeoutMs: 100,
@@ -94,9 +85,20 @@ function setup(reply, overrides = {}) {
     );
     const registry = new ConnectionRegistry(logger);
     const sent = [];
-    const browser = { authSource: auth, currentAuthIndex: 99, async ensureWorkerContext() {}, notifyUserActivity() {} };
+    const browser = {
+        authSource: auth,
+        contexts: new Map(
+            auth.availableIndices.map(index => [index, { page: { makerSuiteBridge: { cancelAttempt() {} } } }])
+        ),
+        currentAuthIndex: 99,
+        async ensureWorkerContext() {},
+        notifyUserActivity() {},
+    };
     for (const index of auth.availableIndices)
         registry.connectionsByAuth.set(index, {
+            dispatch(request) {
+                this.send(JSON.stringify({ ...request, event_type: "proxy_request" }));
+            },
             readyState: 1,
             send(raw) {
                 const request = JSON.parse(raw);
@@ -104,7 +106,14 @@ function setup(reply, overrides = {}) {
                 sent.push({ index, request });
                 const messages = reply(index, request);
                 setImmediate(() => {
-                    for (const message of messages)
+                    for (const source of messages) {
+                        const message =
+                            /:streamGenerateContent$/.test(request.path) &&
+                            source.data &&
+                            source.data.length > 1 &&
+                            /^[{[]/.test(source.data)
+                                ? { ...source, data: `data: ${source.data}\n\n` }
+                                : source;
                         registry._handleIncomingMessage(
                             JSON.stringify({
                                 ...message,
@@ -113,6 +122,7 @@ function setup(reply, overrides = {}) {
                             }),
                             index
                         );
+                    }
                 });
             },
         });
@@ -496,8 +506,7 @@ test("503 and model permissions retry but malformed client requests do not", asy
         assert.equal(fixture.sent.length, expected);
         assert.equal(fixture.scheduler.account(0).healthy, true);
         if (status === 403) {
-            assert.equal(fixture.scheduler.account(0).models.a.unsupported, false);
-            assert.ok(fixture.scheduler.account(0).models.a.cooldown_until > Date.now());
+            assert.equal(fixture.scheduler.account(0).models.a.unsupported, true);
         }
         fixture.scheduler.close();
     }
@@ -725,7 +734,7 @@ test("early retries quota after start and preserves stream identity without dupl
     assert.equal(res.__modelOutputStarted, true);
 });
 
-test("early resets buffered body when transport retry moves to another account", async t => {
+test("early does not replay ambiguous buffered generation after transport interruption", async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const fixture = setup(
         index => (index === 0 ? [success[0], { data: '{"partial":', event_type: "chunk" }] : success),
@@ -747,10 +756,11 @@ test("early resets buffered body when transport retry moves to another account",
     await running;
     assert.deepEqual(
         fixture.sent.map(entry => entry.index),
-        [0, 1]
+        [0]
     );
-    assert.match(res.body, /hello/);
-    assert.equal(completionChunks(res).filter(chunk => chunk.choices?.[0]?.delta?.content === "").length, 3);
+    assert.match(res.body, /not replayed/);
+    assert.equal(res.body.includes("[DONE]"), false);
+    assert.equal(res.body.includes("hello"), false);
     assert.equal(fixture.registry.messageQueues.size, 0);
 });
 
@@ -1531,12 +1541,15 @@ for (const model of ["gemini-4-argon", "gemini-3.7-flash"]) {
                     assert.equal(res.statusCode, 200, res.body);
                     assert.equal(fixture.sent.length, 1);
                     assert.equal(fixture.sent[0].index, 0);
-                    assert.equal(fixture.sent[0].request.path, `/v1beta/models/${model}:generateContent`);
-                    assert.equal(fixture.sent[0].request.query_params.alt, undefined);
-                    assert.equal(fixture.sent[0].request.streaming_mode, "fake");
+                    assert.equal(
+                        fixture.sent[0].request.path,
+                        `/v1beta/models/${model}:${stream ? "streamGenerateContent" : "generateContent"}`
+                    );
+                    assert.equal(fixture.sent[0].request.query_params.alt, stream ? "sse" : undefined);
+                    assert.equal(fixture.sent[0].request.streaming_mode, stream ? "real" : "fake");
                     if (stream) {
                         assert.match(res.body, /data: /);
-                        assert.equal(res.__proxyResponseStreamMode, "fake");
+                        assert.equal(res.__proxyResponseStreamMode, "real");
                     } else assert.doesNotThrow(() => JSON.parse(res.body));
                     assert.match(res.body, /hello/);
                 });
@@ -1756,7 +1769,7 @@ test("all adapters honor bridge panel budgets beyond five minutes independently 
                 const entry = fixture.sent[0];
                 assert.equal(entry.request.transport_policy.transport, "makersuite");
                 assert.equal(entry.request.transport_policy.requestedMode, "real");
-                assert.equal(entry.request.transport_policy.effectiveMode, "fake");
+                assert.equal(entry.request.transport_policy.effectiveMode, "real");
                 for (const time of [59000, 61000, 300001, 590000]) {
                     t.mock.timers.tick(time - elapsed);
                     elapsed = time;

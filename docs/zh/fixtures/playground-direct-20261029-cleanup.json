@@ -1,0 +1,12 @@
+{
+    "isolated_auth_and_data_removed": true,
+    "isolated_removed": true,
+    "production_api_health": "ok",
+    "production_container_health": "healthy",
+    "production_image": "aistudio-to-api:bero-887c6ec-appc894",
+    "production_started_at": "2026-10-28T11:36:01.665659356Z",
+    "sqlite_checks": {
+        "accounts.sqlite": "ok",
+        "usage-stats.sqlite": "ok"
+    }
+}

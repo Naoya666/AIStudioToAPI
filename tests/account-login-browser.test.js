@@ -55,7 +55,32 @@ async function run(options = {}) {
                     const htmlFor = address => {
                         const url = new URL(address);
                         let html;
-                        if (url.pathname.includes("ServiceLogin"))
+                        if (url.searchParams.get("fixture") === "playground") {
+                            const run = options.consoleOnly
+                                ? 'console.log("[ProxyClient] Connection successful")'
+                                : "run()";
+                            html = options.appFailure
+                                ? "<p>Failed to initialize applet</p>"
+                                : `
+                                <button aria-label="Google Account: user@example.com">Account</button>
+                                <ms-prompt-box><textarea></textarea></ms-prompt-box>
+                                <ms-run-button><button onclick='${run}'>Run</button></ms-run-button>
+                                <script>
+                                const key="AIza"+"A".repeat(35);
+                                const headers={authorization:"fixture-auth","x-goog-api-key":key};
+                                const rpc="https://alkalimakersuite-pa.clients6.google.com/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/";
+                                const service={snapshot:async()=>"fixture-proof"};
+                                window.default_MakerSuite={
+                                    proof:async a=>a.snapshot({content:"fixture"}),
+                                    hash:text=>{const h={update(){},digest:()=>text};h.update(new TextEncoder().encode(text));return h.digest();}
+                                };
+                                fetch(rpc+"ListModels",{method:"POST",headers,body:"[]"});
+                                async function run(){try{await default_MakerSuite.proof(service);await fetch(rpc+"GenerateContent",{method:"POST",headers,body:"[]"});}catch(_){}}
+                                </script>`;
+                            if (options.frameKind)
+                                html +=
+                                    '<iframe sandbox="allow-scripts" srcdoc="<textarea>unrelated preview</textarea>"></iframe>';
+                        } else if (url.pathname.includes("ServiceLogin"))
                             html =
                                 "<input id=\"identifierId\" type=\"text\"><button onclick=\"if(document.querySelector('input').value==='user@example.com')location.href='/password'\">Next</button>";
                         else if (url.pathname === "/password")
@@ -167,33 +192,40 @@ async function run(options = {}) {
             require: name =>
                 name === "playwright"
                     ? mockPlaywright
-                    : name === "./LoginPageHandlers" && (options.lateStudioDialog || options.onStudioObservation)
+                    : name === "./TargetSessionValidator" && options.consoleOnly
                       ? class extends workerRequire(name) {
-                            async terms(...args) {
-                                const result = await super.terms(...args);
-                                if (options.lateStudioDialog && !this.inserted) {
-                                    // The legacy hint scan sees no dialogs. Insert
-                                    // at a fixed boundary before business classification.
-                                    assert.equal(await super.transition(...args), false);
-                                    this.inserted = true;
-                                    await this.page.evaluate(
-                                        html => document.body.insertAdjacentHTML("beforeend", html),
-                                        options.lateStudioDialog
-                                    );
-                                }
-                                return result;
-                            }
-                            async observeStudioDialogs(...args) {
-                                if (this.observationPage !== this.page) {
-                                    this.observationPage = this.page;
-                                    this.observations = 0;
-                                }
-                                this.observations++;
-                                await options.onStudioObservation?.(this.page, this.observations);
-                                return super.observeStudioDialogs(...args);
+                            constructor(settings) {
+                                super(settings);
+                                this.manager.contextInitTotalTimeoutMs = 7000;
                             }
                         }
-                      : workerRequire(name),
+                      : name === "./LoginPageHandlers" && (options.lateStudioDialog || options.onStudioObservation)
+                        ? class extends workerRequire(name) {
+                              async terms(...args) {
+                                  const result = await super.terms(...args);
+                                  if (options.lateStudioDialog && !this.inserted) {
+                                      // The legacy hint scan sees no dialogs. Insert
+                                      // at a fixed boundary before business classification.
+                                      assert.equal(await super.transition(...args), false);
+                                      this.inserted = true;
+                                      await this.page.evaluate(
+                                          html => document.body.insertAdjacentHTML("beforeend", html),
+                                          options.lateStudioDialog
+                                      );
+                                  }
+                                  return result;
+                              }
+                              async observeStudioDialogs(...args) {
+                                  if (this.observationPage !== this.page) {
+                                      this.observationPage = this.page;
+                                      this.observations = 0;
+                                  }
+                                  this.observations++;
+                                  await options.onStudioObservation?.(this.page, this.observations);
+                                  return super.observeStudioDialogs(...args);
+                              }
+                          }
+                        : workerRequire(name),
             setTimeout,
             URL,
         },
@@ -214,7 +246,7 @@ async function run(options = {}) {
         },
         executablePath,
         executorId: "browser-fixture",
-        targetUrl: "https://ai.studio/apps/synthetic",
+        targetUrl: "https://aistudio.google.com/prompts/new_chat?fixture=playground",
         taskId: "browser-task",
         token: "synthetic",
     };
@@ -280,7 +312,7 @@ test(
     "real browser: a success console message cannot replace a native connection",
     { skip: !executablePath },
     async () => {
-        const result = await run({ consoleOnly: true, noTotp: true });
+        const result = await run({ consoleOnly: true, fast: true, noTotp: true });
         assert.equal(result.error, "service_initialization_unverified");
         assert.ok(!result.storageState);
     }

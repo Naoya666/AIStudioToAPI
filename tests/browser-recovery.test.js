@@ -204,7 +204,10 @@ test("queue limits reject before expensive scans and scheduling yields to I/O", 
     await rejection;
 });
 
-test("an already open WebSocket still requires mouse completion before publishing READY", async () => {
+test("a ready Playground transport still requires mouse completion before publishing READY", async t => {
+    const { PlaygroundTransport } = require("../src/core/PlaygroundTransport");
+    t.mock.method(PlaygroundTransport.prototype, "bootstrap", async () => {});
+    t.mock.method(PlaygroundTransport.prototype, "connect", () => {});
     const pool = manager();
     pool.config.enableAuthUpdate = false;
     pool.authSource.getAuth = () => ({});

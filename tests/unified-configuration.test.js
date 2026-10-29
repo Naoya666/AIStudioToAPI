@@ -23,14 +23,7 @@ test("allowlist matches plan and excludes file-only queue timeout and usage enab
     const keys = [...section.matchAll(/^\| `([A-Z_]+)`\s+\|/gm)].map(match => match[1]);
     assert.deepEqual(
         new Set(definitions.map(d => d.name)),
-        new Set([
-            ...keys,
-            "LOG_DISPLAY_LIMIT",
-            "DEBUG_MODE",
-            "MODEL_TRANSPORT_POLICY",
-            "MAKERSUITE_TIMEOUT_MS",
-            "MODEL_TIER_ALLOWLIST",
-        ])
+        new Set([...keys, "LOG_DISPLAY_LIMIT", "DEBUG_MODE", "MAKERSUITE_TIMEOUT_MS", "MODEL_TIER_ALLOWLIST"])
     );
     assert.equal(new Set(definitions.map(d => d.name)).size, definitions.length);
 });
@@ -275,7 +268,6 @@ test("all streaming modes persist, reload, reset and validate with old defaults"
     assert.equal(withEnv.service.running.streamingMode, "early");
     assert.equal(setup(t).service.running.streamingMode, "real");
 });
-
 test("anti settings persist, validate, reset and retain accepted request snapshots", t => {
     const { service, save, system } = setup(t);
     assert.equal(service.running.antiTruncationEnabled, true);
@@ -296,21 +288,15 @@ test("anti settings persist, validate, reset and retain accepted request snapsho
     assert.equal(service.running.antiTruncationDefault, "off");
 });
 
-test("transport mappings persist but only a restarted configuration uses the new route", t => {
-    const { service, save, system } = setup(t);
-    const { resolve } = require("../src/core/ModelTransportPolicy");
-    const rules = { "gemini-3.7-flash": "makersuite", "gemini-4-argon": "legacy" };
-    const result = save({ MODEL_TRANSPORT_POLICY: rules });
-    assert.equal(resolve("gemini-4-argon", "real", system.config.modelTransportPolicy).transport, "makersuite");
-    assert.ok(result.pending.some(item => item.name === "MODEL_TRANSPORT_POLICY"));
+test("legacy transport configuration is discarded when loading an existing installation", t => {
+    const { service, save } = setup(t);
+    assert.throws(() => save({ MODEL_TRANSPORT_POLICY: { flash: "legacy" } }), { status: 400 });
+    const doc = JSON.parse(fs.readFileSync(service.file, "utf8"));
+    doc.overrides.MODEL_TRANSPORT_POLICY = { flash: "legacy" };
+    fs.writeFileSync(service.file, JSON.stringify(doc));
     const loaded = new ConfigurationService({ logger }, { env: {}, file: service.file });
-    assert.deepEqual(loaded.running.modelTransportPolicy, rules);
-    assert.equal(resolve("gemini-4-argon", "real", loaded.running.modelTransportPolicy).transport, "legacy");
-    assert.throws(() => save({ MODEL_TRANSPORT_POLICY: { "gemini-4-argon-real": "makersuite" } }), { status: 400 });
-    assert.throws(() => save({ MODEL_TRANSPORT_POLICY: { "gemini-4-argon": "auto" } }), { status: 400 });
-    service.save({ reset: ["MODEL_TRANSPORT_POLICY"], version: service.document.version });
-    const reset = new ConfigurationService({ logger }, { env: {}, file: service.file });
-    assert.deepEqual(reset.running.modelTransportPolicy, {});
+    assert.equal(loaded.running.modelTransportPolicy, undefined);
+    assert.equal(loaded.document.overrides.MODEL_TRANSPORT_POLICY, undefined);
 });
 
 test("bridge timeout saves hot, persists, validates and preserves accepted request snapshots", t => {
@@ -333,14 +319,6 @@ test("bridge timeout saves hot, persists, validates and preserves accepted reque
         assert.throws(() => save({ MAKERSUITE_TIMEOUT_MS: value }), { status: 400 });
     service.save({ reset: ["MAKERSUITE_TIMEOUT_MS"], version: service.document.version });
     assert.equal(service.running.makerSuiteTimeoutMs, 295000);
-});
-
-test("buffered response budget saves and persists above five minutes", t => {
-    const { service, save } = setup(t);
-    save({ FAKE_STREAM_TIMEOUT_MS: 900000 });
-    assert.equal(service.running.fakeStreamTimeoutMs, 900000);
-    const loaded = new ConfigurationService({ logger }, { env: {}, file: service.file });
-    assert.equal(loaded.running.fakeStreamTimeoutMs, 900000);
 });
 
 test("login browser reuse defaults off, validates limits and hot-applies through managed configuration", t => {
@@ -429,4 +407,12 @@ test("quota-only idle startup accepts saved configuration without claiming infer
     assert.equal(restarted.startupAcceptable(), false);
     system.ready = false;
     assert.equal(restarted.startupAcceptable(), false);
+});
+
+test("buffered response budget saves and persists above five minutes", t => {
+    const { service, save } = setup(t);
+    save({ FAKE_STREAM_TIMEOUT_MS: 900000 });
+    assert.equal(service.running.fakeStreamTimeoutMs, 900000);
+    const loaded = new ConfigurationService({ logger }, { env: {}, file: service.file });
+    assert.equal(loaded.running.fakeStreamTimeoutMs, 900000);
 });

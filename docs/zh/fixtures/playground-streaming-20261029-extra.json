@@ -1,0 +1,20 @@
+[
+    {
+        "name": "tool_result_roundtrip",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 4.699,
+        "name": "concurrent_1",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 2.298,
+        "name": "concurrent_2",
+        "passed": true,
+        "status": 200
+    }
+]

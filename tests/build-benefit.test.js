@@ -296,9 +296,15 @@ test("Argon policy applies before WAA and native SSE intent remains separate", (
             query: { alt: "sse", key: "client-key" },
         };
         const request = handler._buildProxyRequest(req, "test");
-        assert.equal(request.path, "/v1beta/models/gemini-4-argon:generateContent");
-        assert.equal(request.streaming_mode, "fake");
-        assert.deepEqual(request.query_params, { key: "client-key" });
+        assert.equal(
+            request.path,
+            `/v1beta/models/gemini-4-argon:${model.endsWith("-fake") ? "generateContent" : "streamGenerateContent"}`
+        );
+        assert.equal(request.streaming_mode, model.endsWith("-fake") ? "fake" : "real");
+        assert.deepEqual(
+            request.query_params,
+            model.endsWith("-fake") ? { key: "client-key" } : { alt: "sse", key: "client-key" }
+        );
         assert.equal(req.query.alt, "sse");
         assert.ok(req.path.includes(":streamGenerateContent"));
     }
@@ -314,9 +320,9 @@ test("Argon policy applies before WAA and native SSE intent remains separate", (
     };
     handler._initializeProxyRequestAttempt(untrusted);
     assert.deepEqual(untrusted.headers, { "content-type": "application/json" });
-    assert.equal(handler._effectiveStreamMode("gemini-4-argon", "real"), "fake");
+    assert.equal(handler._effectiveStreamMode("gemini-4-argon", "real"), "real");
     assert.equal(handler._effectiveStreamMode("gemini-4-argon", "early"), "early");
-    assert.equal(handler._effectiveStreamMode("gemini-4-other", "real"), "fake");
+    assert.equal(handler._effectiveStreamMode("gemini-4-other", "real"), "real");
     assert.equal(getModelDailyQuota("gemini-4-argon"), 0);
     assert.doesNotThrow(() => loadConfig({ ARGON_VERIFIED_ACCOUNTS: "invalid old config" }));
     assert.equal(loadConfig({ ARGON_VERIFIED_ACCOUNTS: "[0,2,2]" }).argonVerifiedAccounts, undefined);

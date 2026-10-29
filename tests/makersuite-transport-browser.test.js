@@ -10,8 +10,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { firefox } = require("playwright");
 const { BuildBenefitContext } = require("../src/core/BuildBenefitContext");
-const { MakerSuiteBridge } = require("../src/core/MakerSuiteBridge");
-const TransportPolicy = require("../src/core/ModelTransportPolicy");
+const { PlaygroundTransport } = require("../src/core/PlaygroundTransport");
 
 const ORIGIN = "https://alkalimakersuite-pa.clients6.google.com";
 const RPC = "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/";
@@ -57,7 +56,7 @@ async function fixture(t) {
             if (req.method === "OPTIONS") return res.end();
             if (req.method === "GET") {
                 res.setHeader("content-type", "text/html");
-                return res.end(`<!doctype html><title>Local Build fixture</title><script>
+                return res.end(`<!doctype html><title>Local Playground fixture</title><ms-prompt-box><textarea></textarea></ms-prompt-box><script>
                     window.default_MakerSuite = { Cn: async a => a.proof?.snapshot({content:"fixture"}) || "new-proof", GB: text => { const hash = {update(){}, digest:()=> "new-hash:" + text}; hash.update(new TextEncoder().encode(text)); return hash.digest(); } };
                     setTimeout(async () => {
                         await window.default_MakerSuite.Cn({mb:{}, getMetadata: () => ({ authorization:"fixture-authorization", "x-goog-api-key":"AIza" + "T".repeat(35), "x-goog-authuser":"2" })});
@@ -74,16 +73,18 @@ async function fixture(t) {
                 res.statusCode = state.status;
                 res.end(state.body);
             } else if (req.url.startsWith(RPC + "GenerateContent")) {
+                res.setHeader("content-type", "application/json+protobuf");
+                const candidate = (text, finish) => [[[[null, text]], "model"], finish];
+                res.write("[[" + JSON.stringify([[candidate("TLS first", null)]]));
                 const reply = () =>
-                    res.end(JSON.stringify([[[[[[[null, "TLS answer"]], "model"], 1]], null, [1, 2, 3]]]));
-                let timer;
+                    res.end("," + JSON.stringify([[candidate("TLS answer", 1)], null, [1, 2, 3]]) + "]]");
+                let timer = null;
                 res.on("close", () => {
                     clearTimeout(timer);
                     if (!res.writableEnded) state.cancelled = (state.cancelled || 0) + 1;
                 });
                 if (state.hold) return;
-                if (state.generateDelay) timer = setTimeout(reply, state.generateDelay);
-                else reply();
+                timer = setTimeout(reply, state.generateDelay || 200);
             } else res.end("[]");
         }
     );
@@ -128,13 +129,13 @@ async function fixture(t) {
         const benefit = new BuildBenefitContext(page, { authIndex: index, canUse: () => true, timeoutMs });
         benefit.dispatcher = true;
         await benefit.install();
-        const bridge = new MakerSuiteBridge({
+        const bridge = new PlaygroundTransport({
             authIndex: index,
             benefit,
             context,
             logger,
             page,
-            requireRegistration: true,
+            timeoutMs: 75000,
         });
         page.makerSuiteBridge = bridge;
         await bridge.install();
@@ -144,6 +145,7 @@ async function fixture(t) {
         });
         page._fixtureBenefit = benefit;
         await context.addCookies([
+            { domain: "aistudio.google.com", name: "SAPISID", path: "/", secure: true, value: "fixture-sapisid" },
             {
                 domain: "alkalimakersuite-pa.clients6.google.com",
                 httpOnly: true,
@@ -157,6 +159,7 @@ async function fixture(t) {
         await waitPageReady(page);
         await benefit.ensure();
         await benefit.assertReady();
+        bridge.ready = true; // This fixture initializes WAA in its own official-shaped UI.
         return { benefit, bridge, context, page };
     };
     // Camoufox 135's Juggler does not complete Page.reload with this
@@ -176,34 +179,15 @@ async function fixture(t) {
     return state;
 }
 
-function prepare(bridge, model = "gemini-4-argon", budget = 300000) {
-    const attempt = "req_fixture_attempt_" + require("node:crypto").randomUUID();
-    const proxy = {
+function request(id, budget = 5000) {
+    return {
         body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }], role: "user" }] }),
-        request_attempt_id: attempt,
-        transport_policy: TransportPolicy.resolve(model, "real"),
+        method: "POST",
+        path: "/v1beta/models/gemini-test:streamGenerateContent",
+        remaining_budget_ms: budget,
+        request_attempt_id: id + "_attempt_1",
+        request_id: id,
     };
-    const wire = bridge.prepare(proxy, performance.now() + budget);
-    return JSON.stringify([
-        // Studio removes arbitrary query parameters; preserve the actual wire form.
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        wire.body,
-        "old-proof",
-        "POST",
-    ]);
-}
-async function generation(page, body) {
-    return page._fixtureBenefit._evaluate(
-        async ({ url, body }) => {
-            const response = await fetch(url, {
-                body,
-                headers: { "content-type": "application/json+protobuf" },
-                method: "POST",
-            });
-            return { body: await response.text(), status: response.status };
-        },
-        { body, url: ORIGIN + RPC + "ProxyUnaryCall" }
-    );
 }
 async function until(check) {
     const deadline = performance.now() + 5000;
@@ -213,77 +197,78 @@ async function until(check) {
     }
 }
 test(
-    "TLS dispatch preserves 3.7 wire, uses fresh proof and benefits, and cancels real upstream",
+    "real TLS incrementally delivers before EOF, uses fresh WAA/auth, and cancels the network reader",
     { timeout: 30000 },
     async t => {
         const f = await fixture(t);
         const { page, bridge } = await f.open();
-        const original = JSON.stringify([
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:streamGenerateContent?alt=sse",
-            '{"contents":[]}',
-            "original-waa",
-        ]);
-        await f.native(
-            page,
-            { ...auth, "content-type": "application/json+protobuf" },
-            "ProxyStreamedCall?authuser=2",
-            original
-        );
-        assert.equal(f.requests.at(-1).url, RPC + "ProxyStreamedCall?authuser=2");
-        assert.equal(f.requests.at(-1).body, original);
-        assert.equal(f.requests.at(-1).headers.authorization, auth.authorization);
-        const encodedRpc = "ProxyStreamedCall?note=a%20b&slash=%2f&symbol=~";
-        await f.native(page, auth, encodedRpc, original);
-        assert.equal(f.requests.at(-1).url, RPC + encodedRpc);
-        const result = await generation(page, prepare(bridge));
-        assert.equal(result.status, 200);
-        assert.equal(JSON.parse(JSON.parse(result.body)[0]).candidates[0].content.parts[0].text, "TLS answer");
+        f.generateDelay = 500;
+        const seen = [];
+        let settled = false;
+        const generation = bridge
+            .generate(request("tls"), chunk => seen.push(chunk))
+            .then(() => {
+                settled = true;
+            });
+        await until(() => seen.length);
+        assert.equal(settled, false);
+        assert.equal(seen[0].candidates[0].content.parts[0].text, "TLS first");
+        assert.equal(seen[0].candidates[0].finishReason, undefined);
+        await generation;
+        assert.equal(seen.at(-1).candidates[0].finishReason, "STOP");
+        assert.equal(seen.at(-1).usageMetadata.totalTokenCount, 3);
         const outbound = f.requests.at(-1);
         assert.equal(outbound.url, RPC + "GenerateContent");
         assert.equal(JSON.parse(outbound.body)[4], "new-proof");
         assert.equal(outbound.headers["x-goog-api-key"], auth["x-goog-api-key"]);
-        assert.equal(outbound.headers.cookie, "fixture-session=account-0");
+        assert.match(outbound.headers.authorization, /^SAPISIDHASH /);
+        assert.match(outbound.headers.cookie, /fixture-session=account-0/);
         assert.equal(outbound.headers["x-aistudio-g1-tier"], "TIER2");
         assert.equal(outbound.headers["x-goog-ext-519733851-bin"], "fixture-opaque");
-        assert.equal(outbound.body.includes("__aistudio_"), false);
+        assert.ok(f.requests.every(x => !/ProxyUnary|ProxyStreamed/.test(x.url)));
         f.hold = true;
-        const pending = generation(page, prepare(bridge, "gemini-4-argon", 400));
-        const timed = await pending;
-        assert.equal(timed.status, 504);
-        await until(() => f.cancelled === 1);
-        assert.equal(bridge.active.size, 0);
-        assert.equal(bridge.attempts.size, 0);
-        const beforeCancel = f.requests.filter(request => request.url === RPC + "GenerateContent").length;
-        const body = prepare(bridge);
-        const running = generation(page, body).catch(() => null);
-        await until(
-            () => f.requests.filter(request => request.url === RPC + "GenerateContent").length === beforeCancel + 1
+        await assert.rejects(
+            bridge.generate(request("timeout", 400), () => {}),
+            { status: 504 }
         );
-        bridge.cancelAttempt("req_fixture", JSON.parse(JSON.parse(body)[1]).__aistudio_attempt);
-        await running;
+        await until(() => f.cancelled === 1);
+        const received = [];
+        const pending = bridge.generate(request("cancel"), chunk => received.push(chunk));
+        const cancelled = assert.rejects(pending, { status: 499 });
+        await until(() => received.length);
+        bridge.cancelAttempt("cancel", "cancel_attempt_1");
+        await cancelled;
         await until(() => f.cancelled === 2);
         await bridge.settle();
+        assert.equal(bridge.active.size, 0);
         assert.equal(bridge.cleanup.size, 0);
         await f.reload(page);
         await waitPageReady(page);
         f.hold = false;
-        assert.equal((await generation(page, prepare(bridge))).status, 200);
+        bridge.ready = true;
+        const reply = await bridge.generate(request("reloaded"));
+        assert.equal(reply.candidates[0].content.parts[0].text, "TLS firstTLS answer");
     }
 );
 test(
-    "real TLS buffered generation survives 61 seconds",
-    { skip: process.env.MODEL_TRANSPORT_LONG_FIXTURE !== "1", timeout: 90000 },
+    "real TLS incremental generation survives 61 seconds without buffering first content",
+    {
+        skip: process.env.MODEL_TRANSPORT_LONG_FIXTURE !== "1",
+        timeout: 90000,
+    },
     async t => {
         const f = await fixture(t);
-        const { page, bridge } = await f.open();
+        const { bridge } = await f.open();
         f.generateDelay = 61000;
         const start = performance.now();
-        const result = await generation(page, prepare(bridge, "gemini-4-argon", 75000));
+        let first;
+        await bridge.generate(request("long", 75000), () => {
+            first ??= performance.now() - start;
+        });
         const elapsed = performance.now() - start;
-        assert.equal(result.status, 200);
-        assert.match(result.body, /TLS answer/);
+        assert.ok(first < 5000);
         assert.ok(elapsed >= 61000 && elapsed < 75000);
-        t.diagnostic(`actual TLS GenerateContent elapsed=${Math.round(elapsed)}ms`);
+        t.diagnostic(`TLS first content=${Math.round(first)}ms; EOF=${Math.round(elapsed)}ms`);
         assert.equal(bridge.active.size, 0);
     }
 );

@@ -219,47 +219,43 @@ test(
             document.querySelector(".configuration-panel")?.textContent.includes("立即生效：单账号各模型并发上限")
         );
         assert.equal(service.saved.scheduler.accountModelConcurrency["unknown-upstream-id"], 0);
-        const transport = panel
-            .locator(".configuration-field")
-            .filter({ has: page.locator('label[for="config-MODEL_TRANSPORT_POLICY"]') });
-        assert.equal(await transport.locator("textarea").count(), 0);
-        await transport.getByRole("button", { name: "增加模型" }).click();
-        await transport.getByPlaceholder("可手动输入上游模型 ID").fill("gemini-4-argon");
-        await transport.locator(".el-select").click();
-        await page.getByRole("option", { exact: true, name: "桥接通道（makersuite）" }).click();
-        assert.deepEqual(service.saved.modelTransportPolicy, {});
-        await panel.getByRole("button", { exact: true, name: "保存" }).click();
-        await page.waitForFunction(() =>
-            document.querySelector('.configuration-panel [role="status"]')?.textContent.includes("0 项修改")
-        );
-        assert.deepEqual(service.saved.modelTransportPolicy, { "gemini-4-argon": "makersuite" });
-        assert.deepEqual(service.running.modelTransportPolicy, {});
-        await transport.getByRole("button", { name: "增加模型" }).click();
-        await transport.getByPlaceholder("可手动输入上游模型 ID").nth(1).fill("gemini-4-argon");
-        const beforeDuplicate = writes.length;
-        await panel.getByRole("button", { exact: true, name: "保存" }).click();
-        await panel.getByRole("alert").getByText("模型传输策略：模型名不能为空或重复").waitFor();
-        assert.equal(writes.length, beforeDuplicate);
-        await transport.getByRole("button", { exact: true, name: "删除" }).nth(1).click();
+        assert.equal(await panel.locator("#config-MODEL_TRANSPORT_POLICY").count(), 0);
         await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").fill("600000");
         await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").blur();
         assert.equal(service.running.makerSuiteTimeoutMs, 295000);
         await panel.getByRole("button", { exact: true, name: "保存" }).click();
         await page.waitForFunction(() =>
-            document.querySelector(".configuration-panel")?.textContent.includes("立即生效：桥接生成超时")
+            document.querySelector(".configuration-panel")?.textContent.includes("立即生效：Playground 生成超时")
         );
         assert.equal(service.running.makerSuiteTimeoutMs, 600000);
-        const ordinaryTimeout = panel.locator("#config-FAKE_STREAM_TIMEOUT_MS");
-        assert.ok(Number(await ordinaryTimeout.getAttribute("max")) > 300000);
-        assert.ok(Number(await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").getAttribute("max")) > 300000);
-        await ordinaryTimeout.fill("900000");
-        await ordinaryTimeout.blur();
-        await panel.getByRole("button", { exact: true, name: "保存" }).click();
-        await page.waitForFunction(() =>
-            document.querySelector(".configuration-panel")?.textContent.includes("立即生效：普通通道缓冲响应超时")
-        );
+        await panel.locator("#config-FAKE_STREAM_TIMEOUT_MS").fill("900000");
+        await panel.locator("#config-FAKE_STREAM_TIMEOUT_MS").blur();
+        await panel
+            .locator(".el-select")
+            .filter({ has: page.locator("#config-STREAMING_MODE") })
+            .click();
+        await page.getByRole("option", { exact: true, name: "提前发送空首块" }).click();
+        await Promise.all([
+            page.waitForResponse(
+                response => response.url().endsWith("/api/configuration") && response.request().method() === "PATCH"
+            ),
+            panel.getByRole("button", { exact: true, name: "保存" }).click(),
+        ]);
+        assert.equal(service.running.streamingMode, "early");
         assert.equal(service.running.fakeStreamTimeoutMs, 900000);
-        assert.equal(service.running.makerSuiteTimeoutMs, 600000);
+        await panel
+            .locator(".el-select")
+            .filter({ has: page.locator("#config-STREAMING_MODE") })
+            .click();
+        await page.getByRole("option", { exact: true, name: "真实流式" }).click();
+        await Promise.all([
+            page.waitForResponse(
+                response => response.url().endsWith("/api/configuration") && response.request().method() === "PATCH"
+            ),
+            panel.getByRole("button", { exact: true, name: "保存" }).click(),
+        ]);
+        assert.equal(service.running.streamingMode, "real");
+        assert.ok(Number(await panel.locator("#config-MAKERSUITE_TIMEOUT_MS").getAttribute("max")) > 300000);
         await panel.locator("#config-FORCE_WEB_SEARCH").locator("..").click();
         service.save({ changes: { FORCE_CODE_EXECUTION: true }, version: service.document.version });
         // Polling may detect the version conflict before a save can be clicked.

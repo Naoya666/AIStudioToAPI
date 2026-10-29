@@ -1,0 +1,68 @@
+[
+    {
+        "elapsed_s": 6.203,
+        "name": "gemini_json",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 0.062,
+        "name": "count_tokens",
+        "passed": true,
+        "status": 200,
+        "usage_present": false
+    },
+    {
+        "elapsed_s": 4.922,
+        "name": "chat_json",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 2.489,
+        "name": "responses_json",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 2.45,
+        "name": "anthropic_json",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    },
+    {
+        "elapsed_s": 2.789,
+        "name": "chat_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 1.763,
+        "name": "responses_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 2.465,
+        "name": "anthropic_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 2.284,
+        "name": "gemini_sse",
+        "passed": true,
+        "status": 200
+    },
+    {
+        "elapsed_s": 1.924,
+        "name": "tool_auto",
+        "passed": true,
+        "status": 200,
+        "usage_present": true
+    }
+]

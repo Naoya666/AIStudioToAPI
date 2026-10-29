@@ -244,11 +244,7 @@ class ScheduledRequestHandler extends RequestHandler {
         if (require("../utils/UpstreamBlock").isPromptBlocked(error)) return false;
         if (["MODEL_TIER_DENIED", "MODEL_DISABLED", "UNKNOWN_MODEL"].includes(error.code)) return false;
         if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return false;
-        if (
-            require("./ModelTransportPolicy").resolve(this.model || "", "fake", this.config?.modelTransportPolicy)
-                .transport === "makersuite"
-        )
-            return false;
+        if (error.upstreamOutputStarted) return false;
         if (
             isArgon(this.model) &&
             (error.code === "BUILD_BENEFIT_NOT_READY" ||
@@ -385,7 +381,7 @@ class ScheduledRequestHandler extends RequestHandler {
 
     async _retryTransportQueue(error, registry) {
         if (require("../utils/UpstreamBlock").isPromptBlocked(error)) throw error;
-        if (isArgon(this.model) || this.proxyRequest?.transport_policy?.transport === "makersuite")
+        if (isArgon(this.model) || !/:streamGenerateContent$/.test(this.proxyRequest?.path || ""))
             throw benefitError("Argon transport interrupted; generation was not replayed");
         if (
             this.controller.signal.aborted ||

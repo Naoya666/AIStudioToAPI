@@ -12,16 +12,6 @@ module.exports = [
         resettable: false,
         type: "modelAllowlist",
     },
-    {
-        application: "restart",
-        description: "所有模型默认使用 makersuite 桥接；可按精确模型 ID 覆盖为 legacy 或 makersuite，重启生效",
-        group: "请求处理与模型功能",
-        label: "模型传输策略",
-        mode: "all",
-        name: "MODEL_TRANSPORT_POLICY",
-        path: "modelTransportPolicy",
-        type: "transport",
-    },
     ...[
         {
             choices: ["standalone", "master", "agent"],
@@ -264,7 +254,7 @@ module.exports = [
         application: "hot",
         choices: ["real", "fake", "early"],
         description:
-            "提前发送空首块：流式请求立即发送空正文首块，再立即补发无 role 空增量，等待期间每秒发送空增量保活，完整结果返回后一次填充；非流式仍返回完整 JSON。空首块当前适用于 OpenAI Chat Completions，其余接口按缓冲模式处理。early 优先于 STREAM_EARLY_HEADERS；首块发送后的失败通过流内错误返回，HTTP 状态保持 200。",
+            "real 为 Playground 实时增量流；fake 缓冲完整结果后输出 SSE。early 提前发送空首块：流式请求立即发送空正文首块，再立即补发无 role 空增量，等待期间每秒发送空增量保活，完整结果返回后一次填充；非流式仍返回完整 JSON。空首块当前适用于 OpenAI Chat Completions，其余接口按缓冲模式处理。early 优先于 STREAM_EARLY_HEADERS；首块发送后的失败通过流内错误返回，HTTP 状态保持 200。",
         group: "请求处理与模型功能",
         label: "流式响应模式",
         minimum: 1,
@@ -315,9 +305,9 @@ module.exports = [
     {
         application: "hot",
         description:
-            "仅用于 legacy 通道的非流式或假流式请求。所有模型默认走 MakerSuite 桥接，不受本项限制，请设置下方的桥接生成超时。",
+            "非流式和 fake/early 缓冲响应的队列等待超时；Playground 请求优先使用固定生成总预算（MAKERSUITE_TIMEOUT_MS）。",
         group: "请求处理与模型功能",
-        label: "普通通道缓冲响应超时",
+        label: "缓冲响应等待超时",
         maximum: MAX_GENERATION_TIMEOUT_MS,
         minimum: 1,
         mode: "all",
@@ -329,9 +319,9 @@ module.exports = [
     {
         application: "hot",
         description:
-            "gemini-4-argon 等 MakerSuite 桥接请求的生成总预算，含认证、WAA 和正文读取。需要等待超过五分钟时，可设为 600000 毫秒（十分钟）或更大。不受普通通道缓冲响应超时限制；默认仍为 295000 毫秒，响应结算另预留最多 5000 毫秒。保存后用于新请求，已有请求不变。",
+            "Playground 直连请求的生成总预算，含认证、WAA 和正文读取。需要等待超过五分钟时，可设为 600000 毫秒（十分钟）或更大。不受普通通道缓冲响应超时限制；默认仍为 295000 毫秒，响应结算另预留最多 5000 毫秒。保存后用于新请求，已有请求不变。",
         group: "请求处理与模型功能",
-        label: "桥接生成超时",
+        label: "Playground 生成超时",
         maximum: MAX_GENERATION_TIMEOUT_MS,
         minimum: 1,
         mode: "all",
@@ -679,7 +669,7 @@ module.exports = [
     },
     {
         application: "hot",
-        description: "等待调度时提前建立 SSE 响应并发送接受注释；early 模式始终提前发送空首块，不受此开关限制",
+        description: "等待调度时提前建立 SSE 响应并发送接受注释",
         group: "排队与等待保活",
         label: "提前发送流式响应头",
         minimum: 1,
@@ -692,7 +682,7 @@ module.exports = [
     {
         application: "hot",
         dependsOn: "STREAM_EARLY_HEADERS",
-        description: "提前建立 SSE 后、实际内容输出前的保活间隔，毫秒；early 模式固定每秒发送空增量，不使用此配置",
+        description: "提前建立 SSE 后、实际内容输出前的保活间隔，毫秒",
         group: "排队与等待保活",
         label: "流式等待保活间隔",
         maximum: 2147483647,

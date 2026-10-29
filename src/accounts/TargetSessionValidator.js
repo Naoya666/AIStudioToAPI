@@ -1,6 +1,6 @@
 const BrowserManager = require("../core/BrowserManager");
 const ConnectionRegistry = require("../core/ConnectionRegistry");
-const TargetValidationTransport = require("./TargetValidationTransport");
+const { withHardTimeout } = require("../utils/TimeoutUtils");
 
 class TargetSessionValidator {
     constructor({
@@ -16,7 +16,12 @@ class TargetSessionValidator {
         onFailure,
     }) {
         // Never forward page text, URLs, cookies or exception messages to logs.
-        const signals = ["Privacy protection layer active", "Received authIndex request", "Connection successful"];
+        const signals = [
+            "Privacy protection layer active",
+            "Received authIndex request",
+            "Connection successful",
+            "transport ready",
+        ];
         const logger = Object.fromEntries(
             ["info", "debug", "warn", "error", "success"].map(level => [
                 level,
@@ -47,17 +52,26 @@ class TargetSessionValidator {
         this.manager.targetUrl = targetUrl;
         this.registry = new ConnectionRegistry(logger, null, () => 0, this.manager);
         this.manager.setConnectionRegistry(this.registry);
-        this.transport = new TargetValidationTransport(this.registry, proxy, stepTimeout);
+        this.proxy = proxy;
+        this.cleanupTimeout = stepTimeout;
+        this.ownedContexts = new Set();
+        this.creationTasks = new Set();
         const create = this.manager._createBrowserContext.bind(this.manager);
-        this.manager._createBrowserContext = async (...args) => {
-            const context = await create(...args);
-            if (this.closed) {
-                await context.close();
-                throw new Error("Validation already closed");
-            }
-            onContext?.(context);
-            context.on("page", onPage);
-            return context;
+        this.manager._createBrowserContext = (...args) => {
+            const task = (async () => {
+                const context = await create(...args);
+                this.ownedContexts.add(context);
+                if (this.closed) {
+                    await context.close();
+                    throw new Error("Validation already closed");
+                }
+                onContext?.(context);
+                context.on("page", onPage);
+                return context;
+            })();
+            this.creationTasks.add(task);
+            task.finally(() => this.creationTasks.delete(task)).catch(() => {});
+            return task;
         };
         // BrowserManager's raw HTML debug artifacts are unsuitable for a login
         // executor. Its supervisor owns masked screenshots and bounded cleanup.
@@ -77,22 +91,40 @@ class TargetSessionValidator {
                   : null;
             if (reason) throw Object.assign(new Error(reason), { reason, retryable: false });
             const errors = await check(...args);
-            if (Object.values(errors).some(Boolean))
+            if (
+                errors.appletFailed ||
+                errors.concurrentUpdates ||
+                (errors.snapshotFailed && !args[0].playgroundTransport?.ready)
+            )
                 throw Object.assign(new Error("service_initialization_failed"), {
                     reason: "service_initialization_failed",
                     retryable: true,
                 });
             return errors;
         };
+        const status = this.manager._checkPageStatusAndErrors.bind(this.manager);
+        this.manager._checkPageStatusAndErrors = async (...args) => {
+            await status(...args);
+            await this.manager._checkPageErrors(args[0]);
+        };
     }
 
     async validate() {
-        const proxy = await this.transport.start();
-        this.manager.setProxyResolver(async () => ({ proxy, source: "login_validation" }));
-        const result = await this.manager._getOrStartContextInit(0);
+        this.manager.setProxyResolver(async () => ({ proxy: this.proxy, source: "login_validation" }));
+        let result;
+        try {
+            result = await this.manager._getOrStartContextInit(0);
+        } catch (error) {
+            if (error.phase === "playground_initialization")
+                throw Object.assign(new Error("service_initialization_unverified"), {
+                    reason: "service_initialization_unverified",
+                    retryable: true,
+                });
+            throw error;
+        }
         await this.manager._checkPageErrors(result.page);
-        // BrowserManager also accepts a console message. Login commits require
-        // a native connection actually accepted by this executor's own server.
+        // Login commits require a live in-process transport published only
+        // after this executor has verified the official Playground WAA service.
         if (this.registry.getConnectionByAuth(0, false)?.readyState !== 1)
             throw Object.assign(new Error("service_initialization_unverified"), {
                 reason: "service_initialization_unverified",
@@ -105,8 +137,29 @@ class TargetSessionValidator {
         this.closed = true;
         this.manager.isClosingIntentionally = true;
         for (const attempt of this.manager._contextInitAttempts.values()) attempt.cancel?.("validation_closed");
+        // A watchdog can reject initialization while its context creation or
+        // cleanup is still settling. Do not acknowledge executor cleanup early.
+        await Promise.allSettled([...this.creationTasks]);
+        const cleanup = await Promise.allSettled(
+            [...this.ownedContexts].map(context =>
+                withHardTimeout(
+                    async () => {
+                        if (!this.manager.browser.contexts().includes(context)) return;
+                        // Playwright's close() returns early if another owner has already
+                        // begun closing. Wait for the actual close event before reuse.
+                        const closed = new Promise(resolve => context.once("close", resolve));
+                        await context.close();
+                        if (this.manager.browser.contexts().includes(context)) await closed;
+                    },
+                    this.cleanupTimeout,
+                    { operation: "validation context cleanup" }
+                )
+            )
+        );
+        if (cleanup.some(result => result.status === "rejected")) throw new Error("Validation context cleanup failed");
+        this.ownedContexts.clear();
         this.manager.contexts.clear();
-        await this.transport.close();
+        for (const connection of this.registry.connectionsByAuth.values()) connection.close();
         for (const timer of this.registry.reconnectGraceTimers.values()) clearTimeout(timer);
         this.registry.reconnectGraceTimers.clear();
         for (const { timeoutId } of this.registry.lightweightReconnectTimeouts.values()) clearTimeout(timeoutId);

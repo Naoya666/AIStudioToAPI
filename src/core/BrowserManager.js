@@ -8,7 +8,7 @@ const { accountForIndex, canUseModel, resolveTier } = require("../accounts/Accou
  */
 
 const { BuildBenefitContext } = require("./BuildBenefitContext");
-const { MakerSuiteBridge } = require("./MakerSuiteBridge");
+const { PlaygroundTransport } = require("./PlaygroundTransport");
 const fs = require("fs");
 const path = require("path");
 const { firefox } = require("playwright");
@@ -118,7 +118,7 @@ class BrowserManager {
         this._wsInitState = new Map();
 
         // Target URL for AI Studio app
-        this.targetUrl = "https://ai.studio/apps/cab9ab6c-44f9-4e7a-8972-037f8ae177ab";
+        this.targetUrl = "https://aistudio.google.com/prompts/new_chat?temporary=true";
 
         // Firefox/Camoufox does not use Chromium-style command line args.
         // We keep this empty; Camoufox has its own anti-fingerprinting optimizations built-in.
@@ -1169,19 +1169,6 @@ class BrowserManager {
                     if (window === window.top) {
                         console.log("[ProxyClient] Privacy protection layer active: ${profile.renderer}");
 
-                        // PostMessage responder for authIndex requests from cross-origin iframes
-                        // Injected via addInitScript so it's ready BEFORE any iframe loads (no race condition)
-                        window.addEventListener('message', function(event) {
-                            if (event.data && event.data.type === 'requestAuthIndex') {
-                                console.log('[BrowserManager] Received authIndex request, responding with: ${authIndex}');
-                                event.source.postMessage({
-                                    type: 'authIndexResponse',
-                                    browserGeneration: window._browserGeneration,
-                                    attemptId: window._browserAttemptId,
-                                    authIndex: ${authIndex}
-                                }, '*');
-                            }
-                        });
                     }
                 } catch (err) {
                     console.error("[ProxyClient] Failed to inject privacy script", err);
@@ -1352,6 +1339,7 @@ class BrowserManager {
      * @param {Page} page - The page object to use (defaults to this.page if not provided)
      */
     _sendActiveTrigger(logPrefix = "[Browser]", page = null) {
+        if ((page || this.page)?.playgroundTransport) return;
         // Active Trigger (Hack to wake up Google Backend)
         this.logger.info(`${logPrefix} ⚡ Sending active trigger request to Launch flow...`);
 
@@ -1608,6 +1596,8 @@ class BrowserManager {
                         }
                     }
 
+                    if (page.playgroundTransport) return;
+
                     // 4. Popup & Overlay Cleanup
                     await this._runInitOperation(null, "monitor.overlay", () =>
                         page.evaluate(() => {
@@ -1737,6 +1727,7 @@ class BrowserManager {
      * Only one instance should run at a time, tracking the current active page.
      */
     async _startBackgroundWakeup(workerState = this) {
+        if (workerState.page?.playgroundTransport) return;
         // Prevent multiple instances from running simultaneously
         if (workerState.backgroundWakeupRunning) {
             this.logger.info("[Browser] BackgroundWakeup already running, skipping duplicate start.");
@@ -3923,18 +3914,18 @@ class BrowserManager {
             });
             page.buildBenefit = benefit;
             benefit.dispatcher = true;
-            const bridge = new MakerSuiteBridge({
+            const bridge = new PlaygroundTransport({
                 authIndex,
                 benefit,
                 context,
                 logger: this.logger,
                 page,
-                policy: this.config?.modelTransportPolicy,
                 requireRegistration: true,
                 timeoutMs: this.config?.makerSuiteTimeoutMs,
                 validateSession: () => this._diagnoseMakerSuiteSession(page),
             });
             page.makerSuiteBridge = bridge;
+            page.playgroundTransport = bridge;
             await this._runInitOperation(attempt, "benefit.install", () => benefit.install());
             await this._runInitOperation(attempt, "makersuite.install", () => bridge.install());
 
@@ -3962,6 +3953,12 @@ class BrowserManager {
 
             page.on("console", msg => {
                 const msgText = msg.text();
+                if (
+                    page.playgroundTransport?.bootstrapping &&
+                    msgText.includes("MakerSuiteService/GenerateContent") &&
+                    msgText.includes("CORS request did not succeed")
+                )
+                    return;
                 if (msgText.includes("Content-Security-Policy")) {
                     return;
                 }
@@ -4030,34 +4027,10 @@ class BrowserManager {
             this._assertCurrentInitAttempt(attempt);
             this._throwIfContextInitAborted(authIndex, isBackgroundTask);
 
-            // Wait for WebSocket initialization (no retry)
-            // Check if initialization already succeeded (console listener may have detected it)
-            if (attempt.ws.success || this._hasNewOpenConnection(attempt)) {
-                attempt.ws.success = true;
-                this.logger.info(`${logPrefix} ✅ WebSocket already initialized, skipping wait`);
-            } else {
-                // Wait for WebSocket initialization (120 second timeout)
-                // This will throw an abort error if the context is aborted during wait
-                this._setInitPhase(attempt, "ws_initialization");
-                const initSuccess = await this._waitForWebSocketInit(
-                    page,
-                    logPrefix,
-                    WS_INIT_TIMEOUT_MS,
-                    attempt,
-                    isBackgroundTask
-                );
-
-                if (!initSuccess) {
-                    const reason = attempt.failureReason || "ws_connection_timeout";
-                    throw Object.assign(new Error(`Context initialization failed: ${reason}`), {
-                        attemptId: attempt.id,
-                        authIndex,
-                        code: reason === "consent_dialog_timeout" ? "CONSENT_DIALOG_TIMEOUT" : "WS_CONNECTION_TIMEOUT",
-                        phase: attempt.phase,
-                        reason,
-                    });
-                }
-            }
+            this._setInitPhase(attempt, "playground_initialization");
+            await this._runInitOperation(attempt, "playground.bootstrap", () => bridge.bootstrap(), WS_INIT_TIMEOUT_MS);
+            this._assertCurrentInitAttempt(attempt);
+            bridge.connect(this.connectionRegistry, attempt);
 
             // Required anti-idle movement, including connections established before the wait loop.
             this._setInitPhase(attempt, "required_mouse");
@@ -4390,6 +4363,33 @@ class BrowserManager {
                 clearInterval(ctxData.healthMonitorInterval);
                 ctxData.healthMonitorInterval = null;
                 this.logger.info("[Reconnect] Stopped background health monitor.");
+            }
+        }
+
+        if (page.playgroundTransport) {
+            const transport = page.playgroundTransport;
+            try {
+                contextData.state = "RECONNECTING";
+                transport.connection?.close();
+                await this._navigateAndWakeUpPage(page, "[Reconnect]");
+                await this._checkPageStatusAndErrors(page, "[Reconnect]", targetAuthIndex);
+                await this._runInitOperation(
+                    null,
+                    "playground.bootstrap",
+                    () => transport.bootstrap(),
+                    WS_INIT_TIMEOUT_MS
+                );
+                if (this.contexts.get(targetAuthIndex) !== contextData || contextData.draining) return false;
+                await this._simulateHumanMovement(page, 1, 1);
+                transport.connect(this.connectionRegistry, contextData);
+                contextData.state = "READY";
+                await this._updateAuthFile(targetAuthIndex);
+                this._startHealthMonitor(targetAuthIndex);
+                return true;
+            } catch (error) {
+                contextData.state = "UNAVAILABLE";
+                if (isAuthExpiredError(error)) await this.closeContext(targetAuthIndex);
+                return false;
             }
         }
 

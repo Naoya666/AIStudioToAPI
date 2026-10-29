@@ -7,7 +7,6 @@
 
 const { EventEmitter } = require("events");
 const express = require("express");
-const WebSocket = require("ws");
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
@@ -128,7 +127,6 @@ class ProxyServerSystem extends EventEmitter {
         this.accountLoginService = new AccountLoginService(this);
         this.authSource.accountLoginService = this.accountLoginService;
         this.publicDashboardServer = null;
-        this.wsServer = null;
         this.webRoutes = new WebRoutes(this);
     }
 
@@ -139,7 +137,7 @@ class ProxyServerSystem extends EventEmitter {
         await this.usageStatsService.ready;
         await this._startHttpServer();
         try {
-            await this._startWebSocketServer();
+            // Playground requests use the in-process Playwright transport.
             if (this.config.publicDashboard.enabled) {
                 this.publicDashboardServer = new PublicDashboardServer({
                     browserManager: this.browserManager,
@@ -616,87 +614,6 @@ class ProxyServerSystem extends EventEmitter {
         return app;
     }
 
-    async _startWebSocketServer() {
-        return new Promise((resolve, reject) => {
-            let isListening = false;
-
-            this.wsServer = new WebSocket.Server({
-                host: this.config.host,
-                port: this.config.wsPort,
-            });
-
-            this.wsServer.once("listening", () => {
-                isListening = true;
-                this.logger.info(
-                    `[System] WebSocket server is listening on ws://${this.config.host}:${this.config.wsPort}`
-                );
-                resolve();
-            });
-
-            this.wsServer.on("error", err => {
-                if (!isListening) {
-                    this.logger.error(`[System] WebSocket server failed to start: ${err.message}`);
-                    reject(err);
-                } else {
-                    this.logger.error(`[System] WebSocket server runtime error: ${err.message}`);
-                }
-            });
-            this.wsServer.on("connection", (ws, req) => {
-                // Parse authIndex from query parameter
-                const url = new URL(req.url, `http://${req.headers.host}`);
-                const authIndexParam = url.searchParams.get("authIndex");
-                const authIndex = authIndexParam !== null ? parseInt(authIndexParam, 10) : -1;
-
-                // Validate authIndex: must be a valid non-negative integer
-                if (Number.isNaN(authIndex) || authIndex < 0) {
-                    this.logger.error(
-                        `[System] Rejecting WebSocket connection with invalid authIndex: ${authIndexParam} (parsed as ${authIndex})`
-                    );
-                    this._safeCloseWebSocket(ws, 1008, "Invalid authIndex: must be a non-negative integer");
-                    return;
-                }
-
-                this.connectionRegistry.addConnection(ws, {
-                    address: req.socket.remoteAddress,
-                    attemptId: url.searchParams.get("attemptId") || undefined,
-                    authIndex,
-                    browserGeneration: url.searchParams.has("generation")
-                        ? Number(url.searchParams.get("generation"))
-                        : undefined,
-                    transportVersion: Number(url.searchParams.get("transportVersion")) || 0,
-                });
-            });
-        });
-    }
-
-    /**
-     * Safely close a WebSocket connection with readyState check
-     * @param {WebSocket} ws - The WebSocket to close
-     * @param {number} code - Close code (e.g., 1000, 1008)
-     * @param {string} reason - Close reason
-     */
-    _safeCloseWebSocket(ws, code, reason) {
-        if (!ws) {
-            return;
-        }
-
-        // WebSocket readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
-        // Only attempt to close if not already closing or closed
-        if (ws.readyState === 0 || ws.readyState === 1) {
-            try {
-                ws.close(code, reason);
-            } catch (error) {
-                this.logger.warn(
-                    `[System] Failed to close WebSocket (code=${code}, reason="${reason}"): ${error.message}`
-                );
-            }
-        } else {
-            this.logger.debug(
-                `[System] WebSocket already closing/closed (readyState=${ws.readyState}), skipping close()`
-            );
-        }
-    }
-
     /**
      * Gracefully shutdown the server system
      */
@@ -750,11 +667,7 @@ class ProxyServerSystem extends EventEmitter {
                 }
             });
 
-        await Promise.all([
-            this.publicDashboardServer?.close(),
-            closeServer(this.wsServer, "WebSocket server"),
-            closeServer(this.httpServer, "HTTP server"),
-        ]);
+        await Promise.all([this.publicDashboardServer?.close(), closeServer(this.httpServer, "HTTP server")]);
     }
 }
 

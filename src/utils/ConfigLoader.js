@@ -58,10 +58,7 @@ class ConfigLoader {
                 dbPath: path.join(process.cwd(), "data", "usage-stats.sqlite"),
                 retentionDays: 30,
             },
-            wsPort: 9998,
         };
-
-        config.modelTransportPolicy = require("../core/ModelTransportPolicy").parsePolicy(env.MODEL_TRANSPORT_POLICY);
 
         config.scheduler = require("../core/SchedulerConfig")(env);
 
@@ -112,7 +109,10 @@ class ConfigLoader {
                 throw new Error("Invalid ANTI_TRUNCATION_DEFAULT: expected off or prefer");
             config.antiTruncationDefault = env.ANTI_TRUNCATION_DEFAULT;
         }
-        if (env.STREAMING_MODE) config.streamingMode = env.STREAMING_MODE;
+        if (env.STREAMING_MODE) {
+            if (!["real", "fake", "early"].includes(env.STREAMING_MODE)) throw new Error("Invalid STREAMING_MODE");
+            config.streamingMode = env.STREAMING_MODE;
+        }
         if (env.FAILURE_THRESHOLD) {
             const parsed = parseInt(env.FAILURE_THRESHOLD, 10);
             config.failureThreshold = Number.isFinite(parsed) ? Math.max(0, parsed) : config.failureThreshold;
@@ -149,14 +149,6 @@ class ConfigLoader {
             )
                 throw new Error(`Invalid ${name}: expected an integer between 1 and ${MAX_GENERATION_TIMEOUT_MS}`);
             config[key] = parsed;
-        }
-        if (env.WS_PORT) {
-            // WS_PORT environment variable is no longer supported
-            this.logger.error(
-                `[Config] ❌ WS_PORT environment variable is deprecated and no longer supported. ` +
-                    `The WebSocket port is now fixed at 9998. Please remove WS_PORT from your .env file.`
-            );
-            // Do not modify config.wsPort - keep it at default 9998
         }
         if (env.MAX_CONTEXTS) {
             const parsed = parseInt(env.MAX_CONTEXTS, 10);
@@ -219,8 +211,8 @@ class ConfigLoader {
             config.usageStorage.dbPath = path.resolve(process.cwd(), rawPath);
         }
 
-        if (config.publicDashboard.enabled && [config.httpPort, config.wsPort].includes(config.publicDashboard.port)) {
-            throw new Error("PUBLIC_DASHBOARD_PORT must differ from PORT and the internal WebSocket port");
+        if (config.publicDashboard.enabled && config.httpPort === config.publicDashboard.port) {
+            throw new Error("PUBLIC_DASHBOARD_PORT must differ from PORT");
         }
 
         let rawCodes = env.IMMEDIATE_SWITCH_STATUS_CODES;
@@ -302,7 +294,6 @@ class ConfigLoader {
         this.logger.info(`  Listening Address: ${config.host}`);
         this.logger.info(`  Streaming Mode: ${config.streamingMode}`);
         this.logger.info(`  Stream Timeout: ${config.streamTimeoutMs}ms`);
-        this.logger.info(`  Fake/Non-Stream Timeout: ${config.fakeStreamTimeoutMs}ms`);
         this.logger.info(`  Force Thinking: ${config.forceThinking}`);
         this.logger.info(`  Force Code Execution: ${config.forceCodeExecution}`);
         this.logger.info(`  Force Web Search: ${config.forceWebSearch}`);

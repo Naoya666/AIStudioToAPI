@@ -1,0 +1,33 @@
+{
+    "contexts": [
+        {
+            "contexts": [
+                {
+                    "index": 1,
+                    "inProcess": true,
+                    "ready": true,
+                    "resources": {
+                        "buildFrames": 0,
+                        "countTokens": 2,
+                        "generate": 14,
+                        "oldProxy": 0
+                    },
+                    "transport": "PlaygroundTransport",
+                    "url": "https://aistudio.google.com/prompts/new_chat?temporary=true"
+                }
+            ]
+        }
+    ],
+    "internal9998Listening": false,
+    "source_sha256": {
+        "BrowserManager.js": "ed94df4f47cf42c8bd63c0528b34df7d030ae240f427bd2b62eba7656395753b",
+        "ConnectionRegistry.js": "6e9f0e6bad9ef9915da6473e790021f40fe9cf3bc992aeedc4e871241323aebd",
+        "MakerSuiteBridge.js": "e377144734ad9adb254154742cfdfafeea6549750442b5bfea1a9d4bd4e4b0fb",
+        "MakerSuiteCodec.js": "bbccbb06513ff1f67e927da62113ebf10e8d06ceb94d86200da3412fd5408c48",
+        "ModelScheduler.js": "22f3415c39b726f834450e8a6dd6c7bb563f5358b0eeb9f1e847877eb51f29e1",
+        "PlaygroundTransport.js": "ce3a8a1ee85c671ebee25b6818fb3d0e71ef48cd8057ec4bce0a60a317e7d2df",
+        "ProxyServerSystem.js": "68060bb2ef475dae1f4d0fabe9144164d228de3b1a526b1ec28addf95809904a",
+        "RequestHandler.js": "387c618fc30c7390e41023f297e94753ef7d067ecaa6f10b40e431cb34831cd0",
+        "TargetSessionValidator.js": "0eef9b603003611f3cc43b85a9d0835a137d66408da80b210e08833c971cce68"
+    }
+}
