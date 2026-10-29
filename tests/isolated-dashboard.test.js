@@ -89,14 +89,60 @@ require(${modulePath});
         child.send({ config: { corsOrigins: [], host: "127.0.0.1", port: 0 }, type: "configure" });
         const [message] = await ready;
         const generatedAt = new Date().toISOString();
-        child.send({ body: { generated_at: generatedAt, models: [], service_status: "ready" }, type: "snapshot" });
+        child.send({
+            body: { generated_at: generatedAt, models: [], quota_status: "exhausted", service_status: "unavailable" },
+            type: "snapshot",
+        });
         const advanced = once(child, "message");
         child.send({ type: "advance" });
         await advanced;
         const response = await fetch(`http://127.0.0.1:${message.address.port}/api/public/dashboard`);
         const body = await response.json();
         assert.equal(body.stale, true);
+        assert.equal(body.quota_status, undefined);
         assert.equal(body.service_status, "unavailable");
         assert.equal(body.generated_at, generatedAt);
     }
 );
+
+for (const role of ["standalone", "agent", "master"]) {
+    test(`${role} publishes quota wait without changing service readiness or cached source data`, async () => {
+        const Dashboard = require("../src/public/IsolatedPublicDashboard");
+        let quotaStatus = "exhausted";
+        const dashboard = new Dashboard({
+            browserManager: { getContextInitHealth: () => ({ ready: 0 }) },
+            config: { role },
+            logger: { warn: assert.fail },
+            quotaStatusProvider: () => quotaStatus,
+        });
+        const source = {
+            generated_at: new Date().toISOString(),
+            models: [{ model: "flash", quota: { estimable: false, estimated_remaining: null } }],
+        };
+        dashboard.service = {
+            getSnapshot: async () => (role === "standalone" ? source : { snapshot: source }),
+        };
+        let published;
+        dashboard.child = {
+            connected: true,
+            send(message, callback) {
+                published = message.body;
+                callback();
+            },
+        };
+        await dashboard.publish();
+        assert.equal(published.service_status, "unavailable");
+        assert.equal(published.quota_status, "exhausted");
+        const snapshot = () => (role === "standalone" ? published : published.snapshot);
+        assert.deepEqual(snapshot().models[0].quota, { estimable: true, estimated_remaining: 0 });
+        assert.equal(source.models[0].quota.estimated_remaining, null);
+        quotaStatus = "cooldown";
+        await dashboard.publish();
+        assert.equal(published.quota_status, "cooldown");
+        assert.equal(snapshot().models[0].quota.estimated_remaining, null);
+        quotaStatus = null;
+        await dashboard.publish();
+        assert.equal(published.quota_status, undefined);
+        assert.equal(published.service_status, "unavailable");
+    });
+}

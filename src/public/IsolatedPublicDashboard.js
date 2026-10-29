@@ -7,10 +7,11 @@ const { MAX_AGENT_BYTES } = require("./DashboardProtocol");
 // Only the public DTO crosses IPC. Account pools, authentication and mutations
 // remain owned by the application process.
 class IsolatedPublicDashboard {
-    constructor({ config, logger, scheduler, usageStatsService, browserManager }) {
+    constructor({ config, logger, scheduler, usageStatsService, browserManager, quotaStatusProvider }) {
         this.config = { ...defaults, ...config };
         this.logger = logger;
         this.browserManager = browserManager;
+        this.quotaStatusProvider = quotaStatusProvider;
         this.service = new PublicDashboardService(scheduler, usageStatsService, {
             cacheTtlMs: this.config.role === "standalone" ? 1000 : 0,
             includeAggregation: this.config.role !== "standalone",
@@ -68,17 +69,22 @@ class IsolatedPublicDashboard {
             const body = await this.service.getSnapshot();
             if (this.stopping || !this.child.connected) return;
             const health = this.browserManager?.getContextInitHealth();
+            const quotaStatus = this.quotaStatusProvider?.();
+            const quotaState = quotaStatus ? { quota_status: quotaStatus } : {};
+            // Confirmed daily exhaustion is an observed zero, even for unknown quota limits.
+            const publicBody = quotaStatus === "exhausted" ? this._exhaustedSnapshot(body) : body;
             const status = health?.recovering || !health?.ready ? "unavailable" : "ready";
             const snapshot =
                 this.config.role === "standalone"
-                    ? { ...body, service_status: status }
+                    ? { ...publicBody, ...quotaState, service_status: status }
                     : {
                           agent_schema_version: 1,
-                          aggregation: body.aggregation,
+                          ...quotaState,
+                          aggregation: publicBody.aggregation,
                           generated_at: body.snapshot.generated_at,
                           node_id: this.config.nodeId,
                           service_status: status,
-                          snapshot: body.snapshot,
+                          snapshot: publicBody.snapshot,
                           snapshot_sequence: (this.sequence = (this.sequence || 0) + 1),
                       };
             if (
@@ -92,6 +98,17 @@ class IsolatedPublicDashboard {
         } finally {
             this.publishing = false;
         }
+    }
+    _exhaustedSnapshot(body) {
+        const snapshot = this.config.role === "standalone" ? body : body.snapshot;
+        const exhausted = {
+            ...snapshot,
+            models: snapshot.models.map(model => ({
+                ...model,
+                quota: { ...model.quota, estimable: true, estimated_remaining: 0 },
+            })),
+        };
+        return this.config.role === "standalone" ? exhausted : { ...body, snapshot: exhausted };
     }
     async close() {
         this.stopping = true;

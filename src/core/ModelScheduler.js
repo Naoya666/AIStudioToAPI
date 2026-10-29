@@ -313,6 +313,20 @@ class ModelScheduler {
         );
     }
 
+    getQuotaWaitStatus() {
+        if (!this.isWaitingForQuota()) return null;
+        const models = this.getVisibleModels();
+        return this.authSource
+            .getRotationIndices()
+            .every(index =>
+                [...models]
+                    .filter(model => this.isTierAllowed(index, model))
+                    .every(model => this.account(index).models[model]?.rate_limit_type === "daily_quota")
+            )
+            ? "exhausted"
+            : "cooldown";
+    }
+
     isWaitingForQuota() {
         if (this.closed || this.paused) return false;
         const indices = this.authSource.getRotationIndices();

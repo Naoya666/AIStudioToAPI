@@ -87,7 +87,12 @@ process.on("message", async message => {
                 getSnapshot: async () => {
                     if (!snapshot) throw new Error("Snapshot not yet available");
                     const stale = Date.now() - receivedAt > 15000;
-                    return { ...snapshot, service_status: stale ? "unavailable" : snapshot.service_status, stale };
+                    return {
+                        ...snapshot,
+                        ...(stale ? { quota_status: undefined } : {}),
+                        service_status: stale ? "unavailable" : snapshot.service_status,
+                        stale,
+                    };
                 },
             };
         } else server.cachedResponseProvider = () => cached;

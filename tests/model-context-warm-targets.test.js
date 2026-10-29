@@ -253,12 +253,17 @@ test("quota wait requires healthy authorized accounts and natural expiry wakes a
             rate_limited: true,
         });
     assert.equal(scheduler.isWaitingForQuota(), true);
+    assert.equal(scheduler.getQuotaWaitStatus(), "exhausted");
+    scheduler.account(0).models.a.rate_limit_type = "rpm";
+    assert.equal(scheduler.getQuotaWaitStatus(), "cooldown");
+    scheduler.account(0).models.a.rate_limit_type = "daily_quota";
     assert.deepEqual(manager._poolCandidates(), []);
     for (const patch of [{ healthy: false }, { disabled: true }]) {
         const account = scheduler.account(0);
         const previous = { ...account };
         Object.assign(account, patch);
         assert.equal(scheduler.isWaitingForQuota(), false);
+        assert.equal(scheduler.getQuotaWaitStatus(), null);
         Object.assign(account, previous);
     }
     scheduler.authSource.isExpired = () => true;
@@ -288,6 +293,7 @@ test("quota wait requires healthy authorized accounts and natural expiry wakes a
     wake();
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(scheduler.isWaitingForQuota(), false);
+    assert.equal(scheduler.getQuotaWaitStatus(), null);
     assert.ok(manager._poolCandidates().length > 0);
     assert.equal(reconciled, true);
     assert.equal(scheduler.nextCooldownCheckAt, null);

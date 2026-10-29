@@ -226,6 +226,8 @@ PUBLIC_DASHBOARD_PORT=7861
 
 多服务器部署可将公示角色设为 `master`（主控）和 `agent`。Agent 定时生成本机快照，主控定时读取并缓存汇总；公众访问不会触发节点统计或远程采集。各节点必须使用独立账号池，agent 查询接口使用独立 Token。配置方法见 [多节点公示部署与实现说明](docs/zh/public-dashboard-multi-node-design.md#12-部署示例)。默认 `standalone` 保留原有独立公示功能。
 
+公示面板将正常等待额度与数据异常区分：在账号健康、认证有效，且没有初始化、清理或恢复异常时，日额度全部耗尽显示“额度已耗尽，等待恢复”，可用账号及剩余额度为 0；临时限流显示“暂时限流，等待恢复”。公示快照通过可选 `quota_status`（`exhausted` / `cooldown`）传递该状态，master 会纳入这些节点的新鲜实时数据，不因额度等待而显示统计缺失。数据过期或真实故障仍按异常处理。该展示状态不改变启动验收、机器健康接口的 HTTP 状态或渠道控制器策略。集群部署需更新 master 和相关 agent 才能完整展示。
+
 渠道控制器应读取 master 和 agent 统一的 `GET /api/internal/model-health`，并发送 `Authorization: Bearer <PUBLIC_DASHBOARD_HEALTH_TOKEN>`。在目标节点配置独立的 `PUBLIC_DASHBOARD_HEALTH_TOKEN` 后重启；留空时拒绝所有查询。该接口与公示服务共用监听地址和端口，只读取已生成的本机缓存，master 不含远程节点汇总。响应仅含 `schema_version: 1`、原始 `generated_at`、持久化 `node_id`、`snapshot_sequence`、`service_status`、`usage_window` 和各模型的 `realtime.available_accounts`，不含账号明细。缺少或错误令牌返回 401；缓存缺失、超过 `PUBLIC_DASHBOARD_STALE_AFTER_MS` 或服务未就绪时返回 503，已有缓存仍保留原始时间戳和身份。原公示与 Agent 采集接口用途保持不变；standalone 不提供该机器接口。
 
 配套控制器设置 `aistudio.status_url: "http://aistudio:7861/api/internal/model-health"` 和 `aistudio.token_env: "AISTUDIO_HEALTH_TOKEN"`，通过环境变量注入与目标节点相同的只读令牌，dry-run 下也需提供。渠道连续两次不可用后禁用、当日锁存和太平洋日期切换时启用的策略保持不变。

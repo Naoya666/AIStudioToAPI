@@ -55,6 +55,9 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
     const fresh = sources.filter(source => source.fresh);
     if (!fresh.length) return null;
     const ready = source => source.fresh && source.body.service_status === "ready";
+    // Fresh quota-wait snapshots remain valid data without claiming inference readiness.
+    const usable = source =>
+        source.fresh && (ready(source) || ["exhausted", "cooldown"].includes(source.body.quota_status));
     const currentDay = source =>
         source.fresh &&
         source.body.snapshot.usage_window.timezone === timezone &&
@@ -63,7 +66,7 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
     const realtime = mergeNumbers(
         sources.map(source => ({ ...source, value: source.body?.snapshot.realtime })),
         ["active", "limit", "queued"],
-        ready
+        usable
     );
     const byModel = new Map();
     const unknownSources = sources.some(source => !source.body);
@@ -90,7 +93,7 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
         const modelRealtime = mergeNumbers(
             modelSources.map(source => ({ ...source, value: source.model.realtime })),
             ["active", "available_accounts", "queued", "rate_limited_accounts"],
-            ready
+            usable
         );
         const today = mergeNumbers(
             modelSources.map(source => ({ ...source, value: source.model.today })),
@@ -100,7 +103,7 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
         const quota = mergeNumbers(
             modelSources.map(source => ({ ...source, value: { remaining: source.model.quota.estimated_remaining } })),
             ["remaining"],
-            source => ready(source) && currentDay(source) && source.model.quota.estimable
+            source => usable(source) && currentDay(source) && source.model.quota.estimable
         );
         return {
             coverage: {
@@ -120,7 +123,7 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
             realtime: {
                 ...modelRealtime.values,
                 tier_allowed_accounts: sum(
-                    modelSources.filter(ready).map(source => source.model.realtime.tier_allowed_accounts)
+                    modelSources.filter(usable).map(source => source.model.realtime.tier_allowed_accounts)
                 ),
             },
             recent_stats: Object.fromEntries(ranges.map(range => [range, recent[range].stats])),
@@ -133,7 +136,7 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
             return (
                 currentDay(source) &&
                 (metric === "today" ||
-                    (ready(source) && source.body.snapshot.models.every(model => model.quota.estimable)))
+                    (usable(source) && source.body.snapshot.models.every(model => model.quota.estimable)))
             );
         });
         return coverage(
@@ -170,7 +173,7 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
         today: metricCoverage("today"),
     };
     const complete =
-        sources.every(source => source.fresh && !source.failed && ready(source)) &&
+        sources.every(source => source.fresh && !source.failed && usable(source)) &&
         Object.values(overallCoverage).every(value => value.status === "complete") &&
         models.every(
             model =>
@@ -196,6 +199,13 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
         },
         model_stat_windows: windows,
         models,
+        ...(sources.every(source => usable(source) && source.body.quota_status)
+            ? {
+                  quota_status: sources.every(source => source.body.quota_status === "exhausted")
+                      ? "exhausted"
+                      : "cooldown",
+              }
+            : {}),
         realtime: realtime.values,
         schema_version: 1,
         service_status: sources.some(ready) ? "ready" : "unavailable",

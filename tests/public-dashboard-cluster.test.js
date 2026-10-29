@@ -639,3 +639,73 @@ test("machine health denies access without a configured token", async t => {
         401
     );
 });
+
+function quotaEnvelope(id, now = Date.now(), status = "exhausted") {
+    const body = envelope(id, now, { serviceStatus: "unavailable" });
+    body.quota_status = status;
+    for (const model of body.snapshot.models) {
+        model.realtime.available_accounts = 0;
+        model.quota.estimated_remaining = 0;
+    }
+    return body;
+}
+
+test("quota wait retains complete zero capacity data, excluding stale or genuinely unavailable nodes", () => {
+    const now = Date.now();
+    const exhausted = quotaEnvelope("a", now);
+    assert.equal(validateEnvelope(exhausted, "a", now), exhausted);
+    assert.throws(() => validateEnvelope({ ...exhausted, quota_status: "invalid" }, "a", now));
+    const result = aggregate(entries(exhausted, quotaEnvelope("b", now)), now);
+    assert.equal(result.quota_status, "exhausted");
+    assert.equal(result.service_status, "unavailable");
+    assert.equal(result.cluster.serving_nodes, 0);
+    assert.equal(result.cluster.status, "complete");
+    assert.equal(result.models[0].quota.estimated_remaining, 0);
+    assert.equal(result.models[0].quota.estimable, true);
+    assert.equal(result.models[0].realtime.available_accounts, 0);
+    assert.equal(result.models[0].today.requests, 14);
+    assert.equal(result.history.total_requests, 200);
+    const cooling = aggregate(entries(exhausted, quotaEnvelope("b", now, "cooldown")), now);
+    assert.equal(cooling.quota_status, "cooldown");
+    const mixed = aggregate(entries(exhausted, envelope("b", now)), now);
+    assert.equal(mixed.quota_status, undefined);
+    assert.equal(mixed.cluster.status, "complete");
+    assert.equal(mixed.models[0].realtime.available_accounts, 2);
+    for (const other of [
+        quotaEnvelope("old", now - 20001),
+        envelope("broken", now, { serviceStatus: "unavailable" }),
+    ]) {
+        const partial = aggregate(entries(exhausted, other), now);
+        assert.equal(partial.quota_status, undefined);
+        assert.equal(partial.cluster.status, "partial");
+        assert.equal(partial.models[0].coverage.realtime.status, "partial");
+    }
+});
+
+for (const role of ["master", "agent"]) {
+    test(`${role} serves fresh quota wait data while machine health remains unavailable`, async t => {
+        const node = await childDashboard(t, { agentToken: "agent", healthToken: "health", nodeId: "local", role });
+        const body = quotaEnvelope("local");
+        node.child.send({ body, type: "snapshot" });
+        const path = role === "master" ? "/api/public/dashboard" : "/api/agent/dashboard";
+        const publicBody = await waitFor(
+            async () => {
+                const response = await fetch(node.url + path, { headers: { Authorization: "Bearer agent" } });
+                return response.ok ? response.json() : null;
+            },
+            value => value?.quota_status === "exhausted"
+        );
+        const snapshot = role === "master" ? publicBody : publicBody.snapshot;
+        assert.equal(snapshot.models[0].realtime.available_accounts, 0);
+        assert.equal(snapshot.models[0].quota.estimated_remaining, 0);
+        if (role === "master") assert.equal(publicBody.cluster.status, "complete");
+        const response = await fetch(node.url + "/api/internal/model-health", {
+            headers: { Authorization: "Bearer health" },
+        });
+        assert.equal(response.status, 503);
+        const machine = await response.json();
+        assert.equal(machine.service_status, "unavailable");
+        assert.equal(machine.models[0].realtime.available_accounts, 0);
+        assert.equal(machine.quota_status, undefined);
+    });
+}

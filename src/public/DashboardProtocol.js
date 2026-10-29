@@ -49,7 +49,8 @@ function validateEnvelope(body, expectedId, now = Date.now()) {
         !timestamp(body.generated_at) ||
         Date.parse(body.generated_at) > now + 5000 ||
         !isCount(body.snapshot_sequence) ||
-        !["ready", "unavailable"].includes(body.service_status)
+        !["ready", "unavailable"].includes(body.service_status) ||
+        (body.quota_status !== undefined && !["exhausted", "cooldown"].includes(body.quota_status))
     )
         invalid();
     const snapshot = body.snapshot;

@@ -145,6 +145,8 @@ class ProxyServerSystem extends EventEmitter {
                     browserManager: this.browserManager,
                     config: this.config.publicDashboard,
                     logger: this.logger,
+                    quotaStatusProvider: () =>
+                        this.configurationService.waitingForQuota() ? this.scheduler.getQuotaWaitStatus() : null,
                     scheduler: this.scheduler,
                     usageStatsService: this.usageStatsService,
                 });

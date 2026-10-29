@@ -95,6 +95,25 @@ test(
         await page.getByRole("button", { name: "立即刷新数据" }).click();
         await waitText("0");
         assert.equal(await page.locator("tbody tr td").nth(1).textContent(), "—");
+        snapshot.service_status = "unavailable";
+        snapshot.quota_status = "exhausted";
+        snapshot.models[0].realtime.available_accounts = 0;
+        snapshot.models[0].realtime.rate_limited_accounts = 1;
+        snapshot.models[0].quota.estimated_remaining = 0;
+        await page.getByRole("button", { name: "立即刷新数据" }).click();
+        await page.getByText("额度已耗尽，等待恢复", { exact: true }).waitFor();
+        assert.match(await page.locator(".account-ring-detail").textContent(), /0 可用/);
+        assert.ok(await page.getByText("0 次", { exact: true }).isVisible());
+        snapshot.quota_status = "cooldown";
+        await page.getByRole("button", { name: "立即刷新数据" }).click();
+        await page.getByText("暂时限流，等待恢复", { exact: true }).waitFor();
+        delete snapshot.quota_status;
+        await page.getByRole("button", { name: "立即刷新数据" }).click();
+        await page.getByText("服务暂时不可用", { exact: true }).waitFor();
+        snapshot.service_status = "ready";
+        snapshot.models[0].realtime.available_accounts = 1;
+        snapshot.models[0].realtime.rate_limited_accounts = 0;
+        snapshot.models[0].quota.estimated_remaining = 100;
         snapshot.model_stat_windows["1h"].status = "unavailable";
         snapshot.models[0].recent_stats["1h"] = {
             average_duration_ms: null,

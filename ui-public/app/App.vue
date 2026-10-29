@@ -20,6 +20,7 @@ const supportsRecent = computed(() =>
 const effectiveRange = computed(() => (supportsRecent.value ? selectedRange.value : "all"));
 const statsFor = model =>
     effectiveRange.value === "all" ? model.history : model.recent_stats?.[effectiveRange.value] || {};
+const quotaWaiting = computed(() => ["exhausted", "cooldown"].includes(data.value?.quota_status));
 const partialUnavailable = computed(
     () =>
         data.value &&
@@ -277,7 +278,9 @@ function onMockChange() {
             <div class="header-actions">
                 <span
                     class="status"
-                    :class="{ warning: error || partialUnavailable || data?.service_status === 'unavailable' }"
+                    :class="{
+                        warning: error || partialUnavailable || quotaWaiting || data?.service_status === 'unavailable',
+                    }"
                 >
                     <span class="status-dot"></span>
                     {{
@@ -287,11 +290,15 @@ function onMockChange() {
                               ? data
                                   ? "数据暂时中断，显示上次结果"
                                   : "暂时无法获取数据"
-                              : data?.service_status === "unavailable"
+                              : data?.service_status === "unavailable" && !quotaWaiting
                                 ? "服务暂时不可用"
                                 : partialUnavailable
                                   ? "部分统计不可用"
-                                  : "服务正常运行"
+                                  : quotaWaiting
+                                    ? data.quota_status === "exhausted"
+                                        ? "额度已耗尽，等待恢复"
+                                        : "暂时限流，等待恢复"
+                                    : "服务正常运行"
                     }}
                 </span>
                 <button
