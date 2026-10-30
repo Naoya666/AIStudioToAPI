@@ -506,7 +506,8 @@ test("503 and model permissions retry but malformed client requests do not", asy
         assert.equal(fixture.sent.length, expected);
         assert.equal(fixture.scheduler.account(0).healthy, true);
         if (status === 403) {
-            assert.equal(fixture.scheduler.account(0).models.a.unsupported, true);
+            assert.equal(fixture.scheduler.account(0).models.a.unsupported, false);
+            assert.equal(fixture.scheduler.account(0).models.a.last_error_kind, "risk_controlled");
         }
         fixture.scheduler.close();
     }
@@ -1558,34 +1559,37 @@ for (const model of ["gemini-4-argon", "gemini-3.7-flash"]) {
     });
 }
 
-test("Argon permission errors affect only the model and do not replay generation", async t => {
-    const fixture = setup(() => [{ event_type: "error", message: "PERMISSION_DENIED", status: 403 }], {
-        paidAccounts: [0, 1],
-    });
-    t.after(() => fixture.scheduler.close());
-    fixture.browser.contexts = new Map(
-        [0, 1].map(index => [
-            index,
-            {
-                page: {
-                    buildBenefit: { state: "ready-paid", verified: true },
-                    makerSuiteBridge: { cancelAttempt() {}, prepare() {} },
-                },
-                state: "READY",
-            },
-        ])
-    );
-    fixture.browser.isContextReady = index => index < 2;
-    fixture.scheduler.browserManager = fixture.browser;
-    const res = new Response();
-    await fixture.handler.processOpenAIRequest(request("gemini-4-argon"), res);
-    assert.equal(fixture.sent.length, 1);
-    assert.match(res.body, /PERMISSION_DENIED/);
-    const account = fixture.scheduler.account(fixture.sent[0].index);
-    assert.equal(account.healthy, true);
-    assert.equal(account.models["gemini-4-argon"].unsupported, true);
-    assert.equal(account.models["gemini-4-argon"].risk_control_failures || 0, 0);
-});
+for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
+    for (const stream of [false, true]) {
+        for (const error of [{ message: "PERMISSION_DENIED", status: 403 }, { message: "RPC failed: Code 7" }]) {
+            test(`${model} permission denial cools down and switches accounts (stream=${stream}, ${error.message})`, async t => {
+                const fixture = setup(index => (index === 0 ? [{ event_type: "error", ...error }] : success), {
+                    paidAccounts: [0, 1],
+                });
+                t.after(() => fixture.scheduler.close());
+                for (const context of fixture.browser.contexts.values()) {
+                    context.page.buildBenefit = { state: "ready-paid", verified: true };
+                    context.page.makerSuiteBridge.prepare = () => {};
+                }
+                fixture.browser.isContextReady = index => index < 2;
+                fixture.scheduler.browserManager = fixture.browser;
+                const res = new Response();
+                await fixture.handler.processOpenAIRequest(request(model, stream), res);
+                assert.deepEqual(
+                    fixture.sent.map(entry => entry.index),
+                    [0, 1],
+                    res.body
+                );
+                assert.match(res.body, /hello/);
+                const account = fixture.scheduler.account(0);
+                assert.equal(account.healthy, true);
+                assert.equal(account.models[model].unsupported, false);
+                assert.equal(account.models[model].risk_control_failures, 1);
+                assert.ok(account.models[model].cooldown_until > Date.now());
+            });
+        }
+    }
+}
 
 test("Argon does not replay a unary generation after its connection is lost", async t => {
     const fixture = setup(() => [], { paidAccounts: [0, 1] });
@@ -2172,3 +2176,62 @@ test("JSON-shaped upstream messages remain text and keep transport details in bo
         assert.deepEqual(errorPayload(res), fields);
     }
 });
+
+test("persistent Argon permission denial stops at the retry budget with cooling slots", async t => {
+    const fixture = setup(() => [{ event_type: "error", message: "PERMISSION_DENIED", status: 403 }], {
+        paidAccounts: [0, 1, 2, 3],
+        scheduler: { maxRetries: 1 },
+    });
+    t.after(() => fixture.scheduler.close());
+    for (const context of fixture.browser.contexts.values()) {
+        context.page.buildBenefit = { state: "ready-paid", verified: true };
+        context.page.makerSuiteBridge.prepare = () => {};
+    }
+    fixture.browser.isContextReady = () => true;
+    fixture.scheduler.browserManager = fixture.browser;
+    const res = new Response();
+    await fixture.handler.processOpenAIRequest(request("gemini-4-argon"), res);
+    assert.deepEqual(
+        fixture.sent.map(entry => entry.index),
+        [0, 1]
+    );
+    assert.match(res.body, /PERMISSION_DENIED/);
+    for (const index of [0, 1]) {
+        const account = fixture.scheduler.account(index);
+        assert.equal(account.healthy, true);
+        assert.equal(account.models["gemini-4-argon"].unsupported, false);
+        assert.ok(account.models["gemini-4-argon"].cooldown_until > Date.now());
+    }
+    assert.equal(fixture.scheduler.account(2).models["gemini-4-argon"]?.failure_count || 0, 0);
+});
+
+for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
+    test(`legacy ${model} bridge 403 reaches the normal account-switch retry flow`, async t => {
+        const fixture = setup(
+            index => (index === 0 ? [{ event_type: "error", message: "PERMISSION_DENIED", status: 403 }] : success),
+            {
+                immediateSwitchStatusCodes: [403],
+                paidAccounts: [0, 1],
+            }
+        );
+        t.after(() => fixture.scheduler.close());
+        useLegacy(fixture);
+        fixture.handler._ensureBrowserBackedRequestReady = async () => true;
+        fixture.handler._ensureLegacyBenefit = async () => {};
+        for (const context of fixture.browser.contexts.values()) {
+            context.page.buildBenefit = { state: "ready-paid", verified: true };
+        }
+        fixture.handler._prepareImmediateStatusRetry = async () => {
+            fixture.handler.authSwitcher.currentAuthIndex = 1;
+            return true;
+        };
+        const res = new Response();
+        await fixture.handler.processOpenAIRequest(request(model), res);
+        assert.deepEqual(
+            fixture.sent.map(entry => entry.index),
+            [0, 1],
+            res.body
+        );
+        assert.match(res.body, /hello/);
+    });
+}

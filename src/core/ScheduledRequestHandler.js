@@ -259,8 +259,7 @@ class ScheduledRequestHandler extends RequestHandler {
             (error.code === "BUILD_BENEFIT_NOT_READY" ||
                 error.code === "QUEUE_TIMEOUT" ||
                 Number(error.status) === 504 ||
-                (Number(error.status) !== 429 && /RPC.*(?:Code|code)\s*7/.test(String(error.message || ""))) ||
-                ["account", "unsupported", "risk_controlled", "transport"].includes(classifyError(error)))
+                ["account", "unsupported", "transport"].includes(classifyError(error)))
         )
             return false;
         return ["account", "rate_limited", "risk_controlled", "unsupported", "temporary", "transport"].includes(

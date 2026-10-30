@@ -1441,3 +1441,119 @@ test("structured upstream UNAUTHENTICATED preserves session expiry and late-sess
         scheduler.release(lease);
     }
 });
+
+test("permission denials share model-independent jittered, capped cooldown and expire naturally", async t => {
+    for (const model of ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.1-pro-preview"]) {
+        for (const transport of ["makersuite", "build"]) {
+            let now = Date.now();
+            const since = now;
+            const scheduler = setup(
+                {
+                    now: () => now,
+                    random: () => 1,
+                    riskControlCooldownMs: 1000,
+                    riskControlMaxCooldownMs: 10000,
+                },
+                1
+            );
+            t.after(() => scheduler.close());
+            scheduler.authSource.accountLoginService = { state: { accounts: [{ authIndex: 0, manualTier: "pro" }] } };
+            for (const [index, error] of [
+                { message: "model unsupported PERMISSION_DENIED", status: 403 },
+                { message: "PERMISSION_DENIED" },
+                { message: "RPC failed: Code 7" },
+                { code: 7 },
+                { error: { code: 403, message: "denied" } },
+            ].entries()) {
+                const lease = await scheduler.acquire(model);
+                scheduler.failure(lease, { ...error, transport });
+                assert.equal(lease.slot.unsupported, false);
+                assert.equal(lease.account.healthy, true);
+                assert.equal(lease.slot.last_error_kind, "risk_controlled");
+                assert.equal(lease.slot.last_http_status, 403);
+                assert.equal(lease.slot.risk_control_failures, index + 1);
+                assert.equal(lease.account.continuous_403_since, since);
+                const cooldown = Math.min(10000, [1, 3, 6, 18, 18][index] * 1100);
+                assert.equal(lease.slot.cooldown_until, now + cooldown);
+                scheduler.release(lease);
+                assert.equal(scheduler.isResourceEligible(lease.account, model), false);
+                now += cooldown;
+                assert.equal(scheduler.isResourceEligible(lease.account, model), true);
+            }
+        }
+    }
+});
+
+test("historical permission exclusions are backed up and recovered without clearing unrelated state", t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-permission-recovery-"));
+    t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+    const statePath = path.join(directory, "state.json");
+    const seed = setup({ statePath }, 1);
+    const account = seed.account(0);
+    account.continuous_403_since = 1234;
+    account.disabled = true;
+    for (const [model, error] of [
+        ["gemini-4-argon", { last_http_status: 403 }],
+        ["gemini-3.8-flash", { last_error: "PERMISSION_DENIED" }],
+        ["gemini-3.1-pro-preview", { last_error: "RPC failed: Code 7" }],
+        ["unsupported-model", { last_error: "model unsupported for account" }],
+    ]) {
+        Object.assign(seed.slot(account, model), {
+            cooldown_until: Date.now() + 86400000,
+            daily_failure_count: 2,
+            daily_request_count: 3,
+            failure_count: 4,
+            last_error_kind: "unsupported",
+            rate_limit_type: "daily_quota",
+            rate_limited: true,
+            request_count: 5,
+            unsupported: true,
+            ...error,
+        });
+    }
+    seed.close();
+    const original = fs.readFileSync(statePath, "utf8");
+    const restored = setup({ statePath }, 1);
+    const backups = fs.readdirSync(directory).filter(name => name.includes(".before-403-backoff-"));
+    assert.equal(backups.length, 1);
+    assert.equal(fs.readFileSync(path.join(directory, backups[0]), "utf8"), original);
+    const expected = JSON.parse(original).accounts[0];
+    for (const [model, slot] of Object.entries(expected.models)) {
+        if (model === "unsupported-model") continue;
+        Object.assign(slot, {
+            last_error_kind: "risk_controlled",
+            last_http_status: 403,
+            risk_control_failures: 1,
+            unsupported: false,
+        });
+    }
+    assert.deepEqual(JSON.parse(JSON.stringify(restored.account(0))), expected);
+    restored.close();
+    const restarted = setup({ statePath }, 1);
+    restarted.close();
+    assert.equal(fs.readdirSync(directory).filter(name => name.includes(".before-403-backoff-")).length, 1);
+});
+
+test("failed recovery backup retains historical exclusions and all accounts", t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-permission-backup-failure-"));
+    t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+    const statePath = path.join(directory, "state.json");
+    const seed = setup({ statePath }, 2);
+    Object.assign(seed.slot(seed.account(0), "flash"), {
+        last_error_kind: "unsupported",
+        last_http_status: 403,
+        unsupported: true,
+    });
+    seed.account(1).disabled = true;
+    seed.close();
+    const original = fs.readFileSync(statePath, "utf8");
+    const copy = t.mock.method(fs, "copyFileSync", () => {
+        throw new Error("backup unavailable");
+    });
+    const restored = setup({ statePath }, 2);
+    copy.mock.restore();
+    assert.equal(restored.account(0).models.flash.unsupported, true);
+    assert.equal(restored.account(1).disabled, true);
+    assert.equal(fs.readFileSync(statePath, "utf8"), original);
+    restored.close();
+});

@@ -92,7 +92,9 @@ SCHEDULER_STATE_PATH=data/scheduler-state.json
 - 429 / `RESOURCE_EXHAUSTED`：仅对该账号×模型冷却，其他模型继续可选。命中 `Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user` 时按日额度耗尽处理，截止时间为严格晚于当前时刻的下一次太平洋时间 `SCHEDULER_DAILY_RESET_TIME`（默认 `00:00`，自动适配夏令时）。短 `Quota exceeded` 和其他无法确定的 429 使用 `RATE_LIMIT_COOLDOWN`。不依据消息长度、`RESOURCE_EXHAUSTED` 或重试提示单独判断日额度耗尽。
 - 已记录的日额度冷却不会被随后到达的并发短 429 缩短。管理面板区分“日额度耗尽”和“临时限流”，并展示冷却截止时间。新冷却使用当前配置计算，修改配置不追溯修改已记录的截止时间。
 - `SCHEDULER_DAILY_RESET_ENABLED=false` 仅关闭每日批量清理；日额度冷却仍按上述时间自然到期。每日批量清理范围保持不变，会清理包括临时 429、日额度 429、403 风控和临时错误在内的所有可恢复冷却，即使它们的原定截止时间尚未到达。恢复本地状态不保证上游已经可用。
-- 明确 `PERMISSION_DENIED` 或模型不支持：仅该账号×模型标记 `UNSUPPORTED`，重启后保留；需手动恢复。没有明确模型权限证据的普通 403 不会永久禁用账号或模型。
+- 所有模型（包括 4a / Argon）、所有传输的上游 HTTP 403、`PERMISSION_DENIED` 和 RPC code 7 统一进入账号×模型的风控退避冷却，不写入持续 `UNSUPPORTED`。冷却到期后可重新调度；输出开始前可在重试预算内换号，持续无权限也遵循同一策略。
+- 明确的模型不支持错误仍标记 `UNSUPPORTED`，重启后保留，需手动恢复。
+- 启动时自动恢复历史误标的 403 槽位：仅迁移未分类或分类为 `unsupported` 且具有上述权限拒绝证据的状态。修改前在状态文件旁保存 `.before-403-backoff-<时间戳>` 备份；备份失败则跳过恢复。保留已有冷却（包括日额度冷却）、无关禁用、健康状态、用量和长期 403 计时；原冷却已到期的槽位可立即重试。
 - 明确的上游 5xx：按配置短暂模型冷却；不会永久剔除整个账号。
 - page/context/MessageQueue/WebSocket 等本地传输故障：不修改账号×模型 cooldown；尚未输出模型内容时迁移到其他 ready context。
 - 明确登录、cookie 失效或账号暂停：整个账号 unhealthy。context 初始化排队、取消和本地初始化故障不污染模型额度状态；原有 auth 文件过期标记仍然有效。

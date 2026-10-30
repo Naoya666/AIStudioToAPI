@@ -132,10 +132,12 @@ function classifyError(error = {}) {
         return "account";
     if (status === 429 || /RESOURCE_EXHAUSTED/.test(message)) return "rate_limited";
     if (
-        /PERMISSION_DENIED|model.*(?:unsupported|unavailable for account)|(?:unsupported|no access to).*model/i.test(
-            message
-        )
+        /PERMISSION_DENIED|RPC.*code\s*7\b/i.test(message) ||
+        explicitStatus === 7 ||
+        [error.status, error.upstreamError?.status, error.error?.status].includes("PERMISSION_DENIED")
     )
+        return "risk_controlled";
+    if (/model.*(?:unsupported|unavailable for account)|(?:unsupported|no access to).*model/i.test(message))
         return "unsupported";
     if (status >= 500 || /websocket|network|connection|queue.*(?:closed|timeout)|upstream|timed out/i.test(message))
         return "temporary";
@@ -150,6 +152,7 @@ function observedHttpStatus(error = {}, kind) {
     );
     if (Number.isInteger(explicitStatus) && explicitStatus >= 100 && explicitStatus <= 599) return explicitStatus;
     if (Number.isInteger(messageStatus) && messageStatus >= 100 && messageStatus <= 599) return messageStatus;
+    if (kind === "risk_controlled") return 403;
     if (kind === "rate_limited" && /RESOURCE_EXHAUSTED/.test(message)) return 429;
     return null;
 }
@@ -945,13 +948,7 @@ class ModelScheduler {
             lease.recorded = true;
             return;
         }
-        let kind = classifyError(error);
-        if (
-            (isArgon(lease.model) || error.transport === "makersuite") &&
-            (Number(error.status) === 403 ||
-                /PERMISSION_DENIED|RPC.*(?:Code|code)\s*7/.test(String(error.message || "")))
-        )
-            kind = "unsupported";
+        const kind = classifyError(error);
         if (["BUILD_BENEFIT_NOT_READY", "MODEL_TIER_DENIED", "MODEL_DISABLED", "UNKNOWN_MODEL"].includes(error.code))
             return;
         if (kind === "aborted" || kind === "bridge_auth" || kind === "capability") return;
@@ -988,14 +985,7 @@ class ModelScheduler {
         ).slice(0, 2000);
         slot.last_error_kind = kind;
         if (error.transport) slot.last_transport = error.transport;
-        const httpStatus = Number(error.status ?? error.code);
-        slot.last_http_status = Number.isFinite(httpStatus)
-            ? httpStatus
-            : kind === "risk_controlled"
-              ? 403
-              : kind === "rate_limited"
-                ? 429
-                : null;
+        slot.last_http_status = observedHttpStatus(error, kind);
         account.last_error = slot.last_error;
         if (kind === "account") account.healthy = false;
         if (kind === "unsupported") slot.unsupported = true;
@@ -1024,7 +1014,7 @@ class ModelScheduler {
                 this.config.riskControlMaxCooldownMs,
                 Math.round(this.config.riskControlCooldownMs * multiplier * jitter)
             );
-            slot.cooldown_until = Date.now() + cooldown;
+            slot.cooldown_until = this.now() + cooldown;
             this.logger.warn?.(
                 `[Scheduler] Risk control account #${account.index}, model ${lease.model}, consecutive=${slot.risk_control_failures}, cooldown_until=${slot.cooldown_until}`
             );
@@ -1791,16 +1781,6 @@ class ModelScheduler {
                     slot.risk_control_failures ??= 0;
                     slot.last_error_kind ??= null;
                     slot.last_http_status ??= null;
-                    if (
-                        !slot.last_error_kind &&
-                        slot.last_error &&
-                        classifyError({ message: slot.last_error }) === "risk_controlled"
-                    ) {
-                        slot.last_error_kind = "risk_controlled";
-                        slot.last_http_status = 403;
-                        slot.risk_control_failures = Math.max(1, slot.risk_control_failures);
-                        slot.unsupported = false;
-                    }
                     if (data.version === 1) {
                         slot.daily_request_count = 0;
                         slot.daily_failure_count = 0;
@@ -1818,6 +1798,35 @@ class ModelScheduler {
                     slot.inflight = 0;
                 }
                 this.accounts.set(account.key, account);
+            }
+            const recoverable = [...this.accounts.values()].flatMap(account =>
+                Object.values(account.models).filter(
+                    slot =>
+                        (!slot.last_error_kind || slot.last_error_kind === "unsupported") &&
+                        classifyError({ message: slot.last_error, status: slot.last_http_status ?? undefined }) ===
+                            "risk_controlled"
+                )
+            );
+            if (recoverable.length) {
+                const backupPath = `${this.config.statePath}.before-403-backoff-${Date.now()}`;
+                try {
+                    fs.copyFileSync(this.config.statePath, backupPath, fs.constants.COPYFILE_EXCL);
+                    for (const slot of recoverable) {
+                        slot.unsupported = false;
+                        slot.last_error_kind = "risk_controlled";
+                        slot.last_http_status = 403;
+                        slot.risk_control_failures = Math.max(1, slot.risk_control_failures);
+                        // Keep existing cooldowns, including daily quota blocks. Expired slots can retry now.
+                    }
+                    this.logger.warn(
+                        `[Scheduler] Restored ${recoverable.length} historical 403 slots; backup=${backupPath}`
+                    );
+                    this.flush();
+                } catch (error) {
+                    this.logger.error(
+                        `[Scheduler] Cannot back up historical 403 state; recovery skipped: ${error.message}`
+                    );
+                }
             }
             if (data.version === 1)
                 this.logger.warn(

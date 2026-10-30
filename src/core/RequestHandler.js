@@ -1525,7 +1525,6 @@ class RequestHandler {
                         if (
                             initialMessage.event_type === "error" &&
                             !isUserAbortedError(initialMessage) &&
-                            Number.isFinite(initialStatus) &&
                             this._shouldRetryError(initialMessage, proxyRequest)
                         ) {
                             this.logger.warn(
@@ -2022,7 +2021,6 @@ class RequestHandler {
                         if (
                             initialMessage.event_type === "error" &&
                             !isUserAbortedError(initialMessage) &&
-                            Number.isFinite(initialStatus) &&
                             this._shouldRetryError(initialMessage, proxyRequest)
                         ) {
                             this.logger.warn(
@@ -2439,7 +2437,6 @@ class RequestHandler {
                         if (
                             initialMessage.event_type === "error" &&
                             !isUserAbortedError(initialMessage) &&
-                            Number.isFinite(initialStatus) &&
                             this._shouldRetryError(initialMessage, proxyRequest)
                         ) {
                             this.logger.warn(
@@ -3437,7 +3434,6 @@ class RequestHandler {
                 headerMessage.event_type === "error" &&
                 proxyRequest.is_generative &&
                 !isUserAbortedError(headerMessage) &&
-                Number.isFinite(headerStatus) &&
                 this._shouldRetryError(headerMessage)
             ) {
                 this.logger.warn(`[Request] Gemini real stream received ${headerStatus}, preparing retry...`);
@@ -3887,9 +3883,7 @@ class RequestHandler {
                 if (
                     (isArgon(this._extractModelFromPath(proxyRequest.path)) ||
                         proxyRequest.transport_policy?.transport === "makersuite") &&
-                    ([400, 401, 403].includes(errorStatus) ||
-                        errorPayload.code === "BUILD_BENEFIT_NOT_READY" ||
-                        /PERMISSION_DENIED/.test(errorPayload.message || ""))
+                    ([400, 401].includes(errorStatus) || errorPayload.code === "BUILD_BENEFIT_NOT_READY")
                 ) {
                     lastError = { ...errorPayload, skipAccountSwitch: true };
                     break;
