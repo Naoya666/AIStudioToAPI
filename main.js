@@ -47,7 +47,8 @@ const initializeServer = async () => {
                     completed: serverSystem.scheduler?.metrics.completed || 0,
                     generation: health.generation,
                     pending:
-                        (serverSystem.configurationService.waitingForQuota()
+                        (serverSystem.configurationService.waitingForQuota() ||
+                        serverSystem.configurationService.waitingForModelAvailability()
                             ? 0
                             : serverSystem.scheduler?.pending.length || 0) + health.initializing,
                     ready: health.ready,

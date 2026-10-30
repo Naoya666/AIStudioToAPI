@@ -389,6 +389,58 @@ class ModelScheduler {
         );
     }
 
+    modelAvailability() {
+        const reasons = {};
+        const add = reason => (reasons[reason] = (reasons[reason] || 0) + 1);
+        const now = this.now();
+        const models = this.getVisibleModels();
+        const indices = this.authSource.getRotationIndices();
+        let available = 0;
+        let cooling = 0;
+        let unsupported = 0;
+        if (this.closed) add("closed");
+        if (this.paused) add("paused");
+        if (!indices.length) add("no_accounts");
+        if (!models.size) add("no_visible_models");
+        for (const index of indices) {
+            const account = this.account(index);
+            if (!account.healthy) add("unhealthy_accounts");
+            if (account.disabled) add("disabled_accounts");
+            if (this.authSource.isExpired?.(index)) add("expired_accounts");
+            const allowed = [...models].filter(model => this.isTierAllowed(index, model));
+            if (!allowed.length) add("model_permissions_empty");
+            for (const model of allowed) {
+                const slot = account.models[model];
+                if (slot?.unsupported) unsupported++;
+                else if (slot?.rate_limited === true && slot.cooldown_until > now) cooling++;
+                else available++;
+            }
+        }
+        // An unsupported slot is not known to recover on a timer. At least one
+        // supported, cooling slot must exist; account/auth/config faults veto idle.
+        const waiting = !Object.keys(reasons).length && available === 0 && cooling > 0;
+        return {
+            available_slots: available,
+            cooling_slots: cooling,
+            reasons,
+            state: Object.keys(reasons).length
+                ? "blocked"
+                : available > 0
+                  ? "available"
+                  : waiting
+                    ? unsupported > 0
+                        ? "model_availability_wait"
+                        : "quota_wait"
+                    : "models_unsupported",
+            unsupported_slots: unsupported,
+            waiting,
+        };
+    }
+
+    isWaitingForModelAvailability() {
+        return this.modelAvailability().waiting;
+    }
+
     isResourceEligible(account, model, now = this.now()) {
         const slot = account.models[model];
         if (!this.isTierAllowed(account.index, model)) return false;

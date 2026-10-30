@@ -301,3 +301,81 @@ test("quota wait requires healthy authorized accounts and natural expiry wakes a
     assert.equal(scheduler.nextCooldownCheckAt, null);
     assert.equal(scheduler.account(0).models.a.rate_limited, false);
 });
+
+test("mixed zero capacity stays distinct from quota and recovers through the real pool coordinator", async t => {
+    const input = require("./fixtures/mixed-zero-capacity.json");
+    const { manager, scheduler } = fixture(t, {}, 2, 2);
+    const { initialPolicy } = require("../src/accounts/ModelAllowlistPolicy");
+    scheduler.config.registeredModels = input.visible_models;
+    scheduler.config.modelAllowlist = initialPolicy(input.visible_models);
+    let now = input.now_ms;
+    scheduler.now = () => now;
+    for (const row of input.accounts) Object.assign(scheduler.account(row.index), structuredClone(row));
+    assert.equal(scheduler.isWaitingForQuota(), false);
+    assert.equal(scheduler.modelAvailability().state, "model_availability_wait");
+    assert.deepEqual(manager._poolCandidates(), []);
+    for (const model of input.visible_models) assert.equal(scheduler.eligibleAccounts(model, new Set()).length, 0);
+    const before = structuredClone([...scheduler.accounts]);
+    assert.equal(scheduler.isWaitingForModelAvailability(), true);
+    assert.deepEqual([...scheduler.accounts], before, "classification preserves stored slots");
+    for (const [key, value, reason] of [
+        ["healthy", false, "unhealthy_accounts"],
+        ["disabled", true, "disabled_accounts"],
+    ]) {
+        const previous = scheduler.account(1)[key];
+        scheduler.account(1)[key] = value;
+        assert.equal(scheduler.isWaitingForModelAvailability(), false);
+        assert.equal(scheduler.modelAvailability().reasons[reason], 1);
+        scheduler.account(1)[key] = previous;
+    }
+    scheduler.authSource.isExpired = index => index === 1;
+    assert.equal(scheduler.modelAvailability().reasons.expired_accounts, 1);
+    scheduler.authSource.isExpired = () => false;
+    scheduler.config.modelAllowlist.tiers.free = [];
+    assert.equal(scheduler.modelAvailability().reasons.model_permissions_empty, 2);
+    scheduler.config.modelAllowlist = initialPolicy(input.visible_models);
+    scheduler.paused = true;
+    assert.equal(scheduler.isWaitingForModelAvailability(), false);
+    scheduler.paused = false;
+    for (const slot of Object.values(scheduler.account(1).models)) slot.unsupported = true;
+    assert.equal(
+        scheduler.isWaitingForModelAvailability(),
+        true,
+        "all-unsupported account can coexist with recoverable capacity"
+    );
+    for (const slot of Object.values(scheduler.account(0).models)) slot.unsupported = true;
+    assert.equal(scheduler.modelAvailability().state, "models_unsupported");
+    assert.equal(scheduler.isWaitingForModelAvailability(), false);
+    for (const row of input.accounts) Object.assign(scheduler.account(row.index), structuredClone(row));
+    let wake;
+    scheduler.setTimer = callback => {
+        wake = callback;
+        return { unref() {} };
+    };
+    scheduler.clearTimer = () => {};
+    let reconciled = 0;
+    manager.reconcileContextPool = () => {
+        reconciled++;
+    };
+    scheduler.browserManager = manager;
+    scheduler._scheduleCooldownWake();
+    now = scheduler.nextCooldownCheckAt;
+    wake();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(reconciled > 0);
+    assert.equal(scheduler.modelAvailability().state, "available");
+    assert.ok(manager._poolCandidates().length > 0);
+    assert.equal(scheduler.account(1).models[input.visible_models[1]].unsupported, true);
+    // A new healthy upload and removal of a saved unsupported flag also restore candidates.
+    for (const row of input.accounts) Object.assign(scheduler.account(row.index), structuredClone(row));
+    now = input.now_ms;
+    scheduler.authSource.availableIndices.push(2);
+    scheduler.permissionsChanged();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(manager._poolCandidates().includes(2));
+    scheduler.authSource.availableIndices.pop();
+    scheduler.account(1).models[input.visible_models[1]].unsupported = false;
+    scheduler.permissionsChanged();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(manager._poolCandidates().includes(1));
+});

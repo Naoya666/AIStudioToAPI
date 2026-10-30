@@ -87,6 +87,8 @@ class ConfigurationService {
             this.env.AISTUDIO_CONFIG_RECOVERY === "1" && fs.existsSync(goodPath)
                 ? this.load(JSON.parse(fs.readFileSync(goodPath, "utf8")).overrides)
                 : clone(this.saved);
+        // An explicit operator opt-out must survive recovery of older snapshots.
+        if (this.document.overrides.ACCOUNT_AUTO_RELOGIN_ENABLED === false) this.running.login.autoRecovery = false;
         // Recovery must not replace the explicit saved permissions with an older generated default.
         this.running.scheduler.modelAllowlist = clone(this.saved.scheduler.modelAllowlist);
         const errorPath = path.join(path.dirname(this.file), "restart-status.json");
@@ -208,7 +210,13 @@ class ConfigurationService {
         return (health?.ready || 0) > 0 && !(health?.staleInitializing > 0);
     }
     waitingForQuota() {
-        if (!this.system.ready || this.system.scheduler?.isWaitingForQuota?.() !== true) return false;
+        return this.system.scheduler?.isWaitingForQuota?.() === true && this.resourceWaitHealthy();
+    }
+    waitingForModelAvailability() {
+        return this.system.scheduler?.isWaitingForModelAvailability?.() === true && this.resourceWaitHealthy();
+    }
+    resourceWaitHealthy() {
+        if (!this.system.ready) return false;
         const manager = this.system.browserManager;
         const health = manager?.getContextInitHealth?.();
         return (
@@ -225,7 +233,7 @@ class ConfigurationService {
     startupAcceptable() {
         // Accept a validated, listening service waiting for quota without claiming
         // that it can serve inference. The supervisor can then accept its configuration.
-        return this.operational() || this.waitingForQuota();
+        return this.operational() || this.waitingForQuota() || this.waitingForModelAvailability();
     }
     snapshot(reveal = false) {
         const errorPath = path.join(path.dirname(this.file), "restart-status.json");
@@ -251,16 +259,19 @@ class ConfigurationService {
             environmentError: this.baselineError || null,
             hiddenModels: this.system.scheduler?.hiddenModelsSnapshot?.() || [],
             instanceId: this.instanceId,
+            modelAvailability: this.system.scheduler?.modelAvailability?.() || null,
             models: [...this.running.scheduler.registeredModels],
             modelVisibilityAvailable: !!this.system.scheduler,
             operational: this.operational(),
             overridden: Object.keys(this.document.overrides),
             pending,
             ready: this.system.ready === true,
+            resourceWaiting: this.waitingForQuota() || this.waitingForModelAvailability(),
             restartError: this.restartError || null,
             restarting: this.system.restarting === true,
             running: values(this.running),
             saved: values(this.saved),
+            startupAcceptable: this.startupAcceptable(),
             usageEnabled: this.running.enableUsageStats,
             version: this.document.version,
         };
@@ -415,6 +426,8 @@ class ConfigurationService {
         }
         this.document = document;
         this.saved = target;
+        // Publish only successfully applied runtime values, never deferred targets.
+        process.send?.({ configuration: this.runningDocument(), type: "configuration-applied" });
         if (this.system.scheduler)
             queueMicrotask(() => {
                 try {

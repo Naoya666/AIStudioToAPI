@@ -1,0 +1,66 @@
+{
+    "synthetic_fixture": true,
+    "baseline_revision": "5970db0f8d58dd1f684d37d4757036a3c1e7fcc6",
+    "now_ms": 1793287710000,
+    "visible_models": ["gemini-3.1-pro-preview", "gemini-3.8-flash"],
+    "allowed_models_for_each_account": ["gemini-3.1-pro-preview", "gemini-3.8-flash"],
+    "auth_expired": false,
+    "accounts": [
+        {
+            "index": 0,
+            "healthy": true,
+            "disabled": false,
+            "models": {
+                "gemini-3.1-pro-preview": {
+                    "unsupported": false,
+                    "rate_limited": true,
+                    "rate_limit_type": "daily_quota",
+                    "cooldown_until": 1793343600000
+                },
+                "gemini-3.8-flash": {
+                    "unsupported": false,
+                    "rate_limited": true,
+                    "rate_limit_type": "daily_quota",
+                    "cooldown_until": 1793343600000
+                }
+            }
+        },
+        {
+            "index": 1,
+            "healthy": true,
+            "disabled": false,
+            "models": {
+                "gemini-3.1-pro-preview": {
+                    "unsupported": false,
+                    "rate_limited": true,
+                    "rate_limit_type": "daily_quota",
+                    "cooldown_until": 1793343600000
+                },
+                "gemini-3.8-flash": {
+                    "unsupported": true,
+                    "rate_limited": false,
+                    "rate_limit_type": null,
+                    "cooldown_until": 0
+                }
+            }
+        }
+    ],
+    "browser_health": {
+        "browserState": "STOPPED",
+        "ready": 0,
+        "initializing": 0,
+        "staleInitializing": 0,
+        "cleanupPending": 0,
+        "recovering": false
+    },
+    "initialization_tasks": 0,
+    "unavailable_contexts": 0,
+    "system_ready": true,
+    "baseline_expected": {
+        "available_accounts_per_model": 0,
+        "pool_resident_accounts": 0,
+        "isWaitingForQuota": false,
+        "operational": false,
+        "startupAcceptable": false
+    }
+}

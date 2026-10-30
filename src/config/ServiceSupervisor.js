@@ -189,6 +189,8 @@ function supervise(entry) {
                 }
                 owner.waiting = Boolean(message.progress?.pending && !message.progress?.ready);
             }
+            if (message?.type === "configuration-applied" && owner.healthy && !owner.restart)
+                atomicWrite(goodPath, message.configuration);
             if (message?.type === "startup-error") recordError(message.error);
             if (message?.type === "runtime-recovery" && owner.healthy) stop("runtime");
             if (message?.type === "restart" && !owner.restart) {

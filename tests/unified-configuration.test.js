@@ -416,3 +416,66 @@ test("buffered response budget saves and persists above five minutes", t => {
     const loaded = new ConfigurationService({ logger }, { env: {}, file: service.file });
     assert.equal(loaded.running.fakeStreamTimeoutMs, 900000);
 });
+
+test("mixed availability startup exposes resource reasons and vetoes initialization failures", t => {
+    const input = require("./fixtures/mixed-zero-capacity.json");
+    const { service, system } = setup(t);
+    const auth = { accountNameMap: new Map(), availableIndices: [0, 1], getRotationIndices: () => [0, 1] };
+    const config = {
+        ...service.running.scheduler,
+        modelAllowlist: require("../src/accounts/ModelAllowlistPolicy").initialPolicy(input.visible_models),
+        registeredModels: input.visible_models,
+        statePath: null,
+    };
+    system.authSource = auth;
+    system.scheduler = new ModelScheduler(config, auth, logger);
+    t.after(() => system.scheduler.close());
+    system.scheduler.now = () => input.now_ms;
+    for (const row of input.accounts) Object.assign(system.scheduler.account(row.index), structuredClone(row));
+    const health = { ...input.browser_health };
+    const manager = (system.browserManager = {
+        _contextInitTasks: new Map(),
+        contextUnavailable: new Map(),
+        getContextInitHealth: () => health,
+    });
+    assert.equal(service.startupAcceptable(), true);
+    assert.equal(service.operational(), false);
+    assert.equal(service.waitingForQuota(), false);
+    assert.equal(service.snapshot().resourceWaiting, true);
+    assert.equal(service.snapshot().modelAvailability.state, "model_availability_wait");
+    for (const patch of [
+        { browserState: "FAILED" },
+        { browserState: "STARTING" },
+        { initializing: 1 },
+        { staleInitializing: 1 },
+        { cleanupPending: 1 },
+        { recovering: true },
+    ]) {
+        Object.assign(health, patch);
+        assert.equal(service.startupAcceptable(), false, JSON.stringify(patch));
+        Object.assign(health, input.browser_health);
+    }
+    for (const collection of [manager._contextInitTasks, manager.contextUnavailable]) {
+        collection.set(0, {});
+        assert.equal(service.startupAcceptable(), false);
+        collection.clear();
+    }
+    system.ready = false;
+    assert.equal(service.startupAcceptable(), false);
+});
+
+test("recovery preserves explicit auto-relogin opt-out over an older last-good snapshot", t => {
+    const { service, system, directory, save } = setup(t, { ACCOUNT_AUTO_RELOGIN_ENABLED: "true" });
+    const old = service.runningDocument();
+    save({ ACCOUNT_AUTO_RELOGIN_ENABLED: false });
+    // Reproduce even the historical same-version mismatch without requiring an exception to config matching.
+    old.version = service.document.version;
+    atomicWrite(path.join(directory, "managed-config.last-good.json"), old);
+    const recovered = new ConfigurationService(system, {
+        env: { ACCOUNT_AUTO_RELOGIN_ENABLED: "true", AISTUDIO_CONFIG_RECOVERY: "1" },
+        file: service.file,
+    });
+    assert.equal(recovered.running.login.autoRecovery, false);
+    assert.equal(recovered.saved.login.autoRecovery, false);
+    assert.equal(recovered.snapshot().pending.length, 0);
+});
