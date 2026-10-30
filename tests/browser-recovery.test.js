@@ -83,7 +83,7 @@ test("233 accounts and 300 demands do not scan when both initialization slots ar
     assert.equal(pool.poolMetrics.capacity_skips, 1);
 });
 
-test("mouse timeouts keep required behavior but cannot trigger a browser recovery", async () => {
+test("legacy mouse timeouts cannot trigger a browser recovery", async () => {
     const pool = manager();
     pool.contextOperationTimeoutMs = 5;
     pool._contextInitAttempts = undefined;
@@ -204,35 +204,41 @@ test("queue limits reject before expensive scans and scheduling yields to I/O", 
     await rejection;
 });
 
-test("a ready Playground transport still requires mouse completion before publishing READY", async t => {
+function playgroundInitFixture(
+    t,
+    bootstrap = async function () {
+        this.ready = true;
+    }
+) {
     const { PlaygroundTransport } = require("../src/core/PlaygroundTransport");
-    t.mock.method(PlaygroundTransport.prototype, "bootstrap", async () => {});
-    t.mock.method(PlaygroundTransport.prototype, "connect", () => {});
+    const ConnectionRegistry = require("../src/core/ConnectionRegistry");
+    t.mock.method(PlaygroundTransport.prototype, "bootstrap", bootstrap);
     const pool = manager();
     pool.config.enableAuthUpdate = false;
     pool.authSource.getAuth = () => ({});
+    pool.connectionRegistry = new ConnectionRegistry(logger, null, null, pool);
     pool._checkPageStatusAndErrors = async () => {};
-    pool._navigateAndWakeUpPage = async (_page, _log, attempt) => {
-        attempt.ws.success = true;
-    };
-    let releaseMouse;
+    pool._navigateAndWakeUpPage = async () => {};
+    pool._saveDebugArtifacts = async () => {};
+    pool._simulateHumanMovement = () => assert.fail("Playground mouse keepalive");
     let closed = false;
     const page = {
         addInitScript: async () => {},
-        evaluate: async () => false,
+        bringToFront: async () => {},
+        evaluate: async fn => {
+            assert.ok(!String(fn).includes("scrollBy"), "Playground keepalive scroll");
+            return false;
+        },
         exposeBinding: async () => {},
         isClosed: () => false,
-        mouse: {
-            move: () =>
-                new Promise(resolve => {
-                    releaseMouse = resolve;
-                }),
-        },
+        mouse: { move: () => assert.fail("Playground mouse movement") },
+        off() {},
         on() {},
         once() {},
         removeListener() {},
         route: async () => {},
         unroute: async () => {},
+        viewportSize: () => assert.fail("Playground keepalive viewport"),
     };
     pool._createBrowserContext = async () => ({
         addInitScript: async () => {},
@@ -244,20 +250,57 @@ test("a ready Playground transport still requires mouse completion before publis
         once() {},
         removeListener() {},
     });
-    const initialization = pool._getOrStartContextInit(0, { isBackgroundTask: true });
-    await tick();
-    assert.equal(pool.contexts.has(0), false);
-    assert.equal(typeof releaseMouse, "function");
-    // Complete all three mandatory movement segments.
-    for (let n = 0; n < 3; n++) {
-        releaseMouse();
-        await tick();
-    }
-    await initialization;
-    assert.equal(pool.contexts.get(0).mouseReady, true);
-    assert.equal(pool.contexts.get(0).state, "READY");
-    assert.equal(closed, false);
-    pool.contexts.clear();
+    t.after(() => pool._cleanupAllContexts());
+    return { isClosed: () => closed, page, pool };
+}
+
+for (const isBackgroundTask of [false, true]) {
+    test(`Playground ${isBackgroundTask ? "background" : "foreground"} initialization publishes READY without mouse input`, async t => {
+        const { pool, isClosed } = playgroundInitFixture(t);
+        await pool._getOrStartContextInit(0, { isBackgroundTask });
+        assert.equal(pool.contexts.get(0).state, "READY");
+        assert.equal(pool.isContextReady(0), true);
+        assert.equal("mouseReady" in pool.contexts.get(0), false);
+        assert.equal(isClosed(), false);
+    });
+}
+
+for (const failure of [
+    "bootstrap",
+    "page_closed",
+    "transport_not_ready",
+    "registration_rejected",
+    "generation",
+    "owner",
+]) {
+    test(`Playground initialization rejects ${failure} without publishing READY`, async t => {
+        const { pool, page, isClosed } = playgroundInitFixture(t, async function () {
+            this.ready = true;
+            if (failure === "bootstrap") throw new Error("bootstrap failed");
+            if (failure === "page_closed") page.isClosed = () => true;
+            if (failure === "transport_not_ready") this.ready = false;
+            if (failure === "generation") pool.browserGeneration++;
+            if (failure === "owner") pool._contextInitAttempts.delete(0);
+        });
+        if (failure === "registration_rejected") pool.connectionRegistry.addConnection = () => {};
+        await assert.rejects(pool._getOrStartContextInit(0, { isBackgroundTask: true }));
+        assert.equal(pool.contexts.has(0), false);
+        if (failure !== "generation") assert.equal(isClosed(), true);
+    });
+}
+
+test("full browser recovery initializes Playground without mouse keepalive", async t => {
+    const { pool } = playgroundInitFixture(t);
+    pool.config.scheduler.browserRecoveryBackoffMs = 1;
+    pool.closeBrowser = async () => {};
+    pool._ensureBrowser = async () => {
+        pool.browser = mockBrowser();
+    };
+    pool._poolCandidates = () => [0];
+    pool._startPooledContext = () => pool._getOrStartContextInit(0, { isBackgroundTask: true });
+    await pool._triggerBrowserRecovery("test");
+    assert.equal(pool.isContextReady(0), true);
+    assert.equal(pool._recovering, false);
 });
 
 test("budgeted drain finishes a large queue while allowing other event-loop work", async t => {
@@ -357,7 +400,7 @@ test("recovery reports service ready only after bootstrap readiness and preserve
     pool._startPooledContext = () =>
         new Promise(resolve => {
             ready = () => {
-                pool.contexts.set(0, { mouseReady: true, page: { isClosed: () => false }, state: "READY" });
+                pool.contexts.set(0, { page: { isClosed: () => false }, state: "READY" });
                 resolve();
             };
         });

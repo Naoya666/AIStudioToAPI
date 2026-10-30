@@ -787,6 +787,8 @@ class BrowserManager {
         attempt = null,
         isBackgroundTask = false
     ) {
+        // This compatibility waiter is only reachable from the non-Playground reconnect branch.
+        if (page.playgroundTransport) throw new Error("Playground initialization must use bootstrap");
         this.logger.info(
             `${logPrefix} ⏳ Waiting for Continue/Launch button or WebSocket initialization (timeout: ${timeout / 1000}s)...`
         );
@@ -872,8 +874,8 @@ class BrowserManager {
                     this.logger.warn(`${logPrefix} Detected page error: ${JSON.stringify(errors)}`);
                     return false;
                 }
-                // Random mouse movement while waiting (80% chance per iteration)
-                if (Math.random() < 0.3) {
+                // Legacy WebSocket pages only; Playground bootstrap has no input keepalive.
+                if (!page.playgroundTransport && Math.random() < 0.3) {
                     try {
                         const vp = page.viewportSize() || { height: 1080, width: 1920 };
                         const randomX = Math.floor(Math.random() * (vp.width * 0.7));
@@ -1517,6 +1519,48 @@ class BrowserManager {
             clearInterval(contextData.healthMonitorInterval);
         }
 
+        if (contextData.page?.playgroundTransport) {
+            this.logger.info(`[Context#${authIndex}] Daily authentication maintenance started`);
+            const interval = setInterval(
+                async () => {
+                    if (
+                        this.contexts.get(authIndex) !== contextData ||
+                        contextData.healthMonitorInterval !== interval ||
+                        (contextData.browserGeneration !== undefined &&
+                            contextData.browserGeneration !== this.browserGeneration)
+                    ) {
+                        clearInterval(interval);
+                        return;
+                    }
+                    if (!contextData.page || contextData.page.isClosed()) {
+                        clearInterval(interval);
+                        contextData.healthMonitorInterval = null;
+                        return;
+                    }
+                    if (
+                        contextData.monitorRunning ||
+                        this._recovering ||
+                        contextData.draining ||
+                        contextData.state === "RECONNECTING" ||
+                        this.benefitCheckingIndices?.has(authIndex)
+                    )
+                        return;
+                    contextData.monitorRunning = true;
+                    try {
+                        await this._updateAuthFile(authIndex);
+                    } catch (error) {
+                        this.logger.warn(`[HealthMonitor#${authIndex}] Auth update failed: ${error.message}`);
+                    } finally {
+                        contextData.monitorRunning = false;
+                    }
+                },
+                24 * 60 * 60 * 1000
+            );
+            contextData.healthMonitorInterval = interval;
+            return;
+        }
+
+        // Legacy Build/WebSocket contexts only. Playground uses authentication maintenance above.
         this.logger.info(`[Context#${authIndex}] 🛡️ Background health monitor service (Scavenger) started...`);
 
         let tickCount = 0;
@@ -1668,7 +1712,8 @@ class BrowserManager {
     }
 
     async _handleRequiredMouseFailure(authIndex, data, error) {
-        if (this.contexts.get(authIndex) !== data) return;
+        // Input failures belong to the legacy Build path, never to Playground recovery.
+        if (this.contexts.get(authIndex) !== data || data.page?.playgroundTransport) return;
         this.logger.warn(`[Context#${authIndex}] required_mouse_failed reason=${error.reason || "mouse_failed"}`);
         data.state = "RECONNECTING";
         data.draining = true;
@@ -1761,6 +1806,7 @@ class BrowserManager {
         while (workerState.page && !workerState.page.isClosed()) {
             try {
                 const currentPage = workerState.page; // Capture for this iteration
+                if (currentPage.playgroundTransport) break;
 
                 // 1. Force page wake-up
                 await currentPage.bringToFront().catch(() => {});
@@ -2126,18 +2172,32 @@ class BrowserManager {
         }
     }
 
+    _assertPlaygroundTransportReady(page, transport, authIndex) {
+        if (
+            page.isClosed() ||
+            !transport.ready ||
+            transport.closed ||
+            transport.connection?.readyState !== 1 ||
+            this.connectionRegistry?.getConnectionByAuth(authIndex, false) !== transport.connection
+        ) {
+            throw Object.assign(new Error("Playground transport not ready"), { reason: "connection_lost" });
+        }
+    }
+
     isContextReady(authIndex) {
         const data = this.contexts.get(authIndex);
         if (
             !data?.page ||
             data.page.isClosed() ||
             data.draining ||
-            data.mouseReady === false ||
             (data.browserGeneration !== undefined && data.browserGeneration !== this.browserGeneration) ||
             this._poolClosingContexts?.has(authIndex)
         )
             return false;
+        const transport = data.page.playgroundTransport;
+        if (transport && (!transport.ready || transport.closed)) return false;
         const connection = this.connectionRegistry?.getConnectionByAuth(authIndex, false);
+        if (transport && transport.connection !== connection) return false;
         const connected = connection && (connection.readyState === undefined || connection.readyState === 1);
         return Boolean(connected && !["RECONNECTING", "UNAVAILABLE"].includes(data.state));
     }
@@ -3949,7 +4009,7 @@ class BrowserManager {
             await this._runInitOperation(attempt, "benefit.install", () => benefit.install());
             await this._runInitOperation(attempt, "makersuite.install", () => bridge.install());
 
-            // Pure JS Wakeup (Focus & Mouse Movement)
+            // Foreground activation only; background contexts never compete for focus.
             // Skip focus operations for background tasks to avoid window focus conflicts
             if (!isBackgroundTask) {
                 try {
@@ -3959,10 +4019,6 @@ class BrowserManager {
                     await this._runInitOperation(attempt, "page.focus.evaluate", () =>
                         page.evaluate(() => globalThis.window.focus())
                     );
-                    const vp = page.viewportSize() || { height: 1080, width: 1920 };
-                    const startX = Math.floor(Math.random() * (vp.width * 0.5));
-                    const startY = Math.floor(Math.random() * (vp.height * 0.5));
-                    await this._simulateHumanMovement(page, startX, startY, attempt);
                 } catch (e) {
                     if (e?.code === "PLAYWRIGHT_RPC_TIMEOUT") throw e;
                     this.logger.warn(`[Context#${authIndex}] Wakeup minor error: ${e.message}`);
@@ -4052,10 +4108,7 @@ class BrowserManager {
             this._assertCurrentInitAttempt(attempt);
             bridge.connect(this.connectionRegistry, attempt);
 
-            // Required anti-idle movement, including connections established before the wait loop.
-            this._setInitPhase(attempt, "required_mouse");
-            await this._simulateHumanMovement(page, 1, 1, attempt);
-            attempt.mouseReady = true;
+            this._assertPlaygroundTransportReady(page, bridge, authIndex);
 
             // Final check before adding to contexts map
             this._setInitPhase(attempt, "publishing");
@@ -4076,7 +4129,6 @@ class BrowserManager {
                     createdAt: Date.now(),
                     healthMonitorInterval: null,
                     lastRequestAt: 0,
-                    mouseReady: attempt.mouseReady,
                     page,
                     proxyInfo,
                     sessionVersion: page.accountSessionVersion,
@@ -4088,7 +4140,11 @@ class BrowserManager {
 
             // Refresh independently of READY publication. Ownership is checked before writing.
             this._assertCurrentInitAttempt(attempt);
-            setImmediate(() => this._updateAuthFile(authIndex).catch(error => this.logger.warn(error.message)));
+            const owner = this.contexts.get(authIndex);
+            setImmediate(() => {
+                if (this.contexts.get(authIndex) !== owner) return;
+                this._updateAuthFile(authIndex).catch(error => this.logger.warn(error.message));
+            });
 
             return { context, page };
         } catch (error) {
@@ -4355,6 +4411,7 @@ class BrowserManager {
 
         const ownsContext = () =>
             this.contexts.get(targetAuthIndex) === contextData &&
+            (contextData.browserGeneration === undefined || contextData.browserGeneration === this.browserGeneration) &&
             !this.isContextClosing(targetAuthIndex) &&
             !contextData.draining;
         const isCurrent = () => ownsContext() && (!this.scheduler || this._canKeepPooledContext(targetAuthIndex));
@@ -4381,15 +4438,11 @@ class BrowserManager {
         this.logger.info(`🔄 [Reconnect] Starting lightweight reconnect for account #${targetAuthIndex}...`);
         this.logger.info("==================================================");
 
-        // Stop existing background tasks only if this is the current account
         const isCurrentAccount = targetAuthIndex === this._currentAuthIndex;
-        if (isCurrentAccount) {
-            const ctxData = this.contexts.get(targetAuthIndex);
-            if (ctxData && ctxData.healthMonitorInterval) {
-                clearInterval(ctxData.healthMonitorInterval);
-                ctxData.healthMonitorInterval = null;
-                this.logger.info("[Reconnect] Stopped background health monitor.");
-            }
+        // Every owner has its own maintenance timer, including pooled background accounts.
+        if (contextData.healthMonitorInterval) {
+            clearInterval(contextData.healthMonitorInterval);
+            contextData.healthMonitorInterval = null;
         }
 
         if (page.playgroundTransport) {
@@ -4408,9 +4461,9 @@ class BrowserManager {
                     WS_INIT_TIMEOUT_MS
                 );
                 if (!isCurrent()) return false;
-                await this._simulateHumanMovement(page, 1, 1);
-                if (!isCurrent()) return false;
                 transport.connect(this.connectionRegistry, contextData);
+                if (!isCurrent()) return false;
+                this._assertPlaygroundTransportReady(page, transport, targetAuthIndex);
                 contextData.state = "READY";
                 await this._updateAuthFile(targetAuthIndex);
                 if (!isCurrent()) return false;

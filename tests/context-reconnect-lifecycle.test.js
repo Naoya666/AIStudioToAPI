@@ -251,3 +251,179 @@ test("expired authentication still closes the owning context during reconnect", 
     assert.equal(closed, true);
     pool.browser = null;
 });
+
+function playgroundMaintenanceFixture(t) {
+    const f = fixture(t);
+    const { owner } = f.connect();
+    owner.browserGeneration = f.pool.browserGeneration;
+    owner.page.playgroundTransport = owner.page.makerSuiteBridge;
+    owner.page.playgroundTransport.closed = false;
+    owner.page.playgroundTransport.authIndex = 0;
+    owner.page.playgroundTransport.dispose = () => {
+        owner.page.playgroundTransport.closed = true;
+        owner.page.playgroundTransport.ready = false;
+        owner.page.playgroundTransport.connection?.close();
+    };
+    owner.page.playgroundTransport.connection = f.registry.getConnectionByAuth(0, false);
+    owner.page.evaluate = () => assert.fail("Background page interaction");
+    owner.page.bringToFront = () => assert.fail("Background focus");
+    owner.page.mouse = { move: () => assert.fail("Mouse keepalive") };
+    f.pool._simulateHumanMovement = () => assert.fail("Mouse keepalive");
+    f.pool._handleRequiredMouseFailure = () => assert.fail("Mouse failure recovery");
+    const timers = [];
+    t.mock.method(global, "setInterval", (callback, ms) => {
+        const timer = { callback, ms };
+        timers.push(timer);
+        return timer;
+    });
+    t.mock.method(global, "clearInterval", timer => {
+        if (timer) timer.cleared = true;
+    });
+    return { ...f, owner, timers };
+}
+
+test("Playground maintenance saves authentication daily without page input or queue cancellation", async t => {
+    const { pool, owner, timers, registry } = playgroundMaintenanceFixture(t);
+    let saved = 0;
+    pool.config.enableAuthUpdate = true;
+    pool.authSource.getAuth = () => ({});
+    const storage = { cookies: [{ name: "test" }], origins: [] };
+    owner.context.storageState = async () => storage;
+    pool.authSource.accountLoginService = {
+        exclusive: callback => callback(),
+        refreshSession: async (index, version, snapshot) => {
+            assert.equal(index, 0);
+            assert.equal(snapshot, storage);
+            saved++;
+        },
+        state: {},
+    };
+    const queues = t.mock.method(registry, "closeMessageQueuesForAuth", () =>
+        assert.fail("Maintenance cancelled queues")
+    );
+    pool._startHealthMonitor(0);
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].ms, 86400000);
+    await pool._startBackgroundWakeup(owner);
+    await timers[0].callback();
+    assert.equal(saved, 1);
+    assert.equal(owner.state, "READY");
+    assert.equal(pool.isContextReady(0), true);
+    queues.mock.restore();
+});
+
+test("Playground maintenance cancels duplicate timers and ignores retired owners and generations", async t => {
+    const { pool, owner, timers, connect } = playgroundMaintenanceFixture(t);
+    let saved = 0;
+    pool._updateAuthFile = async () => saved++;
+    pool._startHealthMonitor(0);
+    pool._startHealthMonitor(0);
+    assert.equal(timers[0].cleared, true);
+    await timers[0].callback();
+    assert.equal(saved, 0);
+    await timers[1].callback();
+    assert.equal(saved, 1);
+    pool.browserGeneration++;
+    await timers[1].callback();
+    assert.equal(timers[1].cleared, true);
+    assert.equal(saved, 1);
+    owner.browserGeneration = pool.browserGeneration;
+    pool._startHealthMonitor(0);
+    connect();
+    await timers[2].callback();
+    assert.equal(timers[2].cleared, true);
+    assert.equal(saved, 1);
+});
+
+for (const cleanup of ["close", "browser_cleanup", "page_closed"]) {
+    test(`Playground authentication timer stops after ${cleanup}`, async t => {
+        const { pool, owner, timers } = playgroundMaintenanceFixture(t);
+        let saved = 0;
+        pool._updateAuthFile = async () => saved++;
+        pool._startHealthMonitor(0);
+        if (cleanup === "close") await pool.closeContext(0, { keepBrowser: true });
+        if (cleanup === "browser_cleanup") pool._cleanupAllContexts();
+        if (cleanup === "page_closed") owner.page.isClosed = () => true;
+        await timers[0].callback();
+        assert.equal(saved, 0);
+        assert.equal(timers[0].cleared, true);
+    });
+}
+
+test("an authentication snapshot finishing after owner replacement cannot persist stale credentials", async t => {
+    const { pool, owner, timers, connect } = playgroundMaintenanceFixture(t);
+    pool.config.enableAuthUpdate = true;
+    pool.authSource.getAuth = () => ({});
+    let release;
+    owner.context.storageState = () =>
+        new Promise(resolve => {
+            release = resolve;
+        });
+    pool.authSource.accountLoginService = {
+        exclusive: () => assert.fail("Stale snapshot persisted"),
+        state: {},
+    };
+    pool._startHealthMonitor(0);
+    const save = timers[0].callback();
+    await tick();
+    connect();
+    release({ cookies: [], origins: [] });
+    await save;
+});
+
+for (const outcome of [
+    "success",
+    "bootstrap_failure",
+    "page_closed",
+    "transport_not_ready",
+    "registration_rejected",
+    "generation",
+    "replacement",
+    "ineligible",
+]) {
+    test(`Playground lightweight reconnect ${outcome} uses no mouse input`, async t => {
+        const { pool, owner, timers, registry, connect } = playgroundMaintenanceFixture(t);
+        pool.browser = {};
+        t.after(() => {
+            pool.browser = null;
+        });
+        const transport = owner.page.playgroundTransport;
+        pool._navigateAndWakeUpPage = async () => {};
+        pool._checkPageStatusAndErrors = async () => {};
+        pool._updateAuthFile = async () => {};
+        transport.bootstrap = async () => {
+            transport.ready = true;
+            if (outcome === "bootstrap_failure") throw new Error("WAA failed");
+            if (outcome === "page_closed") owner.page.isClosed = () => true;
+            if (outcome === "transport_not_ready") transport.ready = false;
+            if (outcome === "generation") pool.browserGeneration++;
+            if (outcome === "replacement") connect();
+            if (outcome === "ineligible") pool._canKeepPooledContext = () => false;
+        };
+        transport.connect = (r, data) => PlaygroundTransport.prototype.connect.call(transport, r, data);
+        if (outcome === "registration_rejected") registry.addConnection = () => {};
+        if (outcome === "ineligible") {
+            pool.scheduler = { closed: false, drain() {} };
+            pool._canKeepPooledContext = () => true;
+        }
+        pool._startHealthMonitor(0);
+        assert.equal(await pool.attemptLightweightReconnect(0), outcome === "success");
+        assert.equal(timers[0].cleared, true, "Reconnect stops the background owner's timer");
+        if (outcome === "success") {
+            assert.equal(pool.isContextReady(0), true);
+            assert.equal(timers.length, 2);
+        } else {
+            assert.equal(timers.length, 1);
+            if (outcome !== "replacement") assert.equal(pool.isContextReady(0), false);
+        }
+    });
+}
+
+test("Playground rejects the legacy WebSocket waiter before any Launch or input action", async t => {
+    const { pool, owner } = playgroundMaintenanceFixture(t);
+    await assert.rejects(pool._waitForWebSocketInit(owner.page), /must use bootstrap/);
+    await BrowserManager.prototype._handleRequiredMouseFailure.call(pool, 0, owner, new Error("legacy callback"));
+    assert.equal(pool.contexts.get(0), owner);
+    assert.equal(owner.draining, undefined);
+    assert.equal(owner.state, "READY");
+});
