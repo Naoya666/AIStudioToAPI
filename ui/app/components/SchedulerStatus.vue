@@ -1076,9 +1076,11 @@ function getSlotStatusLabel(slot) {
         return props.t(
             slot.rate_limit_type === "daily_quota"
                 ? "schedulerStatusDailyQuotaExhausted"
-                : slot.rate_limit_type === "temporary"
-                  ? "schedulerStatusTemporaryRateLimited"
-                  : "schedulerStatusRateLimited"
+                : slot.rate_limit_type === "usage_limit"
+                  ? "schedulerStatusUsageLimitExhausted"
+                  : slot.rate_limit_type === "temporary"
+                    ? "schedulerStatusTemporaryRateLimited"
+                    : "schedulerStatusRateLimited"
         );
     if (slot.status === "COOLDOWN") return props.t("schedulerCooldown");
     if (slot.status === "HEALTHY") return props.t("schedulerStatusHealthy");

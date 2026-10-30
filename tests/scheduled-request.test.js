@@ -2235,3 +2235,47 @@ for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
         assert.match(res.body, /hello/);
     });
 }
+
+for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
+    for (const stream of [false, true]) {
+        test(`${model} usage-limit countdown survives ${stream ? "streaming" : "buffered"} account retry`, async t => {
+            const sample = require("./fixtures/makersuite/model-usage-limit.json");
+            const fixture = setup(
+                index =>
+                    index === 0
+                        ? [
+                              {
+                                  event_type: "error",
+                                  status: sample.httpStatus,
+                                  upstreamError: { code: 429, message: sample.message, status: "RESOURCE_EXHAUSTED" },
+                              },
+                          ]
+                        : success,
+                { paidAccounts: [0, 1] }
+            );
+            t.after(() => fixture.scheduler.close());
+            for (const context of fixture.browser.contexts.values()) {
+                context.page.buildBenefit = { state: "ready-paid", verified: true };
+                context.page.makerSuiteBridge.prepare = () => {};
+            }
+            fixture.browser.isContextReady = () => true;
+            fixture.scheduler.browserManager = fixture.browser;
+            const before = Date.now();
+            const res = new Response();
+            await fixture.handler.processOpenAIRequest(request(model, stream), res);
+            const after = Date.now();
+            assert.deepEqual(
+                fixture.sent.map(entry => entry.index),
+                [0, 1],
+                res.body
+            );
+            assert.match(res.body, /hello/);
+            const slot = fixture.scheduler.account(0).models[model];
+            assert.equal(slot.rate_limit_type, "usage_limit");
+            assert.equal(slot.last_error, sample.message);
+            assert.ok(slot.cooldown_until >= before + 94 * 60000);
+            assert.ok(slot.cooldown_until <= after + 94 * 60000);
+            assert.equal(slot.unsupported, false);
+        });
+    }
+}

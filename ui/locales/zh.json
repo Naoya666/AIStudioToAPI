@@ -413,6 +413,7 @@
     "schedulerStatusRateLimited": "429 频控",
     "schedulerStatusRiskControlled": "403 风控",
     "schedulerStatusTemporaryRateLimited": "429 临时限流",
+    "schedulerStatusUsageLimitExhausted": "429 模型使用额度耗尽",
     "schedulerSuccess": "累计成功",
     "schedulerTiming": "延迟指标",
     "schedulerTitle": "模型调度",

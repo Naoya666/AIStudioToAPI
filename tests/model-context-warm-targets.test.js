@@ -254,6 +254,8 @@ test("quota wait requires healthy authorized accounts and natural expiry wakes a
         });
     assert.equal(scheduler.isWaitingForQuota(), true);
     assert.equal(scheduler.getQuotaWaitStatus(), "exhausted");
+    scheduler.account(0).models.a.rate_limit_type = "usage_limit";
+    assert.equal(scheduler.getQuotaWaitStatus(), "exhausted");
     scheduler.account(0).models.a.rate_limit_type = "rpm";
     assert.equal(scheduler.getQuotaWaitStatus(), "cooldown");
     scheduler.account(0).models.a.rate_limit_type = "daily_quota";

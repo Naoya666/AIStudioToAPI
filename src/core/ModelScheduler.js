@@ -85,16 +85,48 @@ function isValidDateKey(value) {
     return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
-function isDailyQuotaError(error) {
+function classifyRateLimit(error, now) {
+    const messages = [error.message, error.upstreamError?.message, error.error?.message].filter(
+        message => typeof message === "string"
+    );
+    for (const message of messages) {
+        const duration = /you['’]ve reached your usage limit for this model\s*\(resets in\s+([^)]*)\)/i
+            .exec(message)?.[1]
+            ?.trim();
+        // Only trust the explicit model-usage reset message, never a generic retry hint.
+        if (
+            !duration ||
+            !/^\d+(?:\.\d+)?\s+(?:days?|hours?|minutes?|seconds?)(?:(?:,\s*(?:and\s+)?|\s+(?:and\s+)?)\d+(?:\.\d+)?\s+(?:days?|hours?|minutes?|seconds?))*$/i.test(
+                duration
+            )
+        )
+            continue;
+        const units = { day: 86400000, hour: 3600000, minute: 60000, second: 1000 };
+        const seen = new Set();
+        let milliseconds = 0;
+        for (const [, amount, rawUnit] of duration.matchAll(/(\d+(?:\.\d+)?)\s+(days?|hours?|minutes?|seconds?)/gi)) {
+            const unit = rawUnit.toLowerCase().replace(/s$/, "");
+            if (seen.has(unit)) {
+                milliseconds = NaN;
+                break;
+            }
+            seen.add(unit);
+            milliseconds += Number(amount) * units[unit];
+        }
+        if (Number.isSafeInteger(milliseconds) && milliseconds > 0 && milliseconds <= 8640000000000000 - now)
+            return { cooldownMs: milliseconds, type: "usage_limit" };
+    }
     // This observed metric denotes the account/model daily quota. Generic
     // RESOURCE_EXHAUSTED and retry hints also occur for temporary rate limits.
-    return [error.message, error.upstreamError?.message, error.error?.message].some(
-        message =>
-            typeof message === "string" &&
+    if (
+        messages.some(message =>
             /Quota exceeded for metric:\s*generativelanguage\.googleapis\.com\/generate_requests_per_model_per_user\b/i.test(
                 message
             )
-    );
+        )
+    )
+        return { type: "daily_quota" };
+    return { type: "temporary" };
 }
 
 function classifyError(error = {}) {
@@ -324,7 +356,9 @@ class ModelScheduler {
             .every(index =>
                 [...models]
                     .filter(model => this.isTierAllowed(index, model))
-                    .every(model => this.account(index).models[model]?.rate_limit_type === "daily_quota")
+                    .every(model =>
+                        ["daily_quota", "usage_limit"].includes(this.account(index).models[model]?.rate_limit_type)
+                    )
             )
             ? "exhausted"
             : "cooldown";
@@ -991,18 +1025,23 @@ class ModelScheduler {
         if (kind === "unsupported") slot.unsupported = true;
         if (kind === "rate_limited") {
             const now = this.now();
-            const dailyQuota = isDailyQuotaError(error);
-            const existingDailyQuota =
-                slot.rate_limited && slot.rate_limit_type === "daily_quota" && slot.cooldown_until > now;
-            slot.rate_limited = true;
-            // A concurrent temporary 429 must not shorten a known daily block.
-            if (!existingDailyQuota) {
-                slot.rate_limit_type = dailyQuota ? "daily_quota" : "temporary";
-                slot.cooldown_until = dailyQuota
+            const policy = classifyRateLimit(error, now);
+            const deadline =
+                policy.type === "daily_quota"
                     ? calculateNextPacificResetAt(now, this.config.dailyResetTime, null, true)
-                    : now + this.config.rateLimitCooldownMs;
+                    : now + (policy.cooldownMs ?? this.config.rateLimitCooldownMs);
+            const existingQuota =
+                slot.rate_limited &&
+                ["daily_quota", "usage_limit"].includes(slot.rate_limit_type) &&
+                slot.cooldown_until > now;
+            slot.rate_limited = true;
+            // Concurrent short limits and successes must not shorten confirmed quota blocks.
+            if (!existingQuota || (policy.type !== "temporary" && deadline > slot.cooldown_until)) {
+                slot.rate_limit_type = policy.type;
+                slot.cooldown_until = deadline;
             }
         }
+
         if (kind === "temporary")
             slot.cooldown_until =
                 Date.now() + this.config.tempErrorCooldownMs * Math.min(4, 2 ** (slot.consecutive_failures - 1));
@@ -1175,6 +1214,10 @@ class ModelScheduler {
             const account = this.account(index);
             let accountChanged = false;
             for (const slot of Object.values(account.models)) {
+                // An explicit upstream reset may fall after the local daily reset.
+                if (slot.rate_limited && slot.rate_limit_type === "usage_limit" && slot.cooldown_until > this.now())
+                    continue;
+
                 const changed = Boolean(
                     slot.cooldown_until ||
                     slot.rate_limited ||

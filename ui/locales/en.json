@@ -413,6 +413,7 @@
     "schedulerStatusRateLimited": "429 Rate Limited",
     "schedulerStatusRiskControlled": "403 Risk Controlled",
     "schedulerStatusTemporaryRateLimited": "429 Temporary Rate Limit",
+    "schedulerStatusUsageLimitExhausted": "429 Model Usage Limit Reached",
     "schedulerSuccess": "Cumulative success",
     "schedulerTiming": "Latency metric",
     "schedulerTitle": "Model scheduling",

@@ -1,0 +1,5 @@
+{
+    "httpStatus": 429,
+    "message": "You've reached your usage limit for this model (resets in 1 hour, 34 minutes). Retry with an alternative Gemini model or upgrade your Google AI plan for higher limits. To view plans head to https://one.google.com/ai.",
+    "source": "bero scheduler-state.json, read-only observation on 2026-10-30; no raw RPC captured"
+}

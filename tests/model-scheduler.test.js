@@ -1557,3 +1557,157 @@ test("failed recovery backup retains historical exclusions and all accounts", t 
     assert.equal(fs.readFileSync(statePath, "utf8"), original);
     restored.close();
 });
+
+const usageLimitSample = require("./fixtures/makersuite/model-usage-limit.json");
+const usageLimitError = { message: usageLimitSample.message, status: usageLimitSample.httpStatus };
+
+test("explicit usage reset countdown applies to every model and error envelope and expires naturally", async t => {
+    for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
+        for (const error of [
+            usageLimitError,
+            { status: 429, upstreamError: { message: usageLimitSample.message } },
+            { error: { code: 429, message: usageLimitSample.message } },
+            { message: JSON.stringify({ error: usageLimitError }), status: 429 },
+        ]) {
+            let now = Date.parse("2026-10-30T06:30:00Z");
+            const scheduler = setup({ dailyResetEnabled: false, now: () => now }, 1);
+            t.after(() => scheduler.close());
+            scheduler.authSource.accountLoginService = { state: { accounts: [{ authIndex: 0, manualTier: "pro" }] } };
+            const lease = await scheduler.acquire(model);
+            scheduler.failure(lease, error);
+            assert.equal(lease.slot.rate_limit_type, "usage_limit");
+            assert.equal(lease.slot.cooldown_until, now + 94 * 60000);
+            assert.equal(lease.account.healthy, true);
+            assert.equal(lease.slot.unsupported, false);
+            const detail = scheduler.accountsSnapshot().accounts[0].models.find(slot => slot.model === model);
+            assert.equal(detail.rate_limit_type, "usage_limit");
+            assert.equal(detail.cooldown_until, lease.slot.cooldown_until);
+            scheduler.release(lease);
+            now += 94 * 60000 - 1;
+            assert.equal(scheduler.isResourceEligible(lease.account, model), false);
+            now++;
+            assert.equal(scheduler.isResourceEligible(lease.account, model), true);
+            const recovered = await scheduler.acquire(model);
+            assert.equal(recovered.slot.rate_limited, false);
+            assert.equal(recovered.slot.rate_limit_type, null);
+            scheduler.release(recovered);
+        }
+    }
+});
+
+test("usage countdown parser validates units and rejects ambiguous or malformed hints", async t => {
+    for (const [duration, expected] of [
+        ["1 hour", 3600000],
+        ["2 hours, 1 minute", 7260000],
+        ["34 minutes", 2040000],
+        ["1 minute, 1 second", 61000],
+        ["1 day, 2 hours, 3 minutes and 4 seconds", 93784000],
+        ["0.5 seconds", 500],
+        ["0 minutes", 60000],
+        ["-1 hour", 60000],
+        ["1 hour, 2 hours", 60000],
+        ["1 hour, garbage", 60000],
+        ["Infinity hours", 60000],
+        ["999999999999999999 hours", 60000],
+        ["1 month", 60000],
+        ["", 60000],
+    ]) {
+        const now = Date.now();
+        const scheduler = setup({ now: () => now }, 1);
+        t.after(() => scheduler.close());
+        const lease = await scheduler.acquire("flash");
+        scheduler.failure(lease, {
+            message: `You've reached your usage limit for this model (resets in ${duration}).`,
+            status: 429,
+        });
+        assert.equal(lease.slot.cooldown_until, now + expected, duration);
+        assert.equal(lease.slot.rate_limit_type, expected === 60000 ? "temporary" : "usage_limit", duration);
+        scheduler.release(lease);
+    }
+    for (const message of [
+        "RESOURCE_EXHAUSTED (resets in 1 hour)",
+        "Please retry in 1 hour",
+        "You've reached your usage limit for this model",
+    ]) {
+        const scheduler = setup({}, 1);
+        t.after(() => scheduler.close());
+        const lease = await scheduler.acquire("flash");
+        scheduler.failure(lease, { message, status: 429 });
+        assert.equal(lease.slot.rate_limit_type, "temporary");
+        scheduler.release(lease);
+    }
+});
+
+test("concurrent quota responses preserve the longest confirmed block and ignore temporary limits and success", async t => {
+    for (const usageFirst of [true, false]) {
+        const now = Date.parse("2026-10-30T06:30:00Z");
+        const scheduler = setup({ now: () => now }, 1);
+        t.after(() => scheduler.close());
+        const leases = await Promise.all(Array.from({ length: 4 }, () => scheduler.acquire("flash")));
+        leases.forEach(lease => scheduler.startAttempt(lease));
+        const errors = usageFirst ? [usageLimitError, dailyQuotaError] : [dailyQuotaError, usageLimitError];
+        errors.forEach((error, index) => scheduler.failure(leases[index], error));
+        scheduler.failure(leases[2], { message: "Quota exceeded", status: 429 });
+        scheduler.release(leases[3], true);
+        assert.equal(leases[0].slot.rate_limit_type, "usage_limit");
+        assert.equal(leases[0].slot.cooldown_until, now + 94 * 60000);
+        leases.forEach(lease => scheduler.release(lease));
+    }
+});
+
+test("automatic daily reset preserves explicit usage deadlines, manual reset overrides them, and restart does not restart countdown", async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-usage-reset-"));
+    t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+    const statePath = path.join(directory, "state.json");
+    let now = Date.parse("2026-10-30T06:30:00Z");
+    const first = setup({ dailyResetEnabled: false, now: () => now, statePath }, 1);
+    const lease = await first.acquire("flash");
+    first.failure(lease, usageLimitError);
+    const deadline = lease.slot.cooldown_until;
+    first.release(lease);
+    first.close();
+    now += 30 * 60000;
+    const restored = setup({ dailyResetEnabled: false, now: () => now, statePath }, 1);
+    t.after(() => restored.close());
+    const slot = restored.account(0).models.flash;
+    assert.equal(slot.rate_limit_type, "usage_limit");
+    assert.equal(slot.cooldown_until, deadline);
+    const beforeReset = JSON.stringify(slot);
+    restored.resetDailyCooldowns();
+    assert.equal(JSON.stringify(slot), beforeReset);
+    for (const reset of [
+        scheduler => scheduler.resetAllRateLimits(),
+        scheduler => scheduler.resetAllAccounts(),
+        scheduler => scheduler.reset(0),
+        scheduler => scheduler.reset(0, "flash"),
+    ]) {
+        Object.assign(slot, { cooldown_until: deadline, rate_limit_type: "usage_limit", rate_limited: true });
+        reset(restored);
+        assert.equal(slot.cooldown_until, 0);
+        assert.equal(slot.rate_limited, false);
+        assert.equal(slot.rate_limit_type, null);
+    }
+    Object.assign(slot, { cooldown_until: now - 1, rate_limit_type: "usage_limit", rate_limited: true });
+    restored.resetDailyCooldowns();
+    assert.equal(slot.cooldown_until, 0);
+});
+
+test("shorter usage countdown cannot shorten a daily block and later confirmed usage can extend it", async t => {
+    const now = Date.parse("2026-10-30T03:00:00Z");
+    const scheduler = setup({ now: () => now }, 1);
+    t.after(() => scheduler.close());
+    const leases = await Promise.all(Array.from({ length: 4 }, () => scheduler.acquire("flash")));
+    scheduler.failure(leases[0], dailyQuotaError);
+    const midnight = leases[0].slot.cooldown_until;
+    scheduler.failure(leases[1], usageLimitError);
+    assert.equal(leases[0].slot.cooldown_until, midnight);
+    assert.equal(leases[0].slot.rate_limit_type, "daily_quota");
+    scheduler.failure(leases[2], {
+        message: "You've reached your usage limit for this model (resets in 5 hours).",
+        status: 429,
+    });
+    scheduler.failure(leases[3], usageLimitError);
+    assert.equal(leases[0].slot.cooldown_until, now + 5 * 3600000);
+    assert.equal(leases[0].slot.rate_limit_type, "usage_limit");
+    leases.forEach(lease => scheduler.release(lease));
+});
