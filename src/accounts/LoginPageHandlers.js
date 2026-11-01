@@ -12,6 +12,28 @@ const acceptName = /^(I agree|I accept|Agree|Accept|同意|我同意|接受|Cont
 const ageAndPurposeText = text =>
     (/at least 18 years old/i.test(text) && /professional or business purposes/i.test(text)) ||
     (/年满\s*18|年滿\s*18|至少\s*18\s*[岁歲]/i.test(text) && /专业|專業|商业|商業/i.test(text));
+function termsCheckboxInfo(node) {
+    if (Array.isArray(node)) return node.slice(0, 11).map(termsCheckboxInfo);
+    return {
+        checked: node.checked === true || node.getAttribute("aria-checked") === "true",
+        disabled: node.disabled === true || node.getAttribute("aria-disabled") === "true",
+        label:
+            node.labels?.[0]?.innerText ||
+            document.getElementById(node.getAttribute("aria-labelledby"))?.innerText ||
+            node.closest("label, mat-checkbox, .mdc-form-field")?.innerText ||
+            node.getAttribute("aria-label") ||
+            "",
+        required: node.required === true || node.getAttribute("aria-required") === "true",
+    };
+}
+function requiredTermsCheckbox(info) {
+    return (
+        !optionalText.test(info.label) &&
+        (info.required ||
+            ageAndPurposeText(info.label) ||
+            (/agree|accept|同意|接受/i.test(info.label) && /terms|条款|條款/i.test(info.label)))
+    );
+}
 class LoginPageHandlers {
     constructor({ page, interaction, guard, stepTimeout, deadline, phase }) {
         Object.assign(this, { deadline, guard, interaction, page, phase, stepTimeout });
@@ -99,6 +121,7 @@ class LoginPageHandlers {
         if (new URL(this.page.url()).hostname !== "aistudio.google.com") return false;
         const end = Math.min(limit, this.deadline, performance.now() + this.stepTimeout);
         let handled = false;
+        const checkboxAttempts = [];
         for (let attempt = 0; attempt <= 3; attempt++) {
             this.guard();
             let found, foundFrame;
@@ -166,23 +189,15 @@ class LoginPageHandlers {
             if (attempt === 3) throw failure("terms_or_consent_required");
             this.phase("aistudio_terms");
             this.termsOutcome = "identified";
-            this.termsDiagnostics = { attempt, checkboxes: [] };
+            this.termsDiagnostics = { attempt, checkboxAttempts, checkboxes: [] };
             handled = true;
             try {
                 const boxes = found.locator('input[type="checkbox"], [role="checkbox"]').filter({ visible: true });
                 for (let index = 0; index < Math.min(await boxes.count(), 10); index++) {
                     this.guard();
                     const box = boxes.nth(index);
-                    const info = await box.evaluate(node => ({
-                        checked: node.checked === true || node.getAttribute("aria-checked") === "true",
-                        label:
-                            node.labels?.[0]?.innerText ||
-                            document.getElementById(node.getAttribute("aria-labelledby"))?.innerText ||
-                            node.closest("label, mat-checkbox, .mdc-form-field")?.innerText ||
-                            node.getAttribute("aria-label") ||
-                            "",
-                        required: node.required || node.getAttribute("aria-required") === "true",
-                    }));
+                    const [info] = await box.evaluateAll(termsCheckboxInfo);
+                    if (!info) throw Object.assign(failure("terms_or_consent_required"), { retryTerms: true });
                     const optional = optionalText.test(info.label);
                     const recognizedRequired =
                         !!info.required ||
@@ -199,7 +214,39 @@ class LoginPageHandlers {
                     if (optional) continue;
                     if (!info.checked && recognizedRequired) {
                         this.operation = "terms_checkbox";
-                        await this.interaction.click(box, { timeout: this.remaining(end) });
+                        const action = { attempt, checkedBefore: info.checked, index };
+                        checkboxAttempts.push(action);
+                        try {
+                            await this.interaction.setChecked(box, true, {
+                                check: async () => {
+                                    this.remaining(end);
+                                    // A locator may now refer to a replacement
+                                    // control. Recheck authorization after pacing.
+                                    const [current] = await box.evaluateAll(termsCheckboxInfo);
+                                    if (!current || !requiredTermsCheckbox(current))
+                                        throw Object.assign(failure("terms_or_consent_required"), { retryTerms: true });
+                                },
+                                timeout: () => Math.min(1500, this.remaining(end)),
+                            });
+                            action.outcome = "checked";
+                        } catch (cause) {
+                            this.guard();
+                            action.outcome = "not_verified";
+                            this.termsDiagnostics.failureSource = "terms_checkbox_not_verified";
+                            if (
+                                cause.name === "TimeoutError" ||
+                                /did not change its state|detached|not attached/i.test(cause.message)
+                            )
+                                throw Object.assign(failure("terms_or_consent_required"), { retryTerms: true });
+                            throw cause;
+                        } finally {
+                            action.checkedAfter = await box
+                                .evaluateAll(termsCheckboxInfo)
+                                .then(infos => infos[0]?.checked ?? null)
+                                .catch(() => null);
+                            if (action.outcome === "checked" && action.checkedAfter !== true)
+                                action.outcome = "state_changed";
+                        }
                     }
                 }
                 let button = found
@@ -232,27 +279,42 @@ class LoginPageHandlers {
                     this.termsOutcome = "confirmation_missing";
                     throw failure("terms_or_consent_required");
                 }
+                // A successful click is not sufficient: wait for checked state
+                // and an enabled confirmation, including asynchronous rendering.
+                const readyUntil = Math.min(end, performance.now() + 1500);
+                let readySince = null;
+                while (performance.now() < readyUntil) {
+                    this.remaining(end);
+                    if ((await this.snapshot(found)) === null) break;
+                    if (await this.termsControlsReady(boxes, button)) {
+                        readySince ??= performance.now();
+                        if (performance.now() - readySince >= 250) break;
+                    } else readySince = null;
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                if ((await this.snapshot(found)) === null) continue;
+                if (
+                    readySince === null ||
+                    performance.now() - readySince < 250 ||
+                    !(await this.termsControlsReady(boxes, button))
+                ) {
+                    this.termsDiagnostics.failureSource = "terms_controls_not_ready";
+                    throw Object.assign(failure("terms_or_consent_required"), { retryTerms: true });
+                }
                 const before = await this.snapshot(found);
                 if (before === null) continue;
                 this.operation = "terms_confirm";
-                // Capture the actual checkbox states immediately before the
-                // confirmation attempt, including controls left untouched.
-                // Best-effort diagnostics never replace the business failure.
                 try {
-                    this.termsDiagnostics.checkboxStates = await boxes.evaluateAll(nodes =>
-                        nodes.slice(0, 10).map((node, index) => ({
-                            checked: node.checked === true || node.getAttribute("aria-checked") === "true",
-                            disabled: node.disabled === true || node.getAttribute("aria-disabled") === "true",
-                            index,
-                            required: node.required === true || node.getAttribute("aria-required") === "true",
-                        }))
-                    );
-                    this.termsDiagnostics.confirmationEnabled = await button.isEnabled();
-                } catch {
-                    this.termsDiagnostics.captureFailed = true;
-                }
-                try {
-                    await this.interaction.click(button, { timeout: this.remaining(end) });
+                    await this.interaction.click(button, {
+                        check: async () => {
+                            this.remaining(end);
+                            if (!(await this.termsControlsReady(boxes, button))) {
+                                this.termsDiagnostics.failureSource = "terms_controls_changed";
+                                throw Object.assign(failure("terms_or_consent_required"), { retryTerms: true });
+                            }
+                        },
+                        timeout: () => this.remaining(end),
+                    });
                     this.termsOutcome = "clicked";
                 } catch (cause) {
                     cause.loginOperation ||= this.operation;
@@ -278,6 +340,12 @@ class LoginPageHandlers {
             } catch (cause) {
                 cause.loginOperation ||= this.operation;
                 this.guard();
+                if (cause.retryTerms) {
+                    this.termsOutcome = "controls_not_ready";
+                    this.remaining(end);
+                    if (attempt < 2) continue;
+                    throw cause;
+                }
                 if (foundFrame.isDetached()) continue;
                 if (cause.name !== "TimeoutError" || (await this.snapshot(found)) !== null) throw cause;
                 // A known consent container disappeared during control preparation.
@@ -285,6 +353,28 @@ class LoginPageHandlers {
             }
         }
         throw failure("terms_or_consent_required");
+    }
+    async termsControlsReady(boxes, button) {
+        this.guard();
+        let requiredChecked = true;
+        const states = [];
+        const infos = await boxes.evaluateAll(termsCheckboxInfo);
+        if (infos.length > 10) return false;
+        for (const [index, info] of infos.entries()) {
+            states.push({ checked: info.checked, disabled: info.disabled, index, required: info.required });
+            if (requiredTermsCheckbox(info) && !info.checked) requiredChecked = false;
+        }
+        this.termsDiagnostics.checkboxStates = states;
+        this.termsDiagnostics.confirmationEnabled = await button.evaluateAll(nodes =>
+            nodes.some(
+                node =>
+                    node.isConnected &&
+                    node.getClientRects().length > 0 &&
+                    !node.matches(":disabled") &&
+                    !node.closest('[aria-disabled="true"]')
+            )
+        );
+        return requiredChecked && this.termsDiagnostics.confirmationEnabled;
     }
     async skipOnboarding(limit = this.deadline) {
         this.guard();

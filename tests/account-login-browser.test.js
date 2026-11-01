@@ -169,11 +169,15 @@ async function run(options = {}) {
                             html += options.studioDialog;
                         if (options.recentAppsHint && url.hostname === "aistudio.google.com")
                             html += "<aside>Allow Drive access to see your recent apps.</aside>";
+                        if (options.recentPromptsHint && url.hostname === "aistudio.google.com")
+                            html += "<aside>Allow Drive access to see your recent prompts.</aside>";
                         if (options.termsBlocked && url.hostname === "aistudio.google.com")
                             html = html.replace(
                                 "I agree to the terms of service</label>",
                                 "Unrecognized confirmation</label>"
                             );
+                        if (options.termsMissFirst && url.hostname === "aistudio.google.com")
+                            html += `<script>document.querySelector('#accept')?.parentNode.querySelector('input[type="checkbox"]').addEventListener('click',e=>{if(!window.missed){window.missed=true;e.preventDefault()}},true)</script>`;
                         if (
                             options.finalDialog &&
                             validationContext &&
@@ -312,12 +316,14 @@ test("real browser: no-two-step success and account/app verification failures", 
     assert.equal((await run({ appFailure: true })).error, "service_initialization_failed");
 });
 test(
-    "real browser: optional recent-apps Drive hint permits login through both validation stages",
+    "real browser: optional recent-apps and recent-prompts Drive hints permit both validation stages",
     { skip: !executablePath },
     async () => {
-        const result = await run({ fast: true, noTotp: true, recentAppsHint: true });
-        assert.ok(result.storageState, JSON.stringify(result));
-        assert.equal(result.targetInitialized, true);
+        for (const hint of [{ recentAppsHint: true }, { recentPromptsHint: true }]) {
+            const result = await run({ ...hint, fast: true, noTotp: true });
+            assert.ok(result.storageState, JSON.stringify(result));
+            assert.equal(result.targetInitialized, true);
+        }
         const blocked = await run({ fast: true, noTotp: true, permissionRequired: true, recentAppsHint: true });
         assert.equal(blocked.error, "service_permission_required");
         assert.ok(!blocked.storageState);
@@ -334,14 +340,18 @@ test(
         for (const hint of [
             "Allow Drive access to see your recent apps.",
             "Allow Drive access to see your\n recent apps",
+            "Allow Drive access to see your recent prompts.",
+            "Allow Drive access to see your\n recent prompts",
         ]) {
             await page.setContent(`<textarea></textarea><aside>${hint}</aside>`);
             await validator.manager._checkPageErrors(page);
         }
-        await page.setContent(
-            "<aside>Allow Drive access to see your recent apps.</aside><main>Allow Drive access<button>Allow access</button></main>"
-        );
-        await assert.rejects(validator.manager._checkPageErrors(page), { reason: "service_permission_required" });
+        for (const noun of ["apps", "prompts"]) {
+            await page.setContent(
+                `<aside>Allow Drive access to see your recent ${noun}.</aside><main>Allow Drive access<button>Allow access</button></main>`
+            );
+            await assert.rejects(validator.manager._checkPageErrors(page), { reason: "service_permission_required" });
+        }
     }
 );
 test(
@@ -371,7 +381,7 @@ test(
             terms: true,
             termsBlocked: true,
         });
-        assert.equal(result.error, "ui_click_timeout", JSON.stringify(result));
+        assert.equal(result.error, "terms_or_consent_required", JSON.stringify(result));
         assert.equal(screenshotChecked, true);
         assert.equal(result.diagnostics.termsControls.confirmationEnabled, false);
         assert.equal(result.diagnostics.termsControls.checkboxes[0].recognizedRequired, false);
@@ -410,6 +420,132 @@ test("real browser: first terms leave optional controls untouched", { skip: !exe
         assert.ok(result.storageState, JSON.stringify({ options, result }));
     }
 });
+test(
+    "real browser: a missed required-checkbox click is recovered before Worker session commit",
+    { skip: !executablePath },
+    async () => {
+        const result = await run({ fast: true, noTotp: true, terms: true, termsMissFirst: true });
+        assert.ok(result.storageState, JSON.stringify(result));
+        assert.equal(result.targetInitialized, true);
+        assert.equal(result.termsOutcome, "completed");
+    }
+);
+test(
+    "real browser: required terms checkbox recovers from missed clicks and input replacement",
+    { skip: !executablePath },
+    async t => {
+        for (const replace of [false, true]) {
+            const { handler, page } = await handlerFixture(
+                t,
+                `<div role="dialog">AI Studio Terms of service
+            <label><input id="age" type="checkbox" required>Accept terms</label>
+            <label><input id="marketing" type="checkbox">Email newsletter updates</label>
+            <button disabled onclick="this.parentNode.hidden=true">Continue</button></div>`
+            );
+            await page.evaluate(replace => {
+                const input = document.querySelector("#age");
+                input.addEventListener("click", event => {
+                    if (!window.missed) {
+                        window.missed = true;
+                        event.preventDefault();
+                        if (replace) {
+                            const replacement = input.cloneNode(true);
+                            replacement.checked = false;
+                            input.replaceWith(replacement);
+                        }
+                    }
+                });
+                document.addEventListener("change", event => {
+                    if (event.target.id === "age") document.querySelector("button").disabled = !event.target.checked;
+                });
+            }, replace);
+            assert.equal(await handler.terms(), true);
+            assert.equal(await page.locator("#age").isChecked(), true);
+            assert.equal(await page.locator("#marketing").isChecked(), false);
+            const attempts = handler.termsDiagnostics.checkboxAttempts;
+            assert.ok(attempts.length >= 1 && attempts.length <= 3);
+            if (!replace) {
+                assert.equal(attempts.length, 2);
+                assert.equal(attempts[0].outcome, "not_verified");
+            }
+            assert.equal(attempts.at(-1).checkedAfter, true);
+        }
+    }
+);
+test(
+    "real browser: terms state reset during confirmation pacing is rechecked before clicking Continue",
+    { skip: !executablePath },
+    async t => {
+        const { handler, interaction, page } = await handlerFixture(
+            t,
+            `<div role="dialog">AI Studio Terms of service
+        <label><input id="age" type="checkbox" required onchange="document.querySelector('button').disabled=!this.checked">Accept terms</label>
+        <label><input id="marketing" type="checkbox">Email newsletter updates</label>
+        <button disabled onclick="this.parentNode.hidden=true">Continue</button></div>`
+        );
+        let reset = false;
+        interaction.pause = async () => {
+            if (handler.operation === "terms_confirm" && !reset) {
+                reset = true;
+                await page.evaluate(() => {
+                    document.querySelector("#age").checked = false;
+                    document.querySelector("button").disabled = true;
+                });
+            }
+        };
+        assert.equal(await handler.terms(), true);
+        assert.equal(reset, true);
+        assert.equal(handler.termsDiagnostics.checkboxAttempts.length, 2);
+        assert.equal(await page.locator("#marketing").isChecked(), false);
+    }
+);
+test(
+    "real browser: persistently unchanged required checkbox fails after bounded attempts without confirmation",
+    { skip: !executablePath },
+    async t => {
+        const { handler, page } = await handlerFixture(
+            t,
+            `<div role="dialog">AI Studio Terms of service
+        <label><input id="age" type="checkbox" required onclick="document.body.dataset.clicks=Number(document.body.dataset.clicks||0)+1;event.preventDefault()">Accept terms</label>
+        <button onclick="document.body.dataset.confirmed='true'">Continue</button></div>`
+        );
+        await assert.rejects(handler.terms(), { reason: "terms_or_consent_required" });
+        assert.equal(await page.locator("body").getAttribute("data-clicks"), "3");
+        assert.equal(await page.locator("body").getAttribute("data-confirmed"), null);
+        assert.equal(handler.termsDiagnostics.checkboxAttempts.length, 3);
+        assert.ok(handler.termsDiagnostics.checkboxAttempts.every(action => action.checkedAfter === false));
+    }
+);
+test(
+    "real browser: checkbox authorization, cancellation and deadlines are rechecked after pacing",
+    { skip: !executablePath },
+    async t => {
+        for (const mode of ["optional", "cancel", "deadline"]) {
+            const { handler, interaction, page } = await handlerFixture(
+                t,
+                `<div role="dialog">AI Studio Terms of service
+                <label><input type="checkbox" required onclick="document.body.dataset.clicked='true'"><span>Accept terms</span></label>
+                <button disabled onclick="document.body.dataset.confirmed='true'">Continue</button></div>`
+            );
+            handler.stepTimeout = 500;
+            let cancelled = false;
+            handler.guard = interaction.guard = () => {
+                if (cancelled) throw Object.assign(new Error("cancelled"), { reason: "cancelled" });
+            };
+            interaction.pause = async () => {
+                if (mode === "cancel") cancelled = true;
+                else if (mode === "deadline") await new Promise(resolve => setTimeout(resolve, 550));
+                else await page.locator("label span").evaluate(node => (node.textContent = "Email newsletter updates"));
+            };
+            await assert.rejects(handler.terms(), {
+                reason: mode === "cancel" ? "cancelled" : "terms_or_consent_required",
+            });
+            assert.equal(await page.locator("input").isChecked(), false);
+            assert.equal(await page.locator("body").getAttribute("data-clicked"), null);
+            assert.equal(await page.locator("body").getAttribute("data-confirmed"), null);
+        }
+    }
+);
 test(
     "real browser: age and business confirmation enables Continue without required metadata",
     { skip: !executablePath },

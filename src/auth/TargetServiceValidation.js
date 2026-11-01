@@ -10,10 +10,10 @@ function pageErrors() {
 }
 
 // Evaluated in the page by both login validation stages. The recent-apps
-// navigation hint describes an optional Drive feature, not a model access gate.
+// navigation hints describe optional Drive features, not a model access gate.
 function studioAccessState() {
     const text = (document.body.innerText || "").replace(/\s+/g, " ");
-    const blockingText = text.replace(/Allow Drive access to see your recent apps\.?/gi, "");
+    const blockingText = text.replace(/Allow Drive access to see your recent (?:apps|prompts)\.?/gi, "");
     return { permissionRequired: /Allow Drive access/i.test(blockingText) };
 }
 module.exports = { pageErrors, studioAccessState };

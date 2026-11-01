@@ -28,6 +28,7 @@ class LoginInteraction {
     }
     timeout(budget = this.config.stepTimeout) {
         this.guard();
+        if (typeof budget === "function") budget = budget();
         return Math.max(1, Math.floor(Math.min(budget, this.config.stepTimeout, this.deadline - this.now())));
     }
     async operation(part, action) {
@@ -70,6 +71,22 @@ class LoginInteraction {
                 cause.reason = "ui_click_timeout";
                 cause.retryable = true;
             }
+            throw cause;
+        }
+        this.guard();
+    }
+    async setChecked(locator, checked, { timeout = this.config.stepTimeout, check = async () => {} } = {}) {
+        await this.pause(180, 450);
+        await check();
+        try {
+            // Playwright verifies the resulting state and does not toggle an
+            // already checked control. Use its default click point for this
+            // stateful action rather than a randomized position.
+            await this.operation("checkbox_check", () =>
+                locator.setChecked(checked, { timeout: this.timeout(timeout) })
+            );
+        } catch (cause) {
+            this.guard();
             throw cause;
         }
         this.guard();
