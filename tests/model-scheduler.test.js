@@ -35,6 +35,59 @@ const dailyQuotaError = {
     status: 429,
 };
 
+const tokenDailyQuotaSample = require("./fixtures/makersuite/token-daily-quota.json");
+const tokenDailyQuotaError = { message: tokenDailyQuotaSample.message, status: tokenDailyQuotaSample.httpStatus };
+
+for (const [name, error] of [
+    ["requests", dailyQuotaError],
+    ["tokens", tokenDailyQuotaError],
+]) {
+    test(`${name} daily quota is isolated, survives restart and concurrent responses until Pacific reset`, async t => {
+        let now = Date.parse("2026-11-01T07:30:00Z");
+        const expected = Date.parse("2026-11-02T08:00:00Z");
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-daily-"));
+        t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+        const config = {
+            dailyResetEnabled: false,
+            dailyResetTime: "00:00",
+            now: () => now,
+            rateLimitCooldownMs: 1200000,
+            statePath: path.join(directory, "state.json"),
+        };
+        const scheduler = setup(config, 2);
+        t.after(() => scheduler.close());
+        const leases = await Promise.all(
+            Array.from({ length: 3 }, () => scheduler.acquire("gemini-3.8-flash", new Set(["auth-1"])))
+        );
+        assert.ok(leases.every(lease => lease.account.index === 0));
+        leases.forEach(lease => scheduler.startAttempt(lease));
+        scheduler.failure(leases[0], error);
+        now += 1200001;
+        scheduler.failure(leases[1], { message: "Please retry in 10s.", status: 429 });
+        scheduler.release(leases[2], true);
+        assert.equal(leases[0].slot.rate_limit_type, "daily_quota");
+        assert.equal(leases[0].slot.cooldown_until, expected);
+        assert.equal(scheduler.slot(scheduler.account(0), "gemini-3.8-flash", now).rate_limited, true);
+        const otherAccount = await scheduler.acquire("gemini-3.8-flash");
+        assert.equal(otherAccount.account.index, 1);
+        scheduler.release(otherAccount);
+        const otherModel = await scheduler.acquire("other", new Set(["auth-1"]));
+        assert.equal(otherModel.account.index, 0);
+        assert.equal(otherModel.slot.cooldown_until, 0);
+        scheduler.release(otherModel);
+        leases.forEach(lease => scheduler.release(lease));
+        scheduler.close();
+        const restored = setup(config, 2);
+        t.after(() => restored.close());
+        const slot = restored.slot(restored.account(0), "gemini-3.8-flash", now);
+        assert.equal(slot.rate_limit_type, "daily_quota");
+        assert.equal(slot.cooldown_until, expected);
+        assert.equal(slot.rate_limited, true);
+        now = expected;
+        assert.equal(restored.slot(restored.account(0), "gemini-3.8-flash", now).rate_limited, false);
+    });
+}
+
 test("daily quota 429 uses the next configured Pacific reset even when bulk reset is disabled", async t => {
     for (const [timestamp, resetTime, expected] of [
         ["2026-01-15T07:00:00Z", "00:00", "2026-01-15T08:00:00Z"],
@@ -68,8 +121,16 @@ test("daily quota 429 uses the next configured Pacific reset even when bulk rese
 test("short and unknown 429 errors use configured temporary cooldown without guessing from retry hints", async t => {
     const now = Date.now();
     for (const message of [
+        "",
         "Quota exceeded",
         "RESOURCE_EXHAUSTED",
+        "Please retry in 10m28.430161176s.",
+        "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_tokens_per_model_per_user, limit: 100",
+        tokenDailyQuotaSample.message.replace("per user per day", "per user per minute"),
+        tokenDailyQuotaSample.message.replace("tokens_per_model_per_user", "tokens_per_model_per_user_other"),
+        tokenDailyQuotaSample.message.replace("tokens_per_model_per_user", "tokens_per_model_per_user-other"),
+        tokenDailyQuotaSample.message.replace("tokens_per_model_per_user", "tokens_per_minute"),
+        tokenDailyQuotaSample.message.replace("tokens_per_model_per_user", "unknown_metric"),
         "You exceeded your current quota. Please retry in 15h8m4.376717497s.",
         "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_minute, limit: 10",
         "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user_other",
@@ -90,18 +151,22 @@ test("short and unknown 429 errors use configured temporary cooldown without gue
 });
 
 test("daily quota identification survives upstream error envelopes", async t => {
-    for (const error of [
-        { status: 429, upstreamError: { message: dailyQuotaError.message } },
-        { error: { code: 429, message: dailyQuotaError.message, status: "RESOURCE_EXHAUSTED" } },
-        { message: JSON.stringify({ error: dailyQuotaError }), status: 429 },
-    ]) {
-        const scheduler = setup({}, 1);
-        t.after(() => scheduler.close());
-        const lease = await scheduler.acquire("flash");
-        scheduler.failure(lease, error);
-        assert.equal(lease.slot.rate_limit_type, "daily_quota");
-        scheduler.release(lease);
-    }
+    for (const sample of [dailyQuotaError, tokenDailyQuotaError])
+        for (const error of [
+            sample,
+            { message: "upstream error", status: 429, upstreamError: { message: sample.message } },
+            { error: { code: 429, message: sample.message, status: "RESOURCE_EXHAUSTED" } },
+            { message: JSON.stringify({ error: sample }), status: 429 },
+        ]) {
+            const now = Date.parse("2026-11-01T07:30:00Z");
+            const scheduler = setup({ now: () => now }, 1);
+            t.after(() => scheduler.close());
+            const lease = await scheduler.acquire("flash");
+            scheduler.failure(lease, error);
+            assert.equal(lease.slot.rate_limit_type, "daily_quota");
+            assert.equal(lease.slot.cooldown_until, Date.parse("2026-11-02T08:00:00Z"));
+            scheduler.release(lease);
+        }
 });
 
 test("concurrent temporary 429 and success cannot shorten a daily quota block", async t => {
@@ -1565,6 +1630,7 @@ test("explicit usage reset countdown applies to every model and error envelope a
     for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
         for (const error of [
             usageLimitError,
+            { message: `${usageLimitError.message}\n${tokenDailyQuotaSample.message}`, status: 429 },
             { status: 429, upstreamError: { message: usageLimitSample.message } },
             { error: { code: 429, message: usageLimitSample.message } },
             { message: JSON.stringify({ error: usageLimitError }), status: 429 },

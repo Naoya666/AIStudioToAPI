@@ -265,6 +265,31 @@ test("disable scheduler route authenticates, validates IDs, and is idempotent", 
 });
 
 for (const stream of [false, true]) {
+    test(`OpenAI ${stream ? "real stream" : "buffered"} retries token daily quota and preserves Pacific deadline`, async t => {
+        const sample = require("./fixtures/makersuite/token-daily-quota.json");
+        const now = Date.parse("2026-11-01T07:30:00Z");
+        const fixture = setup(
+            index =>
+                index === 0 ? [{ event_type: "error", message: sample.message, status: sample.httpStatus }] : success,
+            { scheduler: { dailyResetEnabled: false, now: () => now, rateLimitCooldownMs: 1200000 } }
+        );
+        t.after(() => fixture.scheduler.close());
+        const res = new Response();
+        await fixture.handler.processOpenAIRequest(request("gemini-3.8-flash", stream), res);
+        assert.equal(res.statusCode, 200, res.body);
+        assert.match(res.body, /hello/);
+        assert.deepEqual(
+            fixture.sent.map(entry => entry.index),
+            [0, 1]
+        );
+        const slot = fixture.scheduler.account(0).models["gemini-3.8-flash"];
+        assert.equal(slot.rate_limit_type, "daily_quota");
+        assert.equal(slot.cooldown_until, Date.parse("2026-11-02T08:00:00Z"));
+        assert.equal(slot.rate_limited, true);
+        assert.equal(fixture.scheduler.account(1).models["gemini-3.8-flash"].success_count, 1);
+        assert.equal(fixture.scheduler.snapshot().active_workers, 0);
+    });
+
     test(`OpenAI ${stream ? "real stream" : "buffered"} preserves daily quota details through retry`, async t => {
         const fixture = setup(index =>
             index === 0

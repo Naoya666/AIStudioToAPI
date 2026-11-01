@@ -116,13 +116,18 @@ function classifyRateLimit(error, now) {
         if (Number.isSafeInteger(milliseconds) && milliseconds > 0 && milliseconds <= 8640000000000000 - now)
             return { cooldownMs: milliseconds, type: "usage_limit" };
     }
-    // This observed metric denotes the account/model daily quota. Generic
-    // RESOURCE_EXHAUSTED and retry hints also occur for temporary rate limits.
+    // Keep the observed request metric behavior. The token metric is confirmed
+    // daily only with its explicit per-user/per-day description (meow_us 2026-11-01).
+    // Generic RESOURCE_EXHAUSTED and retry hints also occur for temporary limits.
     if (
-        messages.some(message =>
-            /Quota exceeded for metric:\s*generativelanguage\.googleapis\.com\/generate_requests_per_model_per_user\b/i.test(
-                message
-            )
+        messages.some(
+            message =>
+                /Quota exceeded for metric:\s*generativelanguage\.googleapis\.com\/generate_requests_per_model_per_user\b/i.test(
+                    message
+                ) ||
+                /Quota exceeded for metric:\s*generativelanguage\.googleapis\.com\/generate_content_tokens_per_model_per_user\s*,[^\r\n]*\bdescription:\s*Generate content tokens per user per day limit exceeded\b/i.test(
+                    message
+                )
         )
     )
         return { type: "daily_quota" };
