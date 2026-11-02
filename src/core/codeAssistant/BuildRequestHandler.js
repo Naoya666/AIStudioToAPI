@@ -22,12 +22,24 @@ function prepare(body, config, system) {
     for (const key of ["response_format", "audio", "modalities"])
         if (body[key] !== undefined) throw fail(`Build 尚未支持 ${key}`);
     let split = identity.contextMode === "sillytavern" ? parseSillyTavern(body.messages) : null;
-    const messages = split ? sillyTavernMessages(split) : body.messages;
+    const messages = (split ? sillyTavernMessages(split) : body.messages).map(message =>
+        config.buildToolCallingMode !== "strict" &&
+        ["tool", "function"].includes(message?.role) &&
+        message.content !== null &&
+        typeof message.content === "object" &&
+        !Array.isArray(message.content)
+            ? { ...message, content: JSON.stringify(message.content) }
+            : message
+    );
     // Reject unsupported content rather than dropping images, names or metadata.
     for (const m of messages) {
         if (!m || !["system", "developer", "user", "assistant", "tool", "function"].includes(m.role))
             throw fail("Build 消息角色无效");
-        if (m.name !== undefined && (typeof m.name !== "string" || m.name.length > 128))
+        if (
+            config.buildToolCallingMode === "strict" &&
+            m.name !== undefined &&
+            (typeof m.name !== "string" || m.name.length > 128)
+        )
             throw fail("Build 消息名称超过安全限制");
         if (!(
             typeof m.content === "string" ||
@@ -40,7 +52,9 @@ function prepare(body, config, system) {
         { ...body, messages },
         { mode: config.buildToolCallingMode || "auto_fallback" }
     );
-    const anti = antiPolicy.enabled ? AntiTransport.prepare(contract) : null;
+    const anti = antiPolicy.enabled
+        ? AntiTransport.prepare(contract, { mode: config.buildToolCallingMode || "auto_fallback" })
+        : null;
     if (!split && config.buildPresetMatching) split = presetStore(system).apply(messages);
     const context = makeAttachmentContext({
         messages,
@@ -107,7 +121,9 @@ async function process(handler, req, res) {
                 "X-Build-Streaming": prepared.anti
                     ? "buffered-anti-validation"
                     : prepared.contract
-                      ? "buffered-tool-validation"
+                      ? prepared.contract.mode === "strict"
+                          ? "buffered-tool-validation"
+                          : "buffered-tool-fallback"
                       : "cumulative-task-snapshots",
             });
             res.flushHeaders?.();

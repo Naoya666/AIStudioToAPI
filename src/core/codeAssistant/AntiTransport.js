@@ -9,9 +9,9 @@ const fail = (code, message) =>
         retryable: false,
         status: 502,
     });
-function prepare(contract) {
+function prepare(contract, { mode = contract?.mode || "strict" } = {}) {
     const definitions = contract?.enabled ? contract.definitions : [];
-    const names = new Set(definitions.map(f => f.name));
+    const names = new Set(definitions.map(f => f?.name));
     let name;
     do {
         name = "agw_emit_" + randomBytes(12).toString("hex");
@@ -28,8 +28,11 @@ function prepare(contract) {
         name,
         parameters,
     };
-    const validators = new Map(definitions.map(f => [f.name, contract.validators.get(f.name)]));
-    validators.set(name, new Ajv({ strict: false }).compile(parameters));
+    const validators = new Map();
+    if (mode === "strict") {
+        for (const f of definitions) validators.set(f.name, contract.validators.get(f.name));
+        validators.set(name, new Ajv({ strict: false }).compile(parameters));
+    }
     const forcedReal = contract?.mode === "strict" && contract.forced;
     const requiredReal = contract?.mode === "strict" && contract.choice === "required";
     const textOnly = !contract?.enabled;
@@ -41,8 +44,11 @@ function prepare(contract) {
         historyIds: contract?.historyIds || new Set(),
         legacy: false,
         messages: contract?.messages || [],
-        mode: contract?.mode || "strict",
+        mode,
         parallel: contract?.mode === "auto_fallback" ? true : contract?.parallel !== false,
+        ...(mode === "auto_fallback"
+            ? { supplied: { answerTransport: synthetic, clientTools: contract?.supplied ?? [] } }
+            : {}),
         validators,
     };
     const instructions =
@@ -57,7 +63,7 @@ function prepare(contract) {
         forcedReal || requiredReal
             ? `MANDATORY RESPONSE FORMAT: Request the genuine client function${forcedReal ? " " + forcedReal : "s"} using the attached externalToolProtocol JSON envelope. Do not substitute the internal answer transport ${name}. Never execute the function or invent its result.`
             : `MANDATORY RESPONSE FORMAT: Return exactly one JSON object without Markdown fences. For the final answer use ${finalEnvelope}. Put ALL requested user-visible text inside arguments.content, even if the conversation asks for bare text or an exact marker. Genuine external client calls must instead use the attached externalToolProtocol envelope and must not be mixed with ${name}.`;
-    return { contract, directInstructions, instructions, name, transport };
+    return { contract, directInstructions, instructions, mode, name, transport };
 }
 // Repair only missing closing delimiters. Never complete a token, escape or Unicode escape.
 function closeJSON(source) {
@@ -101,6 +107,7 @@ function closeJSON(source) {
 function restore(raw, state) {
     if (Buffer.byteLength(raw) > MAX_BYTES)
         throw fail("anti_truncation_limit", "Build anti response exceeds size limit");
+    if (state.mode === "auto_fallback") return restoreAutomatic(raw, state);
     let source = raw.trimStart(),
         repaired = false;
     const openingFence = /^```(?:json)?[ \t]*\r?\n/.exec(source);
@@ -153,5 +160,39 @@ function restore(raw, state) {
         delete validated.tool_calls;
     }
     return { message: validated, repaired: false };
+}
+function restoreAutomatic(raw, state) {
+    const Auto = require("./AutoToolFallback");
+    const source = raw.trimStart().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, "$1");
+    let value;
+    try {
+        value = JSON.parse(source);
+    } catch {
+        /* Partial answers are read as text below. */
+    }
+    const calls = Array.isArray(value?.tool_calls)
+        ? value.tool_calls
+        : value?.function_call
+          ? [{ function: value.function_call }]
+          : [];
+    const internal = calls.filter(call => (call?.function?.name ?? call?.name) === state.name);
+    if (
+        internal.length ||
+        raw.includes(state.name) ||
+        (!value && /"(?:tool_calls|function_call)"\s*:/.test(source) && Auto.recoverContents(source).some(Boolean))
+    ) {
+        const content = [
+            typeof value?.content === "string" ? value.content : "",
+            ...internal.map(call => Auto.recoverContent((call.function ?? call).arguments)),
+        ]
+            .filter(Boolean)
+            .join("\n");
+        const recovered = content || Auto.recoverContents(source).filter(Boolean).join("\n");
+        if (!recovered) throw fail("build_anti_incomplete_response", "Build anti produced no recoverable answer text");
+        return { message: { content: recovered, role: "assistant" }, repaired: !value };
+    }
+    if (!raw.trim()) throw fail("build_anti_incomplete_response", "Build anti produced no answer text");
+    const context = state.contract || { definitions: [], enabled: false, mode: "auto_fallback" };
+    return { message: Auto.parse(raw, context), repaired: false };
 }
 module.exports = { closeJSON, prepare, restore };

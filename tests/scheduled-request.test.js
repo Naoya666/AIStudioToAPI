@@ -1151,7 +1151,7 @@ test("anti transport uses canonical scheduling and consistent replies for nonstr
         assert.equal(res.statusCode, 200);
         assert.equal(fixture.sent[0].request.path.includes("/gemini-2.5-flash:"), true);
         assert.equal(res.body.includes("agw_emit_"), false);
-        assert.equal(res.body.includes("discard"), false);
+        assert.equal(res.body.includes("discard"), true);
         assert.equal(res.body.includes("最终😀回答"), true);
         if (mode) {
             const output = res.body
@@ -1163,7 +1163,7 @@ test("anti transport uses canonical scheduling and consistent replies for nonstr
             assert.equal(new Set(output.map(event => event.id)).size, 1);
             assert.equal(output.find(event => event.choices?.[0]?.finish_reason).choices[0].finish_reason, "stop");
             assert.equal(res.body.match(/\[DONE\]/g).length, 1);
-        } else assert.equal(JSON.parse(res.body).choices[0].message.content, "最终😀回答");
+        } else assert.equal(JSON.parse(res.body).choices[0].message.content, "discard最终😀回答");
     }
 });
 
@@ -1230,14 +1230,18 @@ test("anti real handles fragmented SSE and errors after parameters without repla
 test("anti decoder and incomplete EOF failures are explicit with no success DONE", async t => {
     for (const mode of ["early", "real"]) {
         for (const malformed of ["args", "finish", "json"]) {
-            const fixture = setup((index, req) => {
-                const messages = antiReply(index, req);
-                const body = JSON.parse(messages[1].data);
-                if (malformed === "args") body.candidates[0].content.parts.at(-1).functionCall.args = { content: 1 };
-                if (malformed === "finish") delete body.candidates[0].finishReason;
-                messages[1].data = malformed === "json" ? '{"invalid":' : JSON.stringify(body);
-                return messages;
-            });
+            const fixture = setup(
+                (index, req) => {
+                    const messages = antiReply(index, req);
+                    const body = JSON.parse(messages[1].data);
+                    if (malformed === "args")
+                        body.candidates[0].content.parts.at(-1).functionCall.args = { content: 1 };
+                    if (malformed === "finish") delete body.candidates[0].finishReason;
+                    messages[1].data = malformed === "json" ? '{"invalid":' : JSON.stringify(body);
+                    return messages;
+                },
+                { pgToolCallingMode: "strict" }
+            );
             t.after(() => fixture.scheduler.close());
             const res = new Response();
             await fixture.handler.processOpenAIRequest(request(`anti-gemini-2.5-flash-${mode}`, true), res);
@@ -1306,7 +1310,7 @@ test("anti early HTTP client receives live empty events throughout delayed upstr
     assert.equal(received[0].at < Math.min(delay, 1000), true);
     assert.equal(received.filter(item => item.at < delay && item.text.includes('"content":""')).length >= 2, true);
     assert.equal(raw.includes("最终😀回答"), true);
-    assert.equal(raw.includes("discard"), false);
+    assert.equal(raw.includes("discard"), true);
     assert.equal(raw.match(/\[DONE\]/g).length, 1);
     assert.equal(fixture.registry.messageQueues.size, 0);
     const waiting = received.filter(item => item.text.includes('"content":""'));
@@ -2304,3 +2308,43 @@ for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
         });
     }
 }
+
+for (const stream of [false, true])
+    for (const anti of [false, true])
+        test(`PG auto_fallback ${anti ? "anti" : "plain"} ${stream ? "SSE" : "JSON"} accepts oversized invalid client tools and unpaired legacy history`, async t => {
+            const fixture = setup(() => success, { pgToolCallingMode: "auto_fallback" });
+            t.after(() => fixture.scheduler.close());
+            const req = request((anti ? "anti-" : "") + "gemini-3.8-flash", stream);
+            req.body.tools = [
+                {
+                    function: { description: "x".repeat(270000), name: "lookup", parameters: { type: "bad-schema" } },
+                    type: "function",
+                },
+            ];
+            req.body.functions = [{ name: "old" }];
+            req.body.messages = [
+                { content: "unpaired", name: "missing", role: "function" },
+                { content: "continue", role: "assistant", tool_calls: "broken" },
+            ];
+            req.body.tool_choice = "required";
+            const res = new Response();
+            await fixture.handler.processOpenAIRequest(req, res);
+            assert.equal(res.statusCode, 200);
+            assert.equal(fixture.sent.length, 1);
+            const upstream = JSON.parse(fixture.sent[0].request.body);
+            const serialized = JSON.stringify(upstream);
+            assert.match(serialized, /bad-schema/);
+            assert.match(serialized, /unpaired/);
+            assert.match(serialized, /broken/);
+            const declarations = (upstream.tools || []).flatMap(tool => tool.functionDeclarations || []);
+            assert.equal(
+                declarations.some(tool => tool.name === "lookup"),
+                false
+            );
+            if (anti) assert.equal(declarations.length, 1);
+            else assert.equal(declarations.length, 0);
+            if (stream) {
+                assert.match(res.body, /hello/);
+                assert.match(res.body, /\[DONE\]/);
+            } else assert.equal(JSON.parse(res.body).choices[0].message.content, "hello");
+        });

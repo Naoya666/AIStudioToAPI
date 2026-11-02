@@ -1398,7 +1398,7 @@ class RequestHandler {
             this.logger.info(
                 `[Anti] request=${requestId} requested=${JSON.stringify(req.body.model)} model=${policy.realModel} enabled=${policy.enabled} source=${policy.source} reason=${policy.reason || "none"}`
             );
-            const baseline = structuredClone(req.body);
+            let baseline = structuredClone(req.body);
             baseline.model = policy.model;
             delete baseline.anti_truncation;
             let clientContract;
@@ -1409,12 +1409,10 @@ class RequestHandler {
             } catch (error) {
                 return this._sendErrorResponse(res, error.status || 400, error.message);
             }
-            const injected = policy.enabled ? AntiTruncation.inject(baseline) : { body: structuredClone(baseline) };
-            if (clientContract && !policy.enabled && this.config.pgToolCallingMode !== "strict") {
-                if (injected.body.tools) injected.body.tool_choice = clientContract.choice === "none" ? "none" : "auto";
-                if (injected.body.functions)
-                    injected.body.function_call = clientContract.choice === "none" ? "none" : "auto";
+            if (clientContract?.mode === "auto_fallback") {
+                baseline = require("./codeAssistant/AutoToolFallback").textRequest(baseline, clientContract);
             }
+            const injected = policy.enabled ? AntiTruncation.inject(baseline) : { body: structuredClone(baseline) };
             const suffixMode = FormatConverter.parseModelStreamingModeSuffix(
                 FormatConverter.parseModelBuiltInToolSuffixes(req.body.model).cleanModelName
             ).streamingMode;
@@ -1481,7 +1479,7 @@ class RequestHandler {
             };
             if (clientContract)
                 proxyRequest.client_tool_contract = {
-                    body: baseline,
+                    body: { ...req.body, model: baseline.model },
                     mode: this.config.pgToolCallingMode || "auto_fallback",
                     syntheticName: injected.name,
                 };
@@ -1491,9 +1489,15 @@ class RequestHandler {
                     log: event => this.logger.info(`[Anti] request=${requestId} model=${model} event=${event}`),
                     originalName: injected.name,
                     res,
+                    toolMode: this.config.pgToolCallingMode || "auto_fallback",
                 };
                 Object.defineProperty(proxyRequest, "__antiContext", { value: context });
-                res.__antiAttempt = new AntiTruncation.Attempt(injected.name, context.log);
+                res.__antiAttempt = new AntiTruncation.Attempt(
+                    injected.name,
+                    context.log,
+                    0,
+                    this.config.pgToolCallingMode || "auto_fallback"
+                );
                 res.__antiIncludeUsage = req.body.stream_options?.include_usage === true;
             }
             this._initializeProxyRequestAttempt(proxyRequest);
@@ -5053,7 +5057,8 @@ class RequestHandler {
         if (context) {
             const name = `agw_emit_${require("node:crypto").randomBytes(12).toString("hex")}`;
             proxyRequest.body = context.baseline.split(context.originalName).join(name);
-            context.res.__antiAttempt = new AntiTruncation.Attempt(name, context.log);
+            context.res.__antiAttempt = new AntiTruncation.Attempt(name, context.log, 0, context.toolMode);
+            if (proxyRequest.client_tool_contract) proxyRequest.client_tool_contract.syntheticName = name;
             context.log("attempt_reset");
         }
         proxyRequest.request_attempt_number = (proxyRequest.request_attempt_number || 1) + 1;

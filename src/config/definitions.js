@@ -34,7 +34,7 @@ module.exports = [
         ...["PG", "BUILD"].map(channel => ({
             choices: ["auto_fallback", "strict"],
             description:
-                "OpenAI Chat Completions：auto_fallback 容许正文；strict 按原始工具契约校验，失败报错，不修复、不重试。工具结果缓冲验证后输出。其余 PG 协议维持既有行为。",
+                "OpenAI Chat Completions：auto_fallback 不校验工具契约，工具定义与历史作为文字上下文，出字优先；不能解析的工具调用降级正文，不额外重试。strict 按原始工具契约校验，失败报错，不修复、不重试。其余 PG 协议维持既有行为。",
             label: channel + " 工具模式",
             name: channel + "_TOOL_CALLING_MODE",
             path: channel === "PG" ? "pgToolCallingMode" : "buildToolCallingMode",

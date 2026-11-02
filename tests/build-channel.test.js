@@ -232,14 +232,29 @@ for (const mode of ["auto_fallback", "strict"])
             Tools.prepareTools({ ...base, parallel_tool_calls: false, tool_choice: choice, tools }, { mode });
         assert.equal(Tools.parseToolReply("plain", context("auto")).content, "plain");
         assert.equal(Tools.parseToolReply(reply([call]), context("auto")).tool_calls.length, 1);
-        assert.throws(() => Tools.parseToolReply(reply([{ arguments: {}, name: "other" }]), context("auto")), {
-            code: "invalid_tool_response",
-        });
-        assert.throws(() => Tools.parseToolReply('{"tool_calls":[', context("auto")), {
-            code: "invalid_tool_response",
-        });
-        assert.throws(() => Tools.parseToolReply(reply([{ arguments: "broken", name: "lookup" }]), context("auto")));
-        assert.throws(() => Tools.parseToolReply(reply([call]), context("none")));
+        if (mode === "strict") {
+            assert.throws(() => Tools.parseToolReply(reply([{ arguments: {}, name: "other" }]), context("auto")), {
+                code: "invalid_tool_response",
+            });
+            assert.throws(() => Tools.parseToolReply('{"tool_calls":[', context("auto")), {
+                code: "invalid_tool_response",
+            });
+            assert.throws(() =>
+                Tools.parseToolReply(reply([{ arguments: "broken", name: "lookup" }]), context("auto"))
+            );
+            assert.throws(() => Tools.parseToolReply(reply([call]), context("none")));
+        } else {
+            for (const raw of [
+                reply([{ arguments: {}, name: "other" }]),
+                '{"tool_calls":[',
+                reply([{ arguments: "broken", name: "lookup" }]),
+            ]) {
+                const message = Tools.parseToolReply(raw, context("auto"));
+                assert.equal(message.content, raw);
+                assert.equal(message.tool_calls, undefined);
+            }
+            assert.equal(Tools.parseToolReply(reply([call]), context("none")).content, reply([call]));
+        }
         const badSchema = reply([{ arguments: { q: 123 }, name: "lookup" }]);
         const forced = { function: { name: "lookup" }, type: "function" };
         if (mode === "strict") {
@@ -252,13 +267,19 @@ for (const mode of ["auto_fallback", "strict"])
             for (const choice of ["required", forced])
                 assert.equal(Tools.parseToolReply("plain", context(choice)).content, "plain");
             assert.equal(Tools.parseToolReply(reply([call, call]), context("auto")).tool_calls.length, 2);
-            assert.match(Tools.toolInstructions(context(forced)), /tool_choice="auto"/);
+            assert.match(Tools.toolInstructions(context(forced)), /Prioritize answering the user in text/);
         }
         assert.equal(
             Tools.prepareTools({ ...base, messages: history, tools }, { mode }).messages[1].tool_call_id,
             "c1"
         );
-        assert.throws(() => Tools.prepareTools({ ...base, messages: history.slice(1), tools }, { mode }));
+        if (mode === "strict")
+            assert.throws(() => Tools.prepareTools({ ...base, messages: history.slice(1), tools }, { mode }));
+        else
+            assert.equal(
+                Tools.prepareTools({ ...base, messages: history.slice(1), tools }, { mode }).messages[0].content,
+                "result"
+            );
     });
 test("legacy function histories normalize and replies retain legacy output shape", () => {
     const legacy = {
@@ -558,10 +579,14 @@ for (const stream of [false, true])
             }
             const bad = handlerFixture(t, { mode, output: reply([{ arguments: {}, name: "other" }]) });
             await processBuild(bad.h, { body, method: "POST" }, bad.res);
-            assert.deepEqual(bad.releases, [false]);
+            assert.deepEqual(bad.releases, [mode === "auto_fallback"]);
             assert.equal(bad.requests.length, 1);
             assert.equal(bad.finished[0].usage.total_tokens, 12);
-            if (stream) {
+            if (mode === "auto_fallback") {
+                assert.equal(bad.finished[0].outcome, "success");
+                if (stream) assert.match(bad.res.output, /\[DONE\]/);
+                else assert.equal(bad.res.body.choices[0].message.tool_calls, undefined);
+            } else if (stream) {
                 assert.doesNotMatch(bad.res.output, /"delta":\{"tool_calls"/);
                 assert.doesNotMatch(bad.res.output, /\[DONE\]/);
             } else assert.equal(bad.res.statusCode, 502);
@@ -613,7 +638,13 @@ test("synthetic answer protocol coexists with the Build adapter and both tool mo
             const out = new Anti.Attempt(injected.name).nonStream(native, converter, base.model);
             assert.equal(out.choices[0].message.content, long);
             assert.equal(out.choices[0].message.tool_calls, undefined);
-            assert.throws(() => Tools.parseToolReply('{"content":null,"tool_calls":[', contract));
+            if (mode === "strict")
+                assert.throws(() => Tools.parseToolReply('{"content":null,"tool_calls":[', contract));
+            else
+                assert.equal(
+                    Tools.parseToolReply('{"content":null,"tool_calls":[', contract).content,
+                    '{"content":null,"tool_calls":['
+                );
         }
     assert.ok(
         prepare({ ...base, messages: wrapped(envelope()), model: "anti-build-st/gemini-3.8-flash" }, config, {}).anti
@@ -820,4 +851,41 @@ for (const stream of [false, true])
             assert.equal(answer, expected);
             assert.equal(finish, repaired ? "length" : "stop");
             assert.equal(usage.total_tokens, 12);
+        });
+
+for (const stream of [false, true])
+    for (const prefix of ["build/", "build-st/", "anti-build/", "anti-build-st/"])
+        test(`${prefix} auto_fallback ${stream ? "SSE" : "JSON"} delivers prose despite invalid schema and broken history`, async t => {
+            const st = envelope();
+            st.messageMetadata[0].tool_calls = [
+                { function: { arguments: "invalid", name: "lookup" }, id: "duplicate" },
+                { id: "duplicate" },
+            ];
+            st.messageMetadata[1].tool_call_id = "missing";
+            const malformed = { ...tools[0], function: { ...tools[0].function, parameters: { type: "bad-schema" } } };
+            const f = handlerFixture(t, { output: 'already generated text, including "tool_calls": examples' });
+            const body = {
+                ...base,
+                messages: prefix.includes("-st/") ? wrapped(st) : [{ content: "unpaired result", role: "tool" }],
+                model: prefix + "gemini-3.8-flash",
+                stream,
+                stream_options: { include_usage: true },
+                tools: [malformed],
+            };
+            await processBuild(f.h, { body, method: "POST" }, f.res);
+            assert.deepEqual(f.releases, [true]);
+            assert.equal(f.requests.length, 1);
+            assert.equal(f.failures.length, 0);
+            assert.equal(f.finished[0].usage.total_tokens, 12);
+            if (stream) {
+                assert.match(f.res.output, /already generated text/);
+                assert.match(f.res.output, /\[DONE\]/);
+                assert.doesNotMatch(f.res.output, /invalid_tool_response|agw_emit_/);
+            } else {
+                assert.equal(
+                    f.res.body.choices[0].message.content,
+                    'already generated text, including "tool_calls": examples'
+                );
+                assert.equal(f.res.body.choices[0].message.tool_calls, undefined);
+            }
         });

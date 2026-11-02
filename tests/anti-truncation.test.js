@@ -48,10 +48,12 @@ test("capability matrix excludes multimodal, hosted tools and unknown models", (
         { messages: [{ content: [{ type: "image_url" }] }], model: `anti-${model}` },
         { model: `anti-${model}`, response_format: { type: "json_object" } },
     ])
-        assert.throws(() => resolve(body, {}), { status: 400 });
+        assert.throws(() => resolve(body, { pgToolCallingMode: "strict" }), { status: 400 });
     assert.equal(
-        resolve({ model: `anti-${model}`, tool_choice: { function: { name: "weather" }, type: "function" } }, {})
-            .reason,
+        resolve(
+            { model: `anti-${model}`, tool_choice: { function: { name: "weather" }, type: "function" } },
+            { pgToolCallingMode: "strict" }
+        ).reason,
         "forced_real_tool"
     );
 });

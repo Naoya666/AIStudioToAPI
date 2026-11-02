@@ -58,7 +58,8 @@ function resolve(body, config, protocol = "openai", modelName = body.model || "g
         return { ...id, enabled: true, source };
     }
     if (protocol !== "openai") return skip("anti_truncation_unsupported_protocol");
-    const choice = body.tool_choice ?? body.function_call;
+    const autoTools = (config.pgToolCallingMode || "auto_fallback") === "auto_fallback";
+    const choice = autoTools ? undefined : (body.tool_choice ?? body.function_call);
     if (choice && typeof choice === "object" && (choice.function?.name || choice.name))
         return { ...id, enabled: false, reason: "forced_real_tool", source };
     // Only allow the text/function protocol verified by isolated tests. New models
@@ -76,8 +77,8 @@ function resolve(body, config, protocol = "openai", modelName = body.model || "g
         body.messages?.some(
             message => Array.isArray(message.content) && message.content.some(part => part.type !== "text")
         ) ||
-        body.tools?.some(tool => tool.type !== "function") ||
-        body.functions ||
+        (!autoTools && Array.isArray(body.tools) && body.tools.some(tool => tool?.type !== "function")) ||
+        (!autoTools && body.functions) ||
         (choice !== undefined && !["auto", "none", "required"].includes(choice))
     )
         return skip("anti_truncation_unsupported_combination");
@@ -163,7 +164,8 @@ function parseResponse(raw) {
 }
 
 class Attempt {
-    constructor(name, log = () => {}, sideBufferBytes = 0) {
+    constructor(name, log = () => {}, sideBufferBytes = 0, mode = "strict") {
+        this.mode = mode;
         this.name = name;
         this.log = log;
         this.sideBufferBytes = sideBufferBytes;
@@ -251,7 +253,8 @@ class Attempt {
             if (state.ended) throw error("anti_truncation_protocol_error", "Output after choice finished", 502);
             const parts = candidate.content?.parts || [];
             const found = parts.some(part => part.functionCall?.name === this.name);
-            if (found) {
+            state.sawSynthetic ||= found;
+            if (found && this.mode !== "auto_fallback") {
                 if (state.pending.length || state.plainDelivered) this.log("content_conflict");
                 state.pending = [];
                 state.pendingBytes = 0;
@@ -260,7 +263,21 @@ class Attempt {
             const output = [];
             for (const part of parts) {
                 if (part.functionCall?.name === this.name) {
-                    const decoded = decode(part.functionCall.args);
+                    let decoded;
+                    if (this.mode === "auto_fallback") {
+                        try {
+                            decoded = decode(part.functionCall.args);
+                        } catch (error) {
+                            if (error.code === "anti_truncation_limit") throw error;
+                            decoded = {
+                                content: require("./codeAssistant/AutoToolFallback").recoverContent(
+                                    part.functionCall.args
+                                ),
+                                repaired: true,
+                            };
+                        }
+                    } else decoded = decode(part.functionCall.args);
+                    if (decoded.content) state.answerRecovered = true;
                     this.bytes += Buffer.byteLength(decoded.content);
                     if (this.bytes > MAX_BYTES)
                         throw error("anti_truncation_limit", "Synthetic response exceeds size limit", 502);
@@ -271,7 +288,10 @@ class Attempt {
                         this.log("content_conflict");
                         continue;
                     }
-                    if (buffered || this.sideBufferBytes > 0) {
+                    if (this.mode === "auto_fallback") {
+                        output.push(part);
+                        state.plainDelivered = true;
+                    } else if (buffered || this.sideBufferBytes > 0) {
                         state.pending.push(part);
                         state.pendingBytes += Buffer.byteLength(part.text);
                         if (!buffered && state.pendingBytes >= this.sideBufferBytes) {
@@ -286,6 +306,18 @@ class Attempt {
                     }
                 } else output.push(part);
             }
+            state.clientCallDelivered ||= output.some(part => part.functionCall && !part.thought);
+            if (
+                (candidate.finishReason || buffered) &&
+                this.mode === "auto_fallback" &&
+                state.sawSynthetic &&
+                !state.clientCallDelivered &&
+                !state.answerRecovered &&
+                !state.plainDelivered &&
+                !state.pending.length &&
+                !output.some(p => p.text || p.functionCall)
+            )
+                throw error("anti_truncation_decode_failed", "Upstream produced no recoverable answer text", 502);
             if (candidate.finishReason || buffered) {
                 output.push(...state.pending);
                 state.pending = [];

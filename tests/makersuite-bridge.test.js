@@ -969,3 +969,44 @@ test("large Build attachments upload through the existing page and sign only the
     assert.equal(submitted[0][0][0][0][17][1], "fixture-upload-path");
     assert.equal(typeof submitted[1], "string");
 });
+
+for (const stream of [false, true])
+    for (const kind of ["text", "unknown-call"])
+        test(`PG auto_fallback actual transport ${stream ? "SSE" : "JSON"} delivers ${kind} as text despite invalid client schema/history`, async t => {
+            const { encStruct } = require("../src/core/MakerSuiteCodec");
+            const { PlaygroundTransport } = require("../src/core/PlaygroundTransport");
+            const text = Array(11).fill(null);
+            text[1] = 'answer with "tool_calls": examples';
+            const parts = [text];
+            if (kind === "unknown-call") {
+                const tool = Array(11).fill(null);
+                tool[10] = ["unknown", encStruct({ q: 123 }), "call"];
+                parts.push(tool);
+            }
+            const wire = JSON.stringify([[[[[parts, "model"], 1]], null, [12, 3, 15, 4]]]);
+            const f = fixture(t, 0, { fetch: async () => new Response(wire, { status: 200 }) });
+            await f.init();
+            f.sandbox.TextDecoder = TextDecoder;
+            Object.setPrototypeOf(f.bridge, PlaygroundTransport.prototype);
+            f.bridge.ready = true;
+            const outputs = [],
+                usage = [];
+            const request = {
+                body: JSON.stringify({ contents: [{ parts: [{ text: "query" }], role: "user" }] }),
+                client_tool_contract: {
+                    body: {
+                        messages: [{ content: "unpaired", role: "tool" }],
+                        tools: [{ function: { name: "lookup", parameters: { type: "bad-schema" } }, type: "function" }],
+                    },
+                    mode: "auto_fallback",
+                },
+                method: "POST",
+                onTokenUsage: value => usage.push(value),
+                path: `/v1beta/models/gemini-3.8-flash:${stream ? "streamGenerateContent" : "generateContent"}`,
+            };
+            const result = await f.bridge.generate(request, stream ? value => outputs.push(value) : null);
+            const delivered = stream ? outputs[0] : result;
+            assert.deepEqual(delivered.candidates[0].content.parts, [{ text: 'answer with "tool_calls": examples' }]);
+            assert.equal(usage.at(-1).totalTokenCount, 15);
+            assert.equal(f.calls.filter(call => call.url.endsWith("/GenerateContent")).length, 1);
+        });

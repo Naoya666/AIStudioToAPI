@@ -367,8 +367,14 @@ class PlaygroundTransport extends MakerSuiteBridge {
             try {
                 if (rpcMethod === "CountTokens") return decodeCountResponse(result.text);
                 if (onChunk) return undefined;
-                const response = merge(chunks);
-                if (contract) {
+                let response = merge(chunks);
+                if (contract?.mode === "auto_fallback")
+                    response = require("./codeAssistant/AutoToolFallback").googleResponse(
+                        response,
+                        contract,
+                        clientContract.syntheticName
+                    );
+                if (contract?.mode === "strict") {
                     try {
                         for (const candidate of response.candidates || []) {
                             const calls = (candidate.content?.parts || [])

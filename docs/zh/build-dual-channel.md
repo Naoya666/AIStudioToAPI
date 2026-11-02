@@ -47,7 +47,7 @@ OpenAI 请求先分流：
 - 不创建额外 context、页面或浏览器；不导航切换 PG / Build，不使用 DOM 点击生成。两通道只在签名阶段共享 `proofTail`，输入框在签名结束后清空；网络与任务读取不持有该锁。Build 签名 hash 和输入框文本分别处理，附件不作为输入框正文填入。
 - 每次请求使用临时项目并要求新轨迹，附件名称随机。请求之间复用账号、context、登录、代理和签名器；**不复用含历史的项目**。这比跨请求项目池增加项目 RPC 开销，但降低历史混入风险。不修改项目源码文件承载上下文，不常驻 Build 页面。
 
-Build 任务返回累计快照，普通正文可以按新增后缀发布。不是逐 token 传输；响应头 `X-Build-Streaming: cumulative-task-snapshots` 标记此行为。工具请求使用 `buffered-tool-validation`，完整验证后才发调用；anti 请求使用 `buffered-anti-validation`，还原回答或校验工具后才发布。等待期间每 10 秒发送 SSE 注释心跳。`-real` / `-fake` / `-early` 都可解析，Build 统一采用上述任务快照机制，不承诺等同 PG 的逐块行为。
+Build 任务返回累计快照，普通正文可以按新增后缀发布。不是逐 token 传输；响应头 `X-Build-Streaming: cumulative-task-snapshots` 标记此行为。strict 工具请求使用 `buffered-tool-validation`，完整验证后才发调用；auto_fallback 使用 `buffered-tool-fallback`，完成协议读取或文字降级后发布。anti 请求使用 `buffered-anti-validation`，还原回答后发布，其中只有 strict 执行客户端工具契约校验。等待期间每 10 秒发送 SSE 注释心跳。`-real` / `-fake` / `-early` 都可解析，Build 统一采用上述任务快照机制，不承诺等同 PG 的逐块行为。
 
 读取网络失败或 JSON 中断只恢复**原任务 ID**，受当前请求期限限制；绝不因空任务、缺少用量、断流或校验失败再次生成、换号或修复调用。完成取决于模型步骤状态 1，状态 2 继续等，4 报错；上游内部工具动作不能作为最终内容完成。空任务与完成但无正文分别处理。累积正文被上游改写时停止发布，避免重复拼接。
 
@@ -57,14 +57,14 @@ Build 任务返回累计快照，普通正文可以按新增后缀发布。不�
 
 所有限制同时满足：全局工作槽、账号总并发、context 总并发、模型全局限制、账号模型限制、账号通道限制。新增：
 
-| 配置                      | 默认          | 含义                                 |
-| ------------------------- | ------------- | ------------------------------------ |
-| `BUILD_ENABLED`           | false         | 实验 Build 开关；变更重启生效        |
-| `PG_MAX_CONCURRENCY`      | 0             | 账号 PG 通道附加上限；0 为不附加限制 |
-| `BUILD_MAX_CONCURRENCY`   | 1             | 账号所有 Build 模型及两前缀共享上限  |
-| `PG_TOOL_CALLING_MODE`    | auto_fallback | PG 原生工具响应校验                  |
-| `BUILD_TOOL_CALLING_MODE` | auto_fallback | Build 提示词工具响应校验，两前缀共用 |
-| `BUILD_PRESET_MATCHING`   | false         | 可选自用预设匹配，只作用于 build/    |
+| 配置                      | 默认          | 含义                                       |
+| ------------------------- | ------------- | ------------------------------------------ |
+| `BUILD_ENABLED`           | false         | 实验 Build 开关；变更重启生效              |
+| `PG_MAX_CONCURRENCY`      | 0             | 账号 PG 通道附加上限；0 为不附加限制       |
+| `BUILD_MAX_CONCURRENCY`   | 1             | 账号所有 Build 模型及两前缀共享上限        |
+| `PG_TOOL_CALLING_MODE`    | auto_fallback | PG 工具模式：默认正文优先，strict 校验契约 |
+| `BUILD_TOOL_CALLING_MODE` | auto_fallback | Build 工具模式：默认正文优先，两前缀共用   |
+| `BUILD_PRESET_MATCHING`   | false         | 可选自用预设匹配，只作用于 build/          |
 
 这些设置接入现有受保护控制台配置及 `managed-config.json` 的保存 / 重启流程，沿用版本冲突检查。未修改运行中的生产配置。已有持久化层级白名单不会自动新增权限；开启 Build 并重启后，需在权限矩阵显式授权 `build/X`。`build-st/X` 与之共享权限。
 
@@ -108,12 +108,13 @@ Build 任务返回累计快照，普通正文可以按新增后缀发布。不�
 
 工具由**外部客户端执行**，网关不会执行用户命令或访问用户文件。Build 内部工作区工具与客户端函数不同；提示词要求不操作空工作区、不伪造结果，这不是技术性关闭上游工具。
 
-新增本地工具模式初版作用于 OpenAI Chat Completions；其余 PG 协议维持既有工具行为，Build 其余协议不开放。PG 使用原生函数结构，Build 使用声明 / JSON 输出提示词再解析，两者共用最终契约验证器（Ajv draft-07、本地引用，不加载远程 schema）：
+工具模式作用于 OpenAI Chat Completions；其余 PG 协议维持既有工具行为，Build 其余协议不开放。
 
-- `auto_fallback`：在需兼容的工具路径把 required / 指定函数按 auto 发送；允许正文。只发布 JSON 可解析、参数对象、函数属于本轮允许集且 ID 合法的调用；none 不发布调用。无需完整 schema，也不要求满足原强制选择。
-- `strict`：保留原始客户端契约，验证函数、参数 schema、required / 指定函数、none、parallel_tool_calls:false 及历史 ID / 结果关系。历史同名且本轮提供 schema 时也校验。缺少历史 schema 时只做结构与关联检查，不臆造旧契约。违反要求返回错误，不自动修复、重试或换号。严格验证不赋予上游原生强制调用能力。
-- 普通正文在 auto 中成功；明显带损坏 `tool_calls` / `arguments` / `function_call` 标记的 JSON 或 function_calls 协议块报 502；无法完整识别的调用不作为工具发布。
-- 现代 tools 与旧 functions 分别归一化，不混用；旧请求返回 function_call 形状。所有工具流在检查后才发送可执行字段。PG 原生工具请求也缓冲最终结果；普通 PG 文本继续原有流式能力。
+- `auto_fallback`：**不做客户端工具契约校验，出字优先**。不编译工具 Schema，不检查定义大小 / 数量、历史 ID / 结果配对、required / 指定函数 / parallel 等契约。PG 将客户端工具定义与完整历史元数据作为文字上下文发送，避免请求再次被上游原生工具 Schema / 历史约束拒绝；Build 将原始定义与历史保留在聊天附件中。可用的完整工具请求仍可转换为客户端调用；无法转换、工具不可用或重复输出 ID 时，保留正文或原始生成文字，绝不抛工具校验错误，也不猜补参数或发布为可执行动作。纯正文和工具协议讲解中的 JSON 标记不会被关键词检查拦截。此模式不保证强制调用工具；需要原生契约约束时使用 strict。
+- `strict`：保留原始客户端契约。PG 使用原生函数结构，Build 使用声明 / JSON 输出提示词；两者使用契约验证器（Ajv draft-07、本地引用，不加载远程 Schema）。验证函数、参数 Schema、required / 指定函数、none、parallel_tool_calls:false 及历史 ID / 结果关系。违反要求返回错误，不自动修复、重试或换号。
+- 工具回合缓冲完整输出后再读取，避免将不完整的参数发送为可执行调用；自动模式按文本降级结束 SSE，并保留 usage。普通无工具 PG 文本继续原有流式能力。
+- PG / Build anti 在自动模式中容错解包，保留混合封装中的正文、直接正文和已接收到的截断回答字符，不将内部 `agw_emit_*` 作为客户端工具发布。不补全可执行参数；完全没有可恢复正文的内部回答失败仍如实报错。strict 维持原有封装要求。
+- 不新增生成重试，不增加工具执行或账号切换。HTTP / JSON 解码、鉴权、权限、调度、通道能力和整体大小限制仍适用；ST 线协议结构检查也保持有效。
 
 ## 酒馆安装与请求例子
 
@@ -184,3 +185,7 @@ anti 示例：PG `anti-gemini-3.8-flash-high-real` 保持既有行为；Build �
 - 变更 JavaScript / Vue / 随附适配器的定向 ESLint 通过；`git diff --check` 通过。
 - `npm run lint:js` 全仓检查仍被 **6 份原有 JSON fixture 的 1721 项格式 / 键序问题**阻塞：`docs/zh/fixtures/bero-flash38-tool-choice*.json`（4 份）、`context-spread-benchmark-20261024.json` 和 `tests/fixtures/mixed-zero-capacity.json`。这些文件本次没有修改，未扩大范围进行批量格式化。
 - 未部署、重启服务、修改生产账号或额度。真实 Google 混跑、长附件效果、新版酒馆浏览器接入、真实工具往返及 Build anti 目标截断场景均未验收；能力开放状态见上文。
+
+### auto_fallback 出字优先修复回归（2026-11-02）
+
+工具自动模式已改为无契约校验的文字优先路径。全量 `npm test`：849 通过、47 个可选真实账号浏览器用例跳过、0 失败；补充边界后最终相关专项 340 / 340 通过。专项覆盖超大 / 无效工具定义、不可编译 Schema、缺失与重复历史、PG 原生和文本输出、Build / ST / anti、SSE 完整结束、usage 保留、内部封装容错、不可恢复空回答及 strict 保持拒绝。双端构建与变更文件检查通过。均使用本地 fixture / 模拟上游，不替代生产部署后的真实验收。

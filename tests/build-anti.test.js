@@ -36,25 +36,40 @@ for (const mode of ["strict", "auto_fallback"]) {
         if (mode === "auto_fallback")
             assert.equal(Anti.restore(wire("sum", { n: "relaxed" }), state).message.tool_calls.length, 1);
         else assert.throws(() => Anti.restore(wire("sum", { n: "relaxed" }), state));
-        assert.throws(() => Anti.restore(wire("unknown", {}), state));
-        assert.throws(() => Anti.restore(wire(state.name, { content: "x" }, "leaked"), state));
-        assert.throws(() =>
-            Anti.restore(
-                JSON.stringify({
-                    content: null,
-                    tool_calls: [
-                        { arguments: { content: "x" }, name: state.name },
-                        { arguments: { n: 42 }, name: "sum" },
-                    ],
-                }),
-                state
-            )
-        );
+        if (mode === "strict") {
+            assert.throws(() => Anti.restore(wire("unknown", {}), state));
+            assert.throws(() => Anti.restore(wire(state.name, { content: "x" }, "leaked"), state));
+            assert.throws(() =>
+                Anti.restore(
+                    JSON.stringify({
+                        content: null,
+                        tool_calls: [
+                            { arguments: { content: "x" }, name: state.name },
+                            { arguments: { n: 42 }, name: "sum" },
+                        ],
+                    }),
+                    state
+                )
+            );
+        } else {
+            assert.equal(Anti.restore(wire("unknown", {}), state).message.tool_calls, undefined);
+            assert.equal(Anti.restore(wire(state.name, { content: "x" }, "outer"), state).message.content, "outer\nx");
+            const mixed = JSON.stringify({
+                content: null,
+                tool_calls: [
+                    { arguments: { content: "answer" }, name: state.name },
+                    { arguments: {}, name: "sum" },
+                ],
+            });
+            assert.equal(Anti.restore(mixed, state).message.content, "answer");
+            assert.equal(Anti.restore(mixed, state).message.tool_calls, undefined);
+        }
     });
     test(`${mode}: none suppresses all real tools while answer transport remains available`, () => {
         const state = Anti.prepare(Tools.prepareTools({ ...base, tool_choice: "none", tools }, { mode }));
         assert.equal(Anti.restore(wire(state.name, { content: "ok" }), state).message.content, "ok");
-        assert.throws(() => Anti.restore(wire("sum", { n: 42 }), state));
+        if (mode === "strict") assert.throws(() => Anti.restore(wire("sum", { n: 42 }), state));
+        else assert.equal(Anti.restore(wire("sum", { n: 42 }), state).message.tool_calls, undefined);
     });
 }
 test("strict required and forced client calls cannot be satisfied by synthetic answers", () => {
@@ -65,12 +80,12 @@ test("strict required and forced client calls cannot be satisfied by synthetic a
         assert.equal(Anti.restore(wire("sum", { n: 42 }), state).message.tool_calls.length, 1);
     }
 });
-test("auto_fallback retains relaxed client choice without allowing plain-text bypass", () => {
+test("auto_fallback accepts direct text without the synthetic envelope", () => {
     const state = Anti.prepare(
         Tools.prepareTools({ ...base, tool_choice: "required", tools }, { mode: "auto_fallback" })
     );
     assert.equal(Anti.restore(wire(state.name, { content: "answer" }), state).message.content, "answer");
-    assert.throws(() => Anti.restore("plain", state));
+    assert.equal(Anti.restore("plain", state).message.content, "plain");
 });
 test("only missing closing delimiters of a synthetic answer can be repaired", () => {
     const state = Anti.prepare(null),
