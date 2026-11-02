@@ -426,6 +426,29 @@ test(
         const data = {
             contexts_summary: { busy: 9, draining: 1, max: 10, occupied: 10, ready: 0 },
             models: [],
+            token_quota_by_model: [
+                {
+                    estimated_remaining: 750,
+                    limit: 1000,
+                    model: "gemini-3.8-flash",
+                    observed_tokens: { total_tokens: 250 },
+                    scope: "pg/model",
+                    unknown_limit_accounts: 0,
+                    unknown_usage_requests: 0,
+                    window: { date: "2026-11-02" },
+                },
+                {
+                    estimated_remaining: null,
+                    known_limit: 0,
+                    limit: null,
+                    model: "build/gemini-3.8-flash",
+                    observed_tokens: { total_tokens: 50 },
+                    scope: "build/account",
+                    unknown_limit_accounts: 1,
+                    unknown_usage_requests: 1,
+                    window: { date: "2026-11-02" },
+                },
+            ],
         };
         const messages = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../ui/locales/zh.json"), "utf8"));
         await page.route("**/api/**", route =>
@@ -449,6 +472,12 @@ test(
         );
         await page.goto(`${server.resolvedUrls.local[0]}__context_display_test`);
         await page.waitForSelector(".capacity-pill");
+        const budget = page.getByRole("region", { exact: true, name: "每日 Token 预算" });
+        assert.equal(await budget.locator("progress").count(), 1);
+        assert.equal(await budget.locator("progress").evaluate(el => el.position), 0.25);
+        assert.match(await budget.innerText(), /750/);
+        assert.match(await budget.locator(".token-budget-unknown").innerText(), /额度未知/);
+        assert.equal((await budget.innerText()).includes("用户提供的估算口径"), false);
         assert.match(await page.locator(".context-pool-card .capacity-pill").innerText(), /10\s*\/\s*10/);
         assert.match(await page.locator(".pill-draining").innerText(), /排空中\s*1/);
         await page.locator(".context-pool-card .collapsible-header").click();

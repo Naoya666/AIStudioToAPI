@@ -82,6 +82,27 @@ class ConfigurationService {
             };
             atomicWrite(this.file, this.document);
         }
+        // Apply the verified Build permissions once, preserving all other model permissions.
+        if (!this.document.verifiedBuildPermissions && this.saved.buildEnabled) {
+            const policy = clone(this.saved.scheduler.modelAllowlist);
+            for (const [tier, models] of Object.entries(policy.tiers)) {
+                policy.tiers[tier] = [
+                    ...new Set([
+                        ...models.filter(model => !["build/gemini-3.8-flash", "build/gemini-4-argon"].includes(model)),
+                        "build/gemini-3.8-flash",
+                        ...(tier === "free" ? [] : ["build/gemini-4-argon"]),
+                    ]),
+                ].sort();
+            }
+            this.document = {
+                ...this.document,
+                overrides: { ...this.document.overrides, MODEL_TIER_ALLOWLIST: policy },
+                verifiedBuildPermissions: true,
+                version: this.document.version + 1,
+            };
+            atomicWrite(this.file, this.document);
+            this.saved = this.load(this.document.overrides);
+        }
         const goodPath = path.join(path.dirname(this.file), "managed-config.last-good.json");
         this.running =
             this.env.AISTUDIO_CONFIG_RECOVERY === "1" && fs.existsSync(goodPath)
@@ -252,10 +273,12 @@ class ConfigurationService {
             }));
         return {
             defaults: values(this.baseline),
-            definitions: definitions.map(d => ({
-                ...d,
-                default: d.name === "API_KEYS" ? null : publicValue(this.defaults, d),
-            })),
+            definitions: definitions
+                .filter(d => !d.hidden)
+                .map(d => ({
+                    ...d,
+                    default: d.name === "API_KEYS" ? null : publicValue(this.defaults, d),
+                })),
             environmentError: this.baselineError || null,
             hiddenModels: this.system.scheduler?.hiddenModelsSnapshot?.() || [],
             instanceId: this.instanceId,
@@ -286,7 +309,7 @@ class ConfigurationService {
                 if (!(name in overrides) && state.config[key] !== undefined) overrides[name] = state.config[key];
             }
             const next = this.load(overrides);
-            this.document = { migratedAccounts: true, overrides, version: this.document.version + 1 };
+            this.document = { ...this.document, migratedAccounts: true, overrides, version: this.document.version + 1 };
             atomicWrite(this.file, this.document);
             this.saved = next;
             Object.assign(this.running.login, next.login);
@@ -442,6 +465,7 @@ class ConfigurationService {
         return {
             migratedAccounts: true,
             overrides: Object.fromEntries(definitions.map(d => [d.name, this.value(this.running, d)])),
+            verifiedBuildPermissions: !!this.document.verifiedBuildPermissions,
             version: this.document.version,
         };
     }

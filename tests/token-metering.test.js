@@ -255,6 +255,10 @@ test("Free Build manual estimate is opt-in, shared and display-only", async t =>
     const { ConfigurationService } = require("../src/config/ConfigurationService");
     const service = new ConfigurationService({ logger }, { env: {}, file: path.join(temp(t), "config.json") });
     assert.equal(service.running.scheduler.buildFreeDailyTokenEstimate, 0);
+    assert.equal(
+        service.snapshot().definitions.some(d => d.name === "BUILD_FREE_DAILY_TOKEN_ESTIMATE"),
+        false
+    );
     service.save({ changes: { BUILD_FREE_DAILY_TOKEN_ESTIMATE: 1000000 }, version: service.document.version });
     assert.equal(service.running.scheduler.buildFreeDailyTokenEstimate, 1000000);
     const s = scheduler(t, { tier: "free" });

@@ -95,29 +95,44 @@
         </details>
 
         <section class="quota-section" aria-label="每日 Token 预算">
-            <strong>每日 Token 预算（用户提供的估算口径）</strong>
-            <p>
-                次数与 Token
-                分开计量；达到任一上游限制均可能停止生成。下列估算只用于展示，不自动禁用账号。缓存已计入输入，思考已计入输出，不重复累加。
-            </p>
-            <p v-for="q in data.token_quota_by_model || []" :key="q.model">
-                {{ q.model }}{{ q.scope === "build/account" ? "（账号全部 Build 模型共享，勿相加）" : "" }}： 预算
-                {{ q.limit === null ? "未知" : formatNumber(q.limit) }}； 已知消耗
-                {{ q.observed_tokens ? formatNumber(q.observed_tokens.total_tokens) : "未知" }}；
-                {{ q.estimated_remaining === null ? "已知预算部分的剩余上界" : "预估剩余" }}
-                {{
-                    q.limit === null && !q.known_limit
-                        ? "未知"
-                        : formatNumber(q.estimated_remaining ?? q.known_remaining_upper_bound)
-                }}； 未知用量请求 {{ q.unknown_usage_requests }}，未知额度账号 {{ q.unknown_limit_accounts }}。 窗口
-                {{ q.window.date }} PT{{
-                    q.window.reset_verified
-                        ? ""
-                        : q.scope === "build/account"
-                          ? "（Build 上游重置未确认）"
-                          : "（本地统计窗口）"
-                }}
-            </p>
+            <strong>每日 Token 预算</strong>
+            <p class="quota-hint">次数与 Token 分开计量；估算仅用于展示。缓存计入输入，思考计入输出。</p>
+            <div class="quota-grid">
+                <article v-for="q in data.token_quota_by_model || []" :key="q.model" class="quota-card">
+                    <div class="token-budget-heading">
+                        <strong class="quota-model-name">{{ q.model }}</strong>
+                        <span class="quota-hint">{{ q.window.date }} PT</span>
+                    </div>
+                    <p v-if="q.scope === 'build/account'" class="quota-hint">账号全部 Build 模型共享，勿相加</p>
+                    <div class="token-budget-heading">
+                        <span
+                            >已知消耗
+                            {{ q.observed_tokens ? formatNumber(q.observed_tokens.total_tokens) : "未知" }}</span
+                        >
+                        <span>预算 {{ q.limit === null ? "未知" : formatNumber(q.limit) }}</span>
+                    </div>
+                    <progress
+                        v-if="q.limit > 0"
+                        class="token-budget-progress"
+                        :value="Math.min(q.limit, q.observed_tokens?.total_tokens || 0)"
+                        :max="q.limit"
+                        :aria-label="`${q.model} 已知 Token 消耗占预算比例`"
+                    ></progress>
+                    <div v-else class="token-budget-unknown">额度未知，暂无法计算进度</div>
+                    <div class="token-budget-heading">
+                        <span>{{ q.estimated_remaining === null ? "剩余上界" : "预估剩余" }}</span>
+                        <strong>{{
+                            q.limit === null && !q.known_limit
+                                ? "未知"
+                                : formatNumber(q.estimated_remaining ?? q.known_remaining_upper_bound)
+                        }}</strong>
+                    </div>
+                    <p v-if="q.unknown_usage_requests || q.unknown_limit_accounts" class="quota-hint">
+                        未知用量 {{ q.unknown_usage_requests }} 请求 · 未知额度
+                        {{ q.unknown_limit_accounts }} 账号；进度仅反映已知消耗。
+                    </p>
+                </article>
+            </div>
         </section>
 
         <!-- 2. Quota Section -->
@@ -1569,6 +1584,27 @@ async function sendReset(url, body) {
 }
 
 /* 2. Quota Section */
+.token-budget-heading {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 0.8rem;
+}
+.token-budget-progress {
+    width: 100%;
+    height: 12px;
+    margin: 12px 0;
+    accent-color: var(--color-primary, #3b82f6);
+}
+.token-budget-unknown {
+    margin: 12px 0;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--bg-body);
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
 .quota-section {
     padding: 16px;
     margin: 16px 0;

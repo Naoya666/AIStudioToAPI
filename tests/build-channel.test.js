@@ -409,7 +409,11 @@ test("atomic channel admission permits PG10 + Build1, shares prefixes/models, an
         }),
         statePath: null,
     };
-    const auth = { accountNameMap: new Map(), getRotationIndices: () => [0] };
+    const auth = {
+        accountLoginService: { state: { accounts: [{ authIndex: 0, manualTier: "pro" }] } },
+        accountNameMap: new Map(),
+        getRotationIndices: () => [0],
+    };
     const scheduler = new ModelScheduler(cfg, auth, { error() {}, warn() {} });
     scheduler.browserManager = { isContextReady: () => true };
     t.after(() => scheduler.close());

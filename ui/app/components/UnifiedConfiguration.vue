@@ -27,7 +27,6 @@
                 {{ display(item.name, snapshot.saved[item.name]) }}（{{ item.reason }}）
             </p>
         </details>
-        <BuildChannelPanel />
         <div v-if="snapshot" class="configuration-layout">
             <nav class="configuration-directory" :aria-label="t('adminConfigGroups')">
                 <p class="directory-title">{{ t("adminConfigGroups") }}</p>
@@ -259,6 +258,7 @@
                             >恢复环境值 / 默认值（保存后提交）</ElButton
                         >
                     </div>
+                    <BuildPresetPanel v-if="group.name === 'Playground / Build 双通道'" />
                 </fieldset>
             </div>
         </div>
@@ -273,7 +273,7 @@ const groupsContainer = ref(null);
 let groupObserver;
 
 import { useDraftGuard } from "../composables/useDraftGuard";
-import BuildChannelPanel from "./BuildChannelPanel.vue";
+import BuildPresetPanel from "./BuildPresetPanel.vue";
 import ModelAllowlistEditor from "./ModelAllowlistEditor.vue";
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { ElButton, ElSwitch, ElSelect, ElOption, ElInputNumber, ElInput, ElPopover, ElMessageBox } from "element-plus";

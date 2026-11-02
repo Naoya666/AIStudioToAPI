@@ -435,39 +435,6 @@ function onMockChange() {
                             </b>
                         </div>
 
-                        <div v-if="model.token_quota" class="token-quota">
-                            <p>
-                                Token 日预算（观测估算）：{{
-                                    model.token_quota.limit === null ? "未知" : number(model.token_quota.limit)
-                                }}
-                            </p>
-                            <p>
-                                已知消耗
-                                {{
-                                    model.token_quota.observed_tokens
-                                        ? number(model.token_quota.observed_tokens.total_tokens)
-                                        : "未知"
-                                }}；
-                                {{ model.token_quota.estimated_remaining === null ? "已知预算剩余上界" : "预估剩余" }}
-                                {{
-                                    model.token_quota.limit === null && !model.token_quota.known_limit
-                                        ? "未知"
-                                        : number(
-                                              model.token_quota.estimated_remaining ??
-                                                  model.token_quota.known_remaining_upper_bound
-                                          )
-                                }}
-                            </p>
-                            <p>
-                                用量未知 {{ model.token_quota.unknown_usage_requests }} 请求；额度未知
-                                {{ model.token_quota.unknown_limit_accounts }} 账号。
-                            </p>
-                            <p v-if="model.token_quota.scope === 'build/account'">
-                                同账号全部 Build 模型共享此池，不可跨模型相加；上游重置时间未知。
-                            </p>
-                            <p v-if="model.token_quota.coverage === 'partial'">节点 Token 数据覆盖不全。</p>
-                        </div>
-
                         <!-- 账号池健康环形条 -->
                         <div class="account-ring-box">
                             <div class="account-ring-wrapper">

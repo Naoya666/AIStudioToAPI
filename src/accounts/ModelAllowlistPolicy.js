@@ -49,7 +49,7 @@ function initialPolicy(models) {
             LEVELS.map(tier => [
                 tier,
                 tier === "free"
-                    ? names.filter(model => !PAID_MODELS.includes(model) && !model.startsWith("build/"))
+                    ? names.filter(model => !PAID_MODELS.includes(model) && model !== "build/gemini-4-argon")
                     : [...new Set([...names, ...PAID_MODELS])],
             ])
         ),
@@ -63,6 +63,6 @@ function allows(tier, model, policy) {
     model = normalizeModelName(model);
     return policy
         ? policy.tiers[tier || "free"].includes(model)
-        : !PAID_MODELS.includes(model) || (tier && tier !== "free");
+        : (!PAID_MODELS.includes(model) && model !== "build/gemini-4-argon") || (tier && tier !== "free");
 }
 module.exports = { allows, catalogModels, initialPolicy, LEVELS, PAID_MODELS, parsePolicy };

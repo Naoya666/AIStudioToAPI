@@ -353,3 +353,40 @@ test("environment bootstrap is persisted once and later environment changes do n
     const restarted = f.create({ logger }, { env: { MODEL_TIER_ALLOWLIST: JSON.stringify(changedEnv) } });
     assert.deepEqual(restarted.running.scheduler.modelAllowlist, policy);
 });
+
+test("verified Build defaults separate Free Flash from paid Argon across aliases", () => {
+    const policy = initialPolicy(["build/gemini-3.8-flash", "build/gemini-4-argon"]);
+    for (const tier of [null, ...LEVELS]) {
+        for (const prefix of ["build/", "build-st/", "anti-build/", "anti-build-st/"]) {
+            assert.equal(canUseModel({ manualTier: tier }, `${prefix}gemini-3.8-flash-high`, policy), true);
+            assert.equal(
+                canUseModel({ manualTier: tier }, `${prefix}gemini-4-argon-high`, policy),
+                !!tier && tier !== "free"
+            );
+        }
+    }
+});
+
+test("existing Build permissions migrate once and later operator edits survive reload and account initialization", t => {
+    const f = fixture(t, { BUILD_ENABLED: "true" });
+    const old = clone(f.service.saved.scheduler.modelAllowlist);
+    for (const tier of LEVELS) old.tiers[tier] = ["gemini-3.8-flash"];
+    old.tiers.free.push("build/gemini-4-argon");
+    const document = JSON.parse(fs.readFileSync(f.file, "utf8"));
+    document.overrides.MODEL_TIER_ALLOWLIST = old;
+    delete document.verifiedBuildPermissions;
+    atomicWrite(f.file, document);
+    const service = f.create();
+    const policy = service.saved.scheduler.modelAllowlist;
+    for (const tier of LEVELS) {
+        assert.ok(policy.tiers[tier].includes("gemini-3.8-flash"));
+        assert.ok(policy.tiers[tier].includes("build/gemini-3.8-flash"));
+        assert.equal(policy.tiers[tier].includes("build/gemini-4-argon"), tier !== "free");
+        assert.equal(policy.tiers[tier].includes("gemini-3.1-pro-preview"), false);
+    }
+    service.initializeAccounts({ config: {} });
+    const edited = clone(policy);
+    edited.tiers.pro = edited.tiers.pro.filter(model => model !== "build/gemini-4-argon");
+    f.inDirectory(() => service.save({ changes: { MODEL_TIER_ALLOWLIST: edited }, version: service.document.version }));
+    assert.deepEqual(f.create().saved.scheduler.modelAllowlist, edited);
+});

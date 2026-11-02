@@ -6,6 +6,7 @@ module.exports = [
         description:
             "Free Build 账号共享日 Token 预算的人工估算；0 表示未知，不能从 Pro 额度按比例推算。仅用于面板展示，不据此封禁或宣称 Google 上限。",
         group: "Playground / Build 双通道",
+        hidden: true,
         label: "Free Build 日 Token 预算估算",
         maximum: Number.MAX_SAFE_INTEGER,
         minimum: 0,
@@ -17,8 +18,8 @@ module.exports = [
     ...[
         {
             description:
-                "仅开放 OpenAI Chat Completions；复用现有账号 context 与页面。Build anti 全部待验证，显式 anti 请求报错；沿用既有抗截断设置。新增模型须在账号层级白名单授权。",
-            label: "启用 Build 代码助手（待真实上游验收）",
+                "仅开放 OpenAI Chat Completions；复用现有账号 context 与页面。Build anti 全部待验证，显式 anti 请求报错；沿用既有抗截断设置。Build Flash 全层级可用，Build Argon 仅 Pro 及以上可用；其他新增模型须在账号层级白名单授权。",
+            label: "启用 Build 代码助手",
             name: "BUILD_ENABLED",
             path: "buildEnabled",
             type: "boolean",
@@ -818,7 +819,7 @@ module.exports = [
     {
         application: "hot",
         description:
-            "洛杉矶时区的 HH:mm 时间，默认 00:00；也是已识别日额度耗尽的恢复时间，关闭每日批量重置后仍用于计算截止时间",
+            "洛杉矶时区的 HH:mm 时间，默认 00:00；PG / Build 共用，也是已识别日额度耗尽的恢复时间，关闭每日批量重置后仍用于计算截止时间",
         group: "冷却与每日恢复",
         label: "每日冷却重置时间",
         minimum: 1,
