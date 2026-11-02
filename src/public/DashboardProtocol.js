@@ -118,6 +118,13 @@ function validateEnvelope(body, expectedId, now = Date.now()) {
             !rawByModel.has(model.model)
         )
             invalid();
+        if (
+            model.token_quota !== undefined &&
+            (!require("./TokenQuotaProjection").validateTokenQuota(model.token_quota) ||
+                model.token_quota.window.date !== snapshot.usage_window.date ||
+                model.token_quota.pool !== (model.model.startsWith("build/") ? "build" : model.model))
+        )
+            invalid();
         seen.add(model.model);
         checkCounts(model.today, ["requests"]);
         checkCounts(model.realtime, ["active", "available_accounts", "queued", "rate_limited_accounts"]);

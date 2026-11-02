@@ -209,6 +209,28 @@ class UsageStatsService {
         this._pushAttempt(tracker, normalizedAuthIndex, resolvedAccountName);
     }
 
+    async getTokenStatistics(options = {}) {
+        if (!this.enabled) return { enabled: false, models: [], timezone: "America/Los_Angeles" };
+        await this.appendPromise;
+        return {
+            enabled: true,
+            ...(await this.storage.call("token_statistics", {
+                ...options,
+                day: options.day ?? require("../public/DashboardProtocol").usageDate(Date.now()),
+            })),
+        };
+    }
+
+    recordTokenUsage(requestId, attemptId, usage, metadata = {}) {
+        const tracker = this.activeRequests.get(requestId);
+        if (!tracker) return;
+        tracker.tokenAttempts ||= new Map();
+        const entry = tracker.tokenAttempts.get(attemptId) || { usage: {}, ...metadata };
+        for (const key of require("./TokenUsage").FIELDS)
+            if (usage?.[key] !== undefined) entry.usage[key] = Math.max(entry.usage[key] || 0, usage[key]);
+        tracker.tokenAttempts.set(attemptId, entry);
+    }
+
     finishRequest(requestId, result = {}) {
         if (!this.enabled) return null;
         const tracker = this.activeRequests.get(requestId);
@@ -261,7 +283,15 @@ class UsageStatsService {
             startedAt: tracker.startedAt,
             statusCode,
             streamMode: tracker.requestCategory === "generation" ? tracker.streamMode || "non" : null,
-            usage: result.usage ?? null,
+            tokenAttempts: tracker.tokenAttempts ? [...tracker.tokenAttempts.values()] : [],
+            usage: tracker.tokenAttempts?.size
+                ? {
+                      ...require("./TokenUsage").combine([...tracker.tokenAttempts.values()].map(entry => entry.usage)),
+                      partial:
+                          tracker.attemptCount > tracker.tokenAttempts.size ||
+                          [...tracker.tokenAttempts.values()].some(entry => entry.usage.total_tokens === undefined),
+                  }
+                : (result.usage ?? null),
         };
 
         this.records.push(record);

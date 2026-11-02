@@ -37,8 +37,8 @@ test("tier bases are exact per model and never enable other Gemini 4 models", ()
         [null, [100, 10, 0]],
         ["free", [100, 10, 0]],
         ["pro", [100, 50, 50]],
-        ["ultra", [500, 100, 100]],
-        ["ultra20", [500, 200, 200]],
+        ["ultra", [null, null, null]],
+        ["ultra20", [null, null, null]],
     ]) {
         assert.deepEqual(
             ["models/gemini-2.5-flash", "gemini-3-pro", "gemini-4-argon"].map(model =>
@@ -86,11 +86,13 @@ test("mixed-tier admin/public quota estimates agree, preserve attempts and do no
             publicModels.find(item => item.model === row.model).estimatedRemaining
         );
     const argon = admin.find(item => item.model === "gemini-4-argon");
-    assert.equal(argon.total_quota, 350);
+    assert.equal(argon.total_quota, null);
+    assert.equal(argon.unknown_limit_accounts, 2);
     assert.equal(argon.tracked_accounts, 3);
     assert.equal(argon.quota_per_account, null);
-    assert.equal(argon.estimated_remaining_quota, 146);
-    assert.equal(admin.find(item => item.model === "gemini-3-pro").total_quota, 370);
+    assert.equal(argon.estimated_remaining_quota, null);
+    assert.equal(argon.known_estimated_remaining_quota, 48);
+    assert.equal(admin.find(item => item.model === "gemini-3-pro").total_quota, null);
     assert.equal(publicModels.find(item => item.model === "text-embedding-004").estimatedRemaining, null);
     const account = scheduler.account(4);
     assert.equal(scheduler.isResourceEligible(account, "gemini-4-argon"), true);
@@ -98,7 +100,7 @@ test("mixed-tier admin/public quota estimates agree, preserve attempts and do no
     assert.equal(scheduler.slot(account, "gemini-4-argon").daily_request_count, 300);
     assert.equal(
         scheduler.summarySnapshot().quota_by_model.find(item => item.model === "gemini-4-argon").total_quota,
-        150
+        null
     );
     assert.equal(scheduler.isResourceEligible(account, "gemini-4-argon"), false);
 });

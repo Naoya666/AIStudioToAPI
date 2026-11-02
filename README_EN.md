@@ -8,6 +8,8 @@ This repository is independently maintained and derived from [iBUHub/AIStudioToA
 
 Optional **Build Code Assistant channel**: `build/` packs the full ordered conversation into a request attachment; `build-st/` accepts the bundled SillyTavern v1/v2 segmentation protocol. It reuses the existing account context, page and proxy. Disabled by default; only Chat Completions is exposed experimentally. All Build anti combinations remain unverified and unavailable. See [implementation, setup and acceptance limits](docs/zh/build-dual-channel.md).
 
+PG / Build token metering now tracks upstream attempts and displays separate request/token estimates. Pro Build shares a 20M-token pool per account; unknown Ultra and Free Build limits remain unknown. See [token accounting and estimation boundaries](docs/zh/token-statistics.md).
+
 ## Features and changes
 
 Upstream features include browser automation, multiple accounts, compatible APIs, tool calls, image and speech models. Availability depends on account permissions and upstream model support.

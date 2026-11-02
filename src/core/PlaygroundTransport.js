@@ -236,6 +236,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
             throw fail("Invalid request JSON", 400);
         }
         if (this.resources) this.resources.resolveFiles(input, this.authIndex);
+        const onTokenUsage = request.onTokenUsage;
         const clientContract = request.client_tool_contract;
         const Tools = require("./codeAssistant/ToolContract");
         const contract = clientContract ? Tools.prepareTools(clientContract.body, { mode: clientContract.mode }) : null;
@@ -283,7 +284,12 @@ class PlaygroundTransport extends MakerSuiteBridge {
             const chunks = [];
             const terminal = { candidates: [] };
             const finishes = new Map();
+            let observedUsage = {};
             const decoder = new PlaygroundStreamDecoder(chunk => {
+                if (chunk.usageMetadata) {
+                    observedUsage = { ...observedUsage, ...chunk.usageMetadata };
+                    onTokenUsage?.(observedUsage);
+                }
                 outputStarted ||= chunk.candidates?.some(c => c.content.parts.length > 0) || false;
                 if (!onChunk) {
                     chunks.push(chunk);

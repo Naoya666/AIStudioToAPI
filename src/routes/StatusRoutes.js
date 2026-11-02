@@ -372,6 +372,13 @@ class StatusRoutes {
             }
         });
 
+        app.get("/api/usage-stats/tokens", isAuthenticated, async (req, res) => {
+            try {
+                res.json(await this.serverSystem.usageStatsService.getTokenStatistics({ day: req.query.day }));
+            } catch (error) {
+                res.status(400).json({ error: error.message });
+            }
+        });
         app.get("/api/usage-stats/summary", isAuthenticated, async (req, res) => {
             try {
                 const snapshot = await this.serverSystem.usageStatsService?.getSummarySnapshotAsync();

@@ -89,6 +89,7 @@ function loadSchedulerConfig(env = process.env) {
         browserRpcFailureThreshold: integer("BROWSER_RPC_FAILURE_THRESHOLD", 2),
         browserRpcFailureWindowMs: integer("BROWSER_RPC_FAILURE_WINDOW_MS", 60000),
         buildConcurrency: integer("BUILD_MAX_CONCURRENCY", 1),
+        buildFreeDailyTokenEstimate: integer("BUILD_FREE_DAILY_TOKEN_ESTIMATE", 0, 0),
         contextCleanupTimeoutMs: integer("CONTEXT_CLEANUP_TIMEOUT_MS", 5000),
         contextCreationTimeoutMs: integer("CONTEXT_CREATION_TIMEOUT_MS", 120000),
         contextInitConcurrency: integer("CONTEXT_INIT_CONCURRENCY", 2),

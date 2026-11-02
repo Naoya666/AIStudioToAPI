@@ -128,6 +128,10 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
             },
             recent_stats: Object.fromEntries(ranges.map(range => [range, recent[range].stats])),
             today: today.values,
+            token_quota: require("./TokenQuotaProjection").mergeTokenQuotas([
+                ...modelSources.map(source => (usable(source) && currentDay(source) ? source.model.token_quota : null)),
+                ...(modelSources.some(source => source.failed) ? [null] : []),
+            ]),
         };
     });
     const metricCoverage = metric => {

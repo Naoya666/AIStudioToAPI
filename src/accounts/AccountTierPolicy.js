@@ -28,6 +28,8 @@ function modelQuota(model, account = {}) {
         .replace(/^models\//, "")
         .toLowerCase();
     const { effectiveTier, argonEligible } = resolveTier(account);
+    const budgets = require("./QuotaPolicy").dailyBudgets(normalized, effectiveTier || "free");
+    if (budgets.source !== "legacy_request_estimate") return budgets.requests;
     if (/^(?:build|build-st)\//.test(normalized)) return null;
     if (normalized === "gemini-4-argon")
         return argonEligible ? { pro: 50, ultra: 100, ultra20: 200 }[effectiveTier] : 0;

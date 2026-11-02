@@ -99,7 +99,7 @@ class BuildRuntime {
                 }
             }
     }
-    async generate(identity, context, { signal, onText, timeoutMs = this.timeoutMs } = {}) {
+    async generate(identity, context, { signal, onText, onUsage, timeoutMs = this.timeoutMs } = {}) {
         await this.recover();
         this.cleanupPending = false;
         const op = randomUUID(),
@@ -151,6 +151,7 @@ class BuildRuntime {
                     continue;
                 }
                 lastUsage = result.usage || lastUsage;
+                if (result.usage) onUsage?.(result.usage);
                 if (onText && result.text) {
                     if (!result.text.startsWith(emitted)) throw fail("Build 累计输出发生变化；已停止输出", 502);
                     const delta = result.text.slice(emitted.length);
@@ -168,7 +169,8 @@ class BuildRuntime {
             throw fail("Build 任务未完成（已达等待期限）；未重新生成", 504);
         } catch (e) {
             primaryError = e;
-            if (lastUsage) e.usage = lastUsage;
+            if (e.usage) onUsage?.(e.usage);
+            if (lastUsage && !e.usage) e.usage = lastUsage;
             throw e;
         } finally {
             try {

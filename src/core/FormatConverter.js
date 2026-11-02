@@ -2195,6 +2195,9 @@ class FormatConverter {
             },
             prompt_tokens: promptTokens,
             prompt_tokens_details: {
+                ...(Number.isSafeInteger(usage.cachedContentTokenCount)
+                    ? { cached_tokens: usage.cachedContentTokenCount }
+                    : {}),
                 text_tokens: inputTokens,
                 tool_tokens: toolPromptTokens,
             },

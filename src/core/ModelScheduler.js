@@ -1021,6 +1021,92 @@ class ModelScheduler {
         }
     }
 
+    recordTokenUsage(lease, usage, attemptId = "default", observedAt = this.now()) {
+        if (!lease) return;
+        const { normalize, FIELDS } = require("./TokenUsage");
+        usage = normalize(usage) || {};
+        lease.tokenAttempts ||= new Map();
+        const isNew = !lease.tokenAttempts.has(attemptId);
+        const previous = lease.tokenAttempts.get(attemptId) || { date: this.getPacificDateKey(observedAt) };
+        const date = previous.date,
+            slot = lease.slot;
+        slot.token_windows ||= {};
+        const window = (slot.token_windows[date] ||= { known_requests: 0, usage: {} });
+        if (isNew) window.attempts = (window.attempts || 0) + 1;
+        for (const old of Object.keys(slot.token_windows).sort().slice(0, -3)) delete slot.token_windows[old];
+        for (const key of FIELDS)
+            if (usage[key] !== undefined) {
+                const next = Math.max(previous[key] ?? 0, usage[key]);
+                window.usage[key] = (window.usage[key] || 0) + next - (previous[key] || 0);
+                previous[key] = next;
+            }
+        if (!previous.counted && previous.total_tokens !== undefined) {
+            window.known_requests++;
+            previous.counted = true;
+        }
+        lease.tokenAttempts.set(attemptId, previous);
+        this.sequence++;
+        this.saveSoon();
+    }
+
+    tokenQuotaSnapshot(model, indices = this.authSource.getRotationIndices(), now = this.now()) {
+        const date = this.getPacificDateKey(now),
+            build = model.startsWith("build/");
+        const { dailyBudgets } = require("../accounts/QuotaPolicy");
+        const { FIELDS } = require("./TokenUsage");
+        const totals = Object.fromEntries(FIELDS.map(k => [k, 0]));
+        let limit = 0,
+            knownRemaining = 0,
+            unknownLimits = 0,
+            knownRequests = 0,
+            requests = 0;
+        for (const index of indices) {
+            if (!this.isTierAllowed(index, model)) continue;
+            const account = this.accounts.get(this.authSource.accountNameMap.get(index) || `auth-${index}`);
+            const policy = dailyBudgets(
+                model,
+                resolveTier(accountForIndex(this.authSource, index)).effectiveTier || "free",
+                { freeBuildEstimate: this.config.buildFreeDailyTokenEstimate || 0 }
+            );
+            const slots = Object.entries(account?.models || {})
+                .filter(([name]) => (build ? name.startsWith("build/") : name === model))
+                .map(([, slot]) => slot);
+            let used = 0;
+            for (const slot of slots) {
+                const window = slot.token_windows?.[date];
+                requests += Math.max(
+                    slot.daily_request_date === date ? slot.daily_request_count || 0 : 0,
+                    window?.attempts || 0
+                );
+                if (!window) continue;
+                knownRequests += window.known_requests || 0;
+                used += window.usage.total_tokens || 0;
+                for (const key of FIELDS) totals[key] += window.usage[key] || 0;
+            }
+            if (policy.tokens === null) unknownLimits++;
+            else {
+                limit += policy.tokens;
+                knownRemaining += Math.max(0, policy.tokens - used);
+            }
+        }
+        const unknownUsage = Math.max(0, requests - knownRequests);
+        return {
+            estimated_remaining: unknownLimits || unknownUsage ? null : knownRemaining,
+            known_limit: limit,
+            known_remaining_upper_bound: knownRemaining,
+            known_usage_requests: knownRequests,
+            limit: unknownLimits ? null : limit,
+            observed_tokens: knownRequests ? totals : null,
+            pool: build ? "build" : model,
+            scope: build ? "build/account" : "pg/model",
+            source: "operator_observation_2026-11-02",
+            token_metric: "total_tokens",
+            unknown_limit_accounts: unknownLimits,
+            unknown_usage_requests: unknownUsage,
+            window: { date, reset_verified: false, timezone: PACIFIC_TIMEZONE },
+        };
+    }
+
     startAttempt(lease) {
         if (!lease || lease.attempted || lease.released) return;
         const now = Date.now();
@@ -1535,6 +1621,7 @@ class ModelScheduler {
             let totalQuota = 0;
             let trackedAccounts = 0;
             const limits = new Set();
+            let unknownLimits = 0;
             for (const account of quotaAccounts) {
                 const limit = getModelDailyQuota(model, accountForIndex(this.authSource, account.index));
                 const slot = account.models[model];
@@ -1542,18 +1629,24 @@ class ModelScheduler {
                     slot?.daily_request_date === this.getPacificDateKey(now) ? slot.daily_request_count : 0;
                 dailyRequests += requests;
                 if (!this.isTierAllowed(account.index, model)) continue;
-                totalQuota += limit;
                 trackedAccounts++;
+                if (limit === null) {
+                    unknownLimits++;
+                    continue;
+                }
+                totalQuota += limit;
                 limits.add(limit);
                 estimatedRemainingQuota += Math.max(0, limit - requests);
             }
             return {
                 daily_requests: dailyRequests,
-                estimated_remaining_quota: estimatedRemainingQuota,
+                estimated_remaining_quota: unknownLimits ? null : estimatedRemainingQuota,
+                known_estimated_remaining_quota: estimatedRemainingQuota,
                 model,
-                quota_per_account: limits.size === 1 ? [...limits][0] : null,
-                total_quota: totalQuota,
+                quota_per_account: !unknownLimits && limits.size === 1 ? [...limits][0] : null,
+                total_quota: unknownLimits ? null : totalQuota,
                 tracked_accounts: trackedAccounts,
+                unknown_limit_accounts: unknownLimits,
             };
         });
         const contexts = this.browserManager?.getContextPoolSnapshot?.() || [];
@@ -1646,6 +1739,10 @@ class ModelScheduler {
             quota_by_model: quotaByModel,
             ready_browser_workers: readyContexts + busyContexts,
             reconnecting_browser_workers: contextCount("RECONNECTING"),
+            token_quota_by_model: [...models].map(model => ({
+                model,
+                ...this.tokenQuotaSnapshot(model, indices, now),
+            })),
             unavailable_browser_workers: contextCount("UNAVAILABLE"),
             usage_window: {
                 date: this.getPacificDateKey(now),
@@ -1686,7 +1783,6 @@ class ModelScheduler {
                     const account = accountFor(index);
                     return { account, index, slot: slotFor(account, model) };
                 });
-                const quotaPerAccount = getModelDailyQuota(model);
                 const today = accountSlots.reduce((sum, item) => sum + dailyRequests(item.slot), 0);
                 return {
                     active: this.active(model),
@@ -1696,28 +1792,30 @@ class ModelScheduler {
                             !this.authSource.isExpired?.(item.index) &&
                             this.isTierAllowed(item.index, model)
                     ).length,
-                    estimatedRemaining:
-                        quotaPerAccount === null
-                            ? null
-                            : accountSlots.reduce(
-                                  (sum, item) =>
-                                      sum +
-                                      (this.isTierAllowed(item.index, model)
-                                          ? Math.max(
-                                                0,
-                                                getModelDailyQuota(
-                                                    model,
-                                                    accountForIndex(this.authSource, item.index)
-                                                ) - dailyRequests(item.slot)
-                                            )
-                                          : 0),
-                                  0
-                              ),
+                    estimatedRemaining: accountSlots.some(
+                        item =>
+                            this.isTierAllowed(item.index, model) &&
+                            getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) === null
+                    )
+                        ? null
+                        : accountSlots.reduce(
+                              (sum, item) =>
+                                  sum +
+                                  (this.isTierAllowed(item.index, model)
+                                      ? Math.max(
+                                            0,
+                                            getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) -
+                                                dailyRequests(item.slot)
+                                        )
+                                      : 0),
+                              0
+                          ),
                     model,
                     queued: this.pending.filter(item => item.model === model).length,
                     rateLimitedAccounts: accountSlots.filter(item => isRateLimited(item.slot)).length,
                     tierAllowedAccounts: indices.filter(index => this.isTierAllowed(index, model)).length,
                     todayRequests: today,
+                    tokenQuota: this.tokenQuotaSnapshot(model, indices, now),
                 };
             }),
             queued: this.pending.length,

@@ -709,3 +709,39 @@ for (const role of ["master", "agent"]) {
         assert.equal(machine.quota_status, undefined);
     });
 }
+
+test("optional token budgets preserve old agents, reject malformed scopes and avoid complete totals for missing nodes", () => {
+    const now = Date.now(),
+        a = envelope("a", now, { models: ["build/gemini-3.8-flash"] }),
+        b = envelope("b", now, { models: ["build/gemini-3.8-flash"] });
+    const q = {
+        estimated_remaining: 19999900,
+        known_limit: 20000000,
+        known_remaining_upper_bound: 19999900,
+        known_usage_requests: 1,
+        limit: 20000000,
+        observed_tokens: { total_tokens: 100 },
+        pool: "build",
+        scope: "build/account",
+        source: "operator_observation_2026-11-02",
+        token_metric: "total_tokens",
+        unknown_limit_accounts: 0,
+        unknown_usage_requests: 0,
+        window: { date: usageDate(now), reset_verified: false, timezone },
+    };
+    a.snapshot.models[0].token_quota = q;
+    assert.equal(validateEnvelope(a, "a", now), a);
+    let result = aggregate(entries(a, b), now);
+    assert.equal(result.models[0].token_quota.coverage, "partial");
+    assert.equal(result.models[0].token_quota.estimated_remaining, null);
+    b.snapshot.models[0].token_quota = q;
+    result = aggregate(entries(a, b), now);
+    assert.equal(result.models[0].token_quota.limit, 40000000);
+    assert.equal(result.models[0].token_quota.observed_tokens.total_tokens, 200);
+    result = aggregate([...entries(a), { body: null, failed: true }], now);
+    assert.equal(result.models[0].token_quota.coverage, "partial");
+    assert.equal(result.models[0].token_quota.limit, null);
+    const bad = clone(a);
+    bad.snapshot.models[0].token_quota.pool = "other";
+    assert.throws(() => validateEnvelope(bad, "a", now));
+});

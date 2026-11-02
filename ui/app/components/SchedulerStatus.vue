@@ -94,6 +94,32 @@
             </p>
         </details>
 
+        <section class="quota-section" aria-label="每日 Token 预算">
+            <strong>每日 Token 预算（用户提供的估算口径）</strong>
+            <p>
+                次数与 Token
+                分开计量；达到任一上游限制均可能停止生成。下列估算只用于展示，不自动禁用账号。缓存已计入输入，思考已计入输出，不重复累加。
+            </p>
+            <p v-for="q in data.token_quota_by_model || []" :key="q.model">
+                {{ q.model }}{{ q.scope === "build/account" ? "（账号全部 Build 模型共享，勿相加）" : "" }}： 预算
+                {{ q.limit === null ? "未知" : formatNumber(q.limit) }}； 已知消耗
+                {{ q.observed_tokens ? formatNumber(q.observed_tokens.total_tokens) : "未知" }}；
+                {{ q.estimated_remaining === null ? "已知预算部分的剩余上界" : "预估剩余" }}
+                {{
+                    q.limit === null && !q.known_limit
+                        ? "未知"
+                        : formatNumber(q.estimated_remaining ?? q.known_remaining_upper_bound)
+                }}； 未知用量请求 {{ q.unknown_usage_requests }}，未知额度账号 {{ q.unknown_limit_accounts }}。 窗口
+                {{ q.window.date }} PT{{
+                    q.window.reset_verified
+                        ? ""
+                        : q.scope === "build/account"
+                          ? "（Build 上游重置未确认）"
+                          : "（本地统计窗口）"
+                }}
+            </p>
+        </section>
+
         <!-- 2. Quota Section -->
         <div class="quota-section" :title="t('schedulerEstimatedQuotaTooltip')">
             <div class="quota-header">
@@ -131,17 +157,24 @@
                             <span class="quota-model-name" :title="quota.model">{{ quota.model }}</span>
                         </div>
                         <div class="quota-card-val">
-                            <span class="quota-number">{{ formatNumber(quota.estimated_remaining_quota) }}</span>
+                            <span class="quota-number">{{
+                                quota.estimated_remaining_quota === null
+                                    ? "未知"
+                                    : formatNumber(quota.estimated_remaining_quota)
+                            }}</span>
                             <small class="quota-unit">{{ t("schedulerQuotaUnit") }}</small>
                             <div v-if="getQuotaPercent(quota) <= 10" class="quota-warning-text">
                                 仅剩 {{ getQuotaPercent(quota) }}% (告警)
                             </div>
-                            <div v-else class="quota-percent-text">剩余 {{ getQuotaPercent(quota) }}%</div>
+                            <div v-else-if="quota.estimated_remaining_quota !== null" class="quota-percent-text">
+                                剩余 {{ getQuotaPercent(quota) }}%
+                            </div>
+                            <div v-else class="quota-percent-text">额度未知</div>
                         </div>
                     </div>
 
                     <!-- Visual Quota Remaining Progress Bar -->
-                    <div class="quota-progress-track">
+                    <div v-if="quota.estimated_remaining_quota !== null" class="quota-progress-track">
                         <div
                             class="quota-progress-bar"
                             :class="getQuotaPercent(quota) <= 10 ? 'bar-alert' : 'bar-normal'"
@@ -152,7 +185,7 @@
                     <div class="quota-card-footer">
                         <span
                             >{{ t("schedulerQuotaTotal") }}
-                            {{ quota.total_quota ?? quota.tracked_accounts * quota.quota_per_account }}</span
+                            {{ quota.total_quota === null ? "未知" : quota.total_quota }}</span
                         >
                         <span
                             >{{ t("schedulerTodayRequests") }}
@@ -989,6 +1022,7 @@ function formatPersistent403Duration(account) {
 }
 
 function getQuotaPercent(quota) {
+    if (quota.estimated_remaining_quota === null) return 100;
     const total = quota.total_quota ?? (quota.tracked_accounts || 0) * (quota.quota_per_account || 0);
     if (!total) return 0;
     const remaining = quota.estimated_remaining_quota || 0;

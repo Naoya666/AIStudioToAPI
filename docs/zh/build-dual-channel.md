@@ -1,6 +1,6 @@
 # Playground + Build 代码助手双通道
 
-实施日期：2026-11-02。此版本完成代码与离线验收；**没有调用真实 Google 账号验收**。
+实施日期：2026-11-02。后续 Token 统计与用户提供的预算更新见 [Token 统计文档](token-statistics.md)；该更新取代下文初版中“所有 Build 额度未知”的展示口径，Build 上游重置和 anti 状态仍未验证。此版本完成代码与离线验收；**没有调用真实 Google 账号验收**。
 Build 默认关闭，全部 Build anti 组合维持待验证。Playground 既有通道和 anti 能力继续保留。
 
 ## 来源与许可

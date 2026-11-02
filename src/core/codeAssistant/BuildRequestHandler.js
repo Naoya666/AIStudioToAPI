@@ -126,6 +126,17 @@ async function process(handler, req, res) {
             ._getUsageStatsService()
             ?.recordAttempt(requestId, account.index, handler._getAccountNameForIndex(account.index));
         if (stream) packet({ ...envelope, choices: [{ delta: { role: "assistant" }, finish_reason: null, index: 0 }] });
+        scheduler.recordTokenUsage?.(lease, null, requestId);
+        const tier =
+            require("../../accounts/AccountTierPolicy").resolveTier(
+                require("../../accounts/AccountTierPolicy").accountForIndex(handler.authSource, account.index)
+            ).effectiveTier || "unknown";
+        handler._getUsageStatsService()?.recordTokenUsage?.(requestId, requestId, null, {
+            accountKey: account.key,
+            day: require("../../public/DashboardProtocol").usageDate(Date.now()),
+            model: prepared.identity.canonical,
+            tier,
+        });
         const result = await runtime.generate(prepared.identity, prepared.context, {
             onText:
                 stream && !prepared.contract
@@ -135,6 +146,10 @@ async function process(handler, req, res) {
                               choices: [{ delta: { content: text }, finish_reason: null, index: 0 }],
                           })
                     : null,
+            onUsage: usage => {
+                scheduler.recordTokenUsage(lease, usage, requestId);
+                handler._getUsageStatsService()?.recordTokenUsage?.(requestId, requestId, usage);
+            },
             signal: controller.signal,
             timeoutMs: config.makerSuiteTimeoutMs,
         });

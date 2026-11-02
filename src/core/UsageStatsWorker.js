@@ -69,10 +69,87 @@ function initialize() {
             .some(column => column.name === "usage_json")
     )
         db.exec("ALTER TABLE requests ADD COLUMN usage_json TEXT");
+    if (
+        !db
+            .prepare("PRAGMA table_info(requests)")
+            .all()
+            .some(column => column.name === "token_attempts_json")
+    )
+        db.exec("ALTER TABLE requests ADD COLUMN token_attempts_json TEXT");
+    db.exec(`CREATE TABLE IF NOT EXISTS token_daily(
+      day TEXT NOT NULL,account_key TEXT NOT NULL,model TEXT NOT NULL,tier TEXT NOT NULL,
+      input INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL DEFAULT 0,cached INTEGER NOT NULL DEFAULT 0,reasoning INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,
+      known_requests INTEGER NOT NULL DEFAULT 0,unknown_requests INTEGER NOT NULL DEFAULT 0,
+      input_observations INTEGER NOT NULL DEFAULT 0,output_observations INTEGER NOT NULL DEFAULT 0,cached_observations INTEGER NOT NULL DEFAULT 0,reasoning_observations INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(day,account_key,model,tier));`);
+    if (!metaGet("token_aggregate_version")) {
+        db.exec("BEGIN IMMEDIATE");
+        try {
+            for (const row of db.prepare("SELECT * FROM requests WHERE request_category='generation'").iterate()) {
+                const attempts = row.token_attempts_json ? JSON.parse(row.token_attempts_json) : [];
+                if (attempts.length)
+                    for (const attempt of attempts) addTokenRecord({ ...attempt, finishedAtMs: row.finished_at_ms });
+                else
+                    addTokenRecord({
+                        model: row.model,
+                        accountKey: row.account_key,
+                        finishedAtMs: row.finished_at_ms,
+                        usage: row.usage_json ? JSON.parse(row.usage_json) : null,
+                    });
+            }
+            metaSet("token_aggregate_version", 1);
+            db.exec("COMMIT");
+        } catch (e) {
+            db.exec("ROLLBACK");
+            throw e;
+        }
+    }
     if (!metaGet("schema_version")) metaSet("schema_version", 1);
     if (!metaGet("dataset_revision")) metaSet("dataset_revision", 1);
     if (!metaGet("started_at_ms")) metaSet("started_at_ms", Date.now());
     if (!metaGet("purged_before_ms")) metaSet("purged_before_ms", -1);
+}
+
+function addTokenRecord(record) {
+    let model;
+    try {
+        model = require("./ModelName").normalizeModelName(record.model);
+    } catch {
+        return;
+    }
+    const usage = require("./TokenUsage").normalize(record.usage);
+    const known = usage?.total_tokens !== undefined && !record.usage?.partial;
+    const day = record.day || require("../public/DashboardProtocol").usageDate(record.finishedAtMs);
+    const tier = ["free", "pro", "ultra", "ultra20"].includes(record.tier) ? record.tier : "unknown";
+    db.prepare(
+        `INSERT INTO token_daily(day,account_key,model,tier,input,output,cached,reasoning,total,known_requests,unknown_requests,input_observations,output_observations,cached_observations,reasoning_observations) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(day,account_key,model,tier) DO UPDATE SET input=input+excluded.input,output=output+excluded.output,cached=cached+excluded.cached,reasoning=reasoning+excluded.reasoning,total=total+excluded.total,known_requests=known_requests+excluded.known_requests,unknown_requests=unknown_requests+excluded.unknown_requests,input_observations=input_observations+excluded.input_observations,output_observations=output_observations+excluded.output_observations,cached_observations=cached_observations+excluded.cached_observations,reasoning_observations=reasoning_observations+excluded.reasoning_observations`
+    ).run(
+        day,
+        record.accountKey,
+        model,
+        tier,
+        usage?.prompt_tokens || 0,
+        usage?.completion_tokens || 0,
+        usage?.cached_tokens || 0,
+        usage?.reasoning_tokens || 0,
+        usage?.total_tokens || 0,
+        known ? 1 : 0,
+        known ? 0 : 1,
+        ...["prompt_tokens", "completion_tokens", "cached_tokens", "reasoning_tokens"].map(key =>
+            usage?.[key] !== undefined ? 1 : 0
+        )
+    );
+}
+function tokenStatistics(options = {}) {
+    if (options.day !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(options.day))
+        throw new Error("Invalid token statistics day");
+    const rows = db
+        .prepare(
+            `SELECT day,model,tier,account_key,SUM(input) input,SUM(output) output,SUM(cached) cached,SUM(reasoning) reasoning,SUM(total) total,SUM(known_requests) known_requests,SUM(unknown_requests) unknown_requests,SUM(input_observations) input_observations,SUM(output_observations) output_observations,SUM(cached_observations) cached_observations,SUM(reasoning_observations) reasoning_observations FROM token_daily ${options.day ? "WHERE day=?" : ""} GROUP BY day,model,tier,account_key ORDER BY day DESC,model,tier,account_key`
+        )
+        .all(...(options.day ? [options.day] : []));
+    return { timezone: "America/Los_Angeles", models: rows };
 }
 
 function normalizeRecord(raw) {
@@ -99,13 +176,27 @@ function normalizeRecord(raw) {
         initialAuthIndex: Number.isInteger(raw.initialAuthIndex) ? raw.initialAuthIndex : null,
         isStreaming: Boolean(raw.isStreaming),
         method: raw.method || "GET",
-        usage:
-            raw.usage &&
-            ["prompt_tokens", "completion_tokens", "total_tokens"].every(
-                key => Number.isSafeInteger(raw.usage[key]) && raw.usage[key] >= 0
-            )
-                ? raw.usage
-                : null,
+        usage: raw.usage
+            ? { ...require("./TokenUsage").normalize(raw.usage), ...(raw.usage.partial ? { partial: true } : {}) }
+            : null,
+        tokenAttempts: Array.isArray(raw.tokenAttempts)
+            ? raw.tokenAttempts
+                  .filter(
+                      entry =>
+                          entry &&
+                          typeof entry.accountKey === "string" &&
+                          typeof entry.model === "string" &&
+                          typeof entry.tier === "string" &&
+                          /^\d{4}-\d{2}-\d{2}$/.test(entry.day)
+                  )
+                  .map(entry => ({
+                      accountKey: entry.accountKey,
+                      model: entry.model,
+                      tier: entry.tier,
+                      day: entry.day,
+                      usage: require("./TokenUsage").normalize(entry.usage),
+                  }))
+            : [],
         model: nullable(raw.model),
         outcome,
         path: raw.path || "/",
@@ -161,6 +252,11 @@ function insertRequest(record) {
             return { inserted: false, invalid: false };
         }
         const rowId = Number(result.lastInsertRowid);
+        if (r.tokenAttempts.length)
+            db.prepare("UPDATE requests SET token_attempts_json=? WHERE id=?").run(
+                JSON.stringify(r.tokenAttempts),
+                rowId
+            );
         if (r.usage) db.prepare("UPDATE requests SET usage_json=? WHERE id=?").run(JSON.stringify(r.usage), rowId);
         const attempt = db.prepare(
             "INSERT INTO request_attempts(request_row_id,attempt_number,account_key) VALUES(?,?,?)"
@@ -200,6 +296,11 @@ function insertRequest(record) {
         request_count=request_count+1,success_count=success_count+excluded.success_count,error_count=error_count+excluded.error_count,
         aborted_count=aborted_count+excluded.aborted_count,total_duration_ms=total_duration_ms+excluded.total_duration_ms`
         ).run(day, ...dimensions, success, error, aborted, r.durationMs);
+        if (r.requestCategory === "generation") {
+            if (r.tokenAttempts.length)
+                for (const attempt of r.tokenAttempts) addTokenRecord({ ...attempt, finishedAtMs: r.finishedAtMs });
+            else addTokenRecord(r);
+        }
         db.exec("COMMIT");
         return { id: rowId, inserted: true };
     } catch (error) {
@@ -322,6 +423,7 @@ function summary() {
 function rowToRecord(row) {
     return {
         usage: row.usage_json ? JSON.parse(row.usage_json) : null,
+        tokenAttempts: row.token_attempts_json ? JSON.parse(row.token_attempts_json) : [],
         apiFormat: row.api_format,
         durationMs: row.duration_ms,
         finishedAt: iso(row.finished_at_ms),
@@ -585,6 +687,7 @@ function publicModelWindows({ visibleModels, asOfMs }) {
 }
 
 async function handle(command, payload) {
+    if (command === "token_statistics") return tokenStatistics(payload);
     if (command === "insert") return insertRequest(payload);
     if (command === "public_model_windows") return publicModelWindows(payload);
     if (command === "summary") return summary();

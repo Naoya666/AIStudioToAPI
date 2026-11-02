@@ -5132,6 +5132,27 @@ class RequestHandler {
             });
         // Pass the original request, including its non-enumerable fixed deadlines.
         // No Build RPC envelope, URL marker or browser WebSocket is involved.
+        if (this.serverSystem?.scheduler && this.lease) {
+            const lease = this.lease,
+                attempt = proxyRequest.request_attempt_id,
+                requestId = proxyRequest.request_id;
+            this.serverSystem.scheduler.recordTokenUsage?.(lease, null, attempt);
+            const tier =
+                require("../accounts/AccountTierPolicy").resolveTier(
+                    require("../accounts/AccountTierPolicy").accountForIndex(this.authSource, lease.account.index)
+                ).effectiveTier || "unknown";
+            this._getUsageStatsService()?.recordTokenUsage?.(requestId, attempt, null, {
+                accountKey: lease.account.key,
+                day: require("../public/DashboardProtocol").usageDate(Date.now()),
+                model: lease.model,
+                tier,
+            });
+            proxyRequest.onTokenUsage = metadata => {
+                const usage = require("./TokenUsage").normalize(metadata, true);
+                this.serverSystem.scheduler.recordTokenUsage?.(lease, usage, attempt);
+                this._getUsageStatsService()?.recordTokenUsage?.(requestId, attempt, usage);
+            };
+        }
         connection.dispatch(proxyRequest);
     }
 

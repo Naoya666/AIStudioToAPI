@@ -262,7 +262,9 @@ test("quota totals agree across projections, retain historical usage and exclude
     const admin = scheduler.summarySnapshot();
     const quota = admin.quota_by_model.find(row => row.model === model);
     const publicModel = scheduler.publicSummarySnapshot().models.find(row => row.model === model);
-    assert.equal(quota.total_quota, 1100);
+    assert.equal(quota.total_quota, null);
+    assert.equal(quota.unknown_limit_accounts, 2);
+    assert.equal(quota.known_estimated_remaining_quota, 147);
     assert.equal(quota.tracked_accounts, 3);
     assert.equal(quota.daily_requests, 15);
     assert.equal(publicModel.estimatedRemaining, quota.estimated_remaining_quota);
@@ -272,7 +274,8 @@ test("quota totals agree across projections, retain historical usage and exclude
     policy.tiers.pro = [];
     f.save(policy);
     const next = scheduler.summarySnapshot().quota_by_model.find(row => row.model === model);
-    assert.equal(next.total_quota, 1000);
+    assert.equal(next.total_quota, null);
+    assert.equal(next.known_estimated_remaining_quota, 0);
     assert.equal(next.daily_requests, 15);
     assert.equal(
         scheduler.publicSummarySnapshot().models.find(row => row.model === "text-embedding-004").estimatedRemaining,

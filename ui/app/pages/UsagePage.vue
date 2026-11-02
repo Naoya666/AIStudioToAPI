@@ -116,6 +116,7 @@
         />
         <PageState v-else-if="!usageLoaded" :message="t('loading')" :loading="true" />
         <template v-if="usageLoaded">
+            <TokenUsagePanel />
             <section
                 class="status-card stats-filters-card"
                 :class="{ 'is-collapsed-mobile': isStatsFiltersMobile && statsFiltersCollapsed }"
@@ -828,8 +829,8 @@
                                     <td>{{ record.model || "-" }}</td>
                                     <td>
                                         {{
-                                            record.usage
-                                                ? `${record.usage.prompt_tokens} / ${record.usage.completion_tokens}`
+                                            record.usage?.total_tokens !== undefined
+                                                ? `${record.usage.prompt_tokens ?? "未知"} / ${record.usage.completion_tokens ?? "未知"}${record.usage.partial ? "（已知部分）" : ""}`
                                                 : "未知"
                                         }}
                                     </td>
@@ -982,6 +983,7 @@
     </div>
 </template>
 <script setup>
+import TokenUsagePanel from "../components/TokenUsagePanel.vue";
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
 import { CircleClose } from "@element-plus/icons-vue";

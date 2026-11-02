@@ -881,13 +881,14 @@ for (const mode of ["auto_fallback", "strict"])
         const { PlaygroundTransport } = require("../src/core/PlaygroundTransport");
         const part = Array(11).fill(null);
         part[10] = ["lookup", encStruct({ q: 123 }), "upstream-call"];
-        const wire = JSON.stringify([[[[[[part], "model"], 1]]]]);
+        const wire = JSON.stringify([[[[[[part], "model"], 1]], null, [12, 3, 15, 4]]]);
         const f = fixture(t, 0, { fetch: async () => new Response(wire, { status: 200 }) });
         await f.init();
         f.sandbox.TextDecoder = TextDecoder;
         Object.setPrototypeOf(f.bridge, PlaygroundTransport.prototype);
         f.bridge.ready = true;
-        const outputs = [];
+        const outputs = [],
+            usage = [];
         const request = {
             body: JSON.stringify({ contents: [{ parts: [{ text: "query" }], role: "user" }] }),
             client_tool_contract: {
@@ -907,19 +908,23 @@ for (const mode of ["auto_fallback", "strict"])
                 mode,
             },
             method: "POST",
+            onTokenUsage: value => usage.push(value),
             path: "/v1beta/models/gemini-3.8-flash:streamGenerateContent",
         };
+        const pending = f.bridge.generate(request, x => outputs.push(x));
+        request.onTokenUsage = () => {
+            throw new Error("late usage charged to replacement attempt");
+        };
         if (mode === "strict") {
-            await assert.rejects(
-                f.bridge.generate(request, x => outputs.push(x)),
-                { code: "invalid_tool_response" }
-            );
+            await assert.rejects(pending, { code: "invalid_tool_response" });
             assert.equal(outputs.length, 0);
         } else {
-            await f.bridge.generate(request, x => outputs.push(x));
+            await pending;
             assert.equal(outputs.length, 1);
             assert.equal(outputs[0].candidates[0].content.parts[0].functionCall.args.q, 123);
         }
+        assert.equal(usage.at(-1).totalTokenCount, 15);
+        assert.equal(usage.at(-1).cachedContentTokenCount, 4);
     });
 
 test("large Build attachments upload through the existing page and sign only their final parts", async t => {

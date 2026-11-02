@@ -461,9 +461,11 @@ function convChunk(m) {
     if (Array.isArray(m[2])) {
         out.usageMetadata = {};
         for (const [key, idx] of Object.entries({
+            cachedContentTokenCount: 3,
             candidatesTokenCount: 1,
             promptTokenCount: 0,
             thoughtsTokenCount: 9,
+            toolUsePromptTokenCount: 7,
             totalTokenCount: 2,
         })) {
             if (typeof m[2][idx] === "number") out.usageMetadata[key] = m[2][idx];

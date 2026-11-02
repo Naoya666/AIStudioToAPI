@@ -1,6 +1,19 @@
 const { MAX_GENERATION_TIMEOUT_MS } = require("./TransportConfig");
 
 module.exports = [
+    {
+        application: "hot",
+        description:
+            "Free Build 账号共享日 Token 预算的人工估算；0 表示未知，不能从 Pro 额度按比例推算。仅用于面板展示，不据此封禁或宣称 Google 上限。",
+        group: "Playground / Build 双通道",
+        label: "Free Build 日 Token 预算估算",
+        maximum: Number.MAX_SAFE_INTEGER,
+        minimum: 0,
+        mode: "all",
+        name: "BUILD_FREE_DAILY_TOKEN_ESTIMATE",
+        path: "scheduler.buildFreeDailyTokenEstimate",
+        type: "integer",
+    },
     ...[
         {
             description:

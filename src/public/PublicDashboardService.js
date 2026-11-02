@@ -131,6 +131,7 @@ class PublicDashboardService {
                         })
                     ),
                     today: { requests: count(item.todayRequests) },
+                    ...(item.tokenQuota ? { token_quota: item.tokenQuota } : {}),
                 };
             }),
             realtime: {
