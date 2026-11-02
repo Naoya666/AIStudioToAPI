@@ -121,3 +121,93 @@ test(
         assert.deepEqual(errors, []);
     }
 );
+
+test(
+    "token table queries filtered pages and stays usable on mobile",
+    {
+        skip: !fs.existsSync(chromium.executablePath()),
+        timeout: 60000,
+    },
+    async t => {
+        const server = await createServer({
+            configFile: path.resolve(__dirname, "../vite.config.js"),
+            logLevel: "error",
+            server: { host: "127.0.0.1", port: 0 },
+        });
+        await server.listen();
+        t.after(() => server.close());
+        const browser = await chromium.launch({ args: ["--no-sandbox"] });
+        t.after(() => browser.close());
+        const page = await browser.newPage({ viewport: { height: 1000, width: 1440 } });
+        page.setDefaultTimeout(6000);
+        const errors = [],
+            queries = [];
+        page.on("pageerror", error => errors.push(error.message));
+        await page.route("**/locales/*.json", route => route.fulfill({ json: require("../ui/locales/zh.json") }));
+        let fail = false;
+        await page.route("**/api/**", route => {
+            const url = new URL(route.request().url());
+            let data = {};
+            if (url.pathname.startsWith("/api/status"))
+                data = { status: { accountDetails: [], currentAuthIndex: -1, schedulingMode: "legacy" } };
+            if (url.pathname === "/api/usage-stats/summary") data = { accounts: [], models: [], summary: {} };
+            if (url.pathname === "/api/usage-stats/records") data = { records: [] };
+            if (url.pathname === "/api/usage-stats/tokens") {
+                queries.push(Object.fromEntries(url.searchParams));
+                if (fail) return route.fulfill({ json: { error: "synthetic token failure" }, status: 500 });
+                const number = Number(url.searchParams.get("page") || 1);
+                const filtered = url.searchParams.get("email");
+                const total = filtered === "empty" ? 0 : filtered ? 1 : 42;
+                data = {
+                    available_models: ["gemini-3.8-flash", "gemini-3.1-pro-preview"],
+                    models: total
+                        ? Array.from({ length: Math.min(20, total - (number - 1) * 20) }, (_, i) => ({
+                              account_key: `fixture-${(number - 1) * 20 + i}@example.com`,
+                              day: "2026-11-02",
+                              input: 100,
+                              input_observations: 1,
+                              known_requests: 1,
+                              model: "gemini-3.8-flash",
+                              tier: "free",
+                              total: 120,
+                              unknown_requests: 1,
+                          }))
+                        : [],
+                    page: number,
+                    total,
+                };
+            }
+            return route.fulfill({ json: data });
+        });
+        await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/usage`);
+        const panel = page.locator(".token-usage-panel");
+        await panel.getByText("fixture-0@example.com", { exact: true }).waitFor();
+        assert.equal(await panel.locator("tbody tr").count(), 20);
+        assert.ok((await panel.innerText()).includes("未知"));
+        await panel.locator(".btn-next").click();
+        await panel.getByText("fixture-20@example.com", { exact: true }).waitFor();
+        assert.equal(queries.at(-1).page, "2");
+        await panel.getByRole("textbox", { name: "筛选邮箱" }).fill("fixture");
+        await panel.getByText("共 1 条记录").waitFor();
+        assert.equal(queries.at(-1).page, "1");
+        assert.equal(queries.at(-1).email, "fixture");
+        await panel.getByRole("combobox", { name: "筛选模型" }).click();
+        await page.getByRole("option", { exact: true, name: "gemini-3.1-pro-preview" }).click();
+        await page.waitForResponse(
+            response =>
+                response.url().includes("/api/usage-stats/tokens?") && response.url().includes("gemini-3.1-pro-preview")
+        );
+        assert.equal(queries.at(-1).model, "gemini-3.1-pro-preview");
+        await panel.getByRole("textbox", { name: "筛选邮箱" }).fill("empty");
+        await panel.getByText("暂无符合条件的 Token 统计").waitFor();
+        fail = true;
+        await panel.getByRole("button", { name: "读取统计" }).click();
+        await panel.getByRole("alert").getByText("synthetic token failure").waitFor();
+        fail = false;
+        await panel.getByRole("textbox", { name: "筛选邮箱" }).fill("fixture");
+        await panel.getByText("共 1 条记录").waitFor();
+        await page.setViewportSize({ height: 844, width: 390 });
+        assert.equal(await panel.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+        assert.deepEqual(errors, []);
+    }
+);

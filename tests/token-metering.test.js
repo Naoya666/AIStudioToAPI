@@ -294,3 +294,64 @@ test("Free observation statistics retain distinct account evidence rather than p
     );
     assert.ok(rows.every(r => r.total === 50));
 });
+
+test("token statistics filter before pagination, escape email search literally and retain model choices", async t => {
+    const db = new UsageStatsStorage({ dbPath: path.join(temp(t), "pages.sqlite") });
+    t.after(() => db.close());
+    const attempts = [
+        ["Alice@example.com", "gemini-3.8-flash"],
+        ["bob@example.com", "gemini-3.8-flash"],
+        ["carol@example.com", "gemini-3.8-flash"],
+        ["Alice@example.com", "gemini-3.1-pro-preview"],
+        ["percent%_user@example.com", "gemini-3.8-flash"],
+    ].map(([accountKey, model]) => ({
+        accountKey,
+        day: "2026-11-01",
+        model,
+        tier: "free",
+        usage: { total_tokens: 12 },
+    }));
+    await db.call("insert", rec("pages", { tokenAttempts: attempts }));
+    const query = { day: "2026-11-01", email: "EXAMPLE", model: "gemini-3.8-flash", page: 2, pageSize: 2 };
+    const result = await db.call("token_statistics", query);
+    assert.equal(result.total, 4);
+    assert.equal(result.page, 2);
+    assert.deepEqual(
+        result.models.map(row => row.account_key),
+        ["carol@example.com", "percent%_user@example.com"]
+    );
+    assert.equal(result.available_models.length, 2);
+    const filtered = await db.call("token_statistics", { ...query, email: "aliCE@", page: 99 });
+    assert.equal(filtered.total, 1);
+    assert.equal(filtered.page, 1);
+    assert.equal(filtered.models[0].account_key, "Alice@example.com");
+    const literal = await db.call("token_statistics", { ...query, email: "%_" });
+    assert.equal(literal.total, 1);
+    assert.equal(literal.models[0].account_key, "percent%_user@example.com");
+    const empty = await db.call("token_statistics", { ...query, day: "2026-11-02" });
+    assert.equal(empty.total, 0);
+    assert.deepEqual(empty.models, []);
+    await assert.rejects(db.call("token_statistics", { ...query, pageSize: 100000 }), /pagination/);
+    await assert.rejects(db.call("token_statistics", { ...query, page: -1 }), /pagination/);
+});
+
+test("account model details expose today's token coverage and discard yesterday's display at PT midnight", async t => {
+    const s = scheduler(t);
+    let now = Date.parse("2026-11-02T07:59:00Z");
+    s.now = () => now;
+    const lease = await s.acquire("gemini-3.8-flash");
+    s.startAttempt(lease);
+    s.recordTokenUsage(lease, null, "missing");
+    s.recordTokenUsage(lease, { completion_tokens: 20, prompt_tokens: 30, total_tokens: 50 }, "known");
+    s.release(lease);
+    let tokens = s.accountsSnapshot([0]).accounts[0].models.find(slot => slot.model === lease.model).daily_tokens;
+    assert.equal(tokens.date, "2026-11-01");
+    assert.equal(tokens.usage.total_tokens, 50);
+    assert.equal(tokens.known_requests, 1);
+    assert.equal(tokens.unknown_requests, 1);
+    now = Date.parse("2026-11-02T08:01:00Z");
+    tokens = s.accountsSnapshot([0]).accounts[0].models.find(slot => slot.model === lease.model).daily_tokens;
+    assert.equal(tokens.date, "2026-11-02");
+    assert.equal(tokens.usage, null);
+    assert.equal(tokens.unknown_requests, 0);
+});

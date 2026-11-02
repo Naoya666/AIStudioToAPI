@@ -144,12 +144,52 @@ function addTokenRecord(record) {
 function tokenStatistics(options = {}) {
     if (options.day !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(options.day))
         throw new Error("Invalid token statistics day");
+    const clauses = [],
+        params = [];
+    if (options.day) {
+        clauses.push("day=?");
+        params.push(options.day);
+    }
+    const dayWhere = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const availableModels = db
+        .prepare(`SELECT DISTINCT model FROM token_daily ${dayWhere} ORDER BY model`)
+        .all(...params)
+        .map(row => row.model);
+    if (options.model) {
+        clauses.push("model=?");
+        params.push(String(options.model));
+    }
+    if (options.email) {
+        clauses.push("instr(lower(account_key),lower(?))>0");
+        params.push(String(options.email).trim());
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const total = db.prepare(`SELECT COUNT(*) total FROM token_daily ${where}`).get(...params).total;
+    const paginated = options.page !== undefined || options.pageSize !== undefined;
+    const pageSize = Number(options.pageSize ?? 20);
+    const requestedPage = Number(options.page ?? 1);
+    if (
+        paginated &&
+        (!Number.isInteger(pageSize) ||
+            pageSize < 1 ||
+            pageSize > 100 ||
+            !Number.isSafeInteger(requestedPage) ||
+            requestedPage < 1)
+    )
+        throw new Error("Invalid token statistics pagination");
+    const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)));
     const rows = db
         .prepare(
-            `SELECT day,model,tier,account_key,SUM(input) input,SUM(output) output,SUM(cached) cached,SUM(reasoning) reasoning,SUM(total) total,SUM(known_requests) known_requests,SUM(unknown_requests) unknown_requests,SUM(input_observations) input_observations,SUM(output_observations) output_observations,SUM(cached_observations) cached_observations,SUM(reasoning_observations) reasoning_observations FROM token_daily ${options.day ? "WHERE day=?" : ""} GROUP BY day,model,tier,account_key ORDER BY day DESC,model,tier,account_key`
+            `SELECT * FROM token_daily ${where} ORDER BY day DESC,model,tier,account_key${paginated ? " LIMIT ? OFFSET ?" : ""}`
         )
-        .all(...(options.day ? [options.day] : []));
-    return { timezone: "America/Los_Angeles", models: rows };
+        .all(...params, ...(paginated ? [pageSize, (page - 1) * pageSize] : []));
+    return {
+        timezone: "America/Los_Angeles",
+        models: rows,
+        available_models: availableModels,
+        total,
+        ...(paginated ? { page, page_size: pageSize } : {}),
+    };
 }
 
 function normalizeRecord(raw) {

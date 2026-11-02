@@ -836,6 +836,39 @@
                                             </span>
                                         </div>
 
+                                        <div
+                                            class="slot-token-usage font-mono"
+                                            title="今日按美国太平洋时间统计；缓存属于输入，思考属于输出。缺失用量不计为零。"
+                                        >
+                                            <span
+                                                >今日已知 Token:
+                                                <b>{{
+                                                    slot.daily_tokens?.usage?.total_tokens != null
+                                                        ? formatNumber(slot.daily_tokens.usage.total_tokens)
+                                                        : "未知"
+                                                }}</b></span
+                                            >
+                                            <span
+                                                >输入
+                                                {{
+                                                    slot.daily_tokens?.usage?.prompt_tokens != null
+                                                        ? formatNumber(slot.daily_tokens.usage.prompt_tokens)
+                                                        : "未知"
+                                                }}</span
+                                            >
+                                            <span
+                                                >输出
+                                                {{
+                                                    slot.daily_tokens?.usage?.completion_tokens != null
+                                                        ? formatNumber(slot.daily_tokens.usage.completion_tokens)
+                                                        : "未知"
+                                                }}</span
+                                            >
+                                            <span v-if="slot.daily_tokens?.unknown_requests" class="text-warning"
+                                                >{{ slot.daily_tokens.unknown_requests }} 次用量未知</span
+                                            >
+                                        </div>
+
                                         <div class="slot-meta font-mono">
                                             <span
                                                 >今日请求: <b>{{ slot.daily_requests }}</b></span
@@ -2828,7 +2861,16 @@ async function sendReset(url, body) {
     border-radius: 4px;
 }
 
+.slot-token-usage {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+}
+
 .slot-meta {
+    flex-wrap: wrap;
     display: flex;
     align-items: center;
     gap: 10px;

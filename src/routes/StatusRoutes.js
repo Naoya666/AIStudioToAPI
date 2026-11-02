@@ -374,7 +374,15 @@ class StatusRoutes {
 
         app.get("/api/usage-stats/tokens", isAuthenticated, async (req, res) => {
             try {
-                res.json(await this.serverSystem.usageStatsService.getTokenStatistics({ day: req.query.day }));
+                res.json(
+                    await this.serverSystem.usageStatsService.getTokenStatistics({
+                        day: req.query.day,
+                        email: req.query.email,
+                        model: req.query.model,
+                        page: req.query.page,
+                        pageSize: req.query.pageSize,
+                    })
+                );
             } catch (error) {
                 res.status(400).json({ error: error.message });
             }

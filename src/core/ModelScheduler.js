@@ -1856,10 +1856,21 @@ class ModelScheduler {
                     .sort()
                     .map(model => {
                         const slot = this.slot(account, model, now);
+                        const date = this.getPacificDateKey(now);
+                        const window = slot.token_windows?.[date];
+                        const known = window?.known_requests || 0;
+                        const attempts = Math.max(slot.daily_request_count || 0, window?.attempts || 0);
                         return {
                             cooldown_until: slot.cooldown_until || null,
                             daily_failures: slot.daily_failure_count,
                             daily_requests: slot.daily_request_count,
+                            daily_tokens: {
+                                date,
+                                known_requests: known,
+                                timezone: PACIFIC_TIMEZONE,
+                                unknown_requests: Math.max(0, attempts - known),
+                                usage: window ? { ...window.usage } : null,
+                            },
                             inflight: slot.inflight,
                             last_error: slot.last_error ? String(slot.last_error).slice(0, 500) : null,
                             last_error_kind: slot.last_error_kind || null,
