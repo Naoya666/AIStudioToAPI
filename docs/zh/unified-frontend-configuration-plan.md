@@ -211,6 +211,17 @@ API Key 修改要处理现有控制台认证的关联，不能因请求重复提
 | `SUPERVISOR_MAX_RESTARTS`       | 见浏览器恢复优化方案及配置面板说明 | 重启     |
 | `SUPERVISOR_SHUTDOWN_MS`        | 见浏览器恢复优化方案及配置面板说明 | 重启     |
 
+### 4.10 Playground / Build 双通道
+
+| 配置                      | 生效                       |
+| ------------------------- | -------------------------- |
+| `BUILD_ENABLED`           | 重启，默认关闭             |
+| `BUILD_PRESET_MATCHING`   | 重启，默认关闭             |
+| `PG_TOOL_CALLING_MODE`    | 重启，默认 auto_fallback   |
+| `BUILD_TOOL_CALLING_MODE` | 重启，默认 auto_fallback   |
+| `PG_MAX_CONCURRENCY`      | 重启，默认 0（不附加限制） |
+| `BUILD_MAX_CONCURRENCY`   | 重启，默认 1               |
+
 ## 5. 结构化输入
 
 模型配置不要求用户编写 JSON。虽然存储格式是 JSON 对象，前端使用可增加、删除的行输入。

@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AIStudioToAPI exposes Google AI Studio Playground through OpenAI, Gemini, Responses and Anthropic compatible APIs. Camoufox/Firefox holds each account's cookies and official WAA runtime. PlaygroundTransport submits requests directly through Playwright and publishes response events to ConnectionRegistry in-process. Build Apps, iframe relays and the browser WebSocket client are no longer used. See docs/zh/playground-direct-20261029.md for the current architecture; the Build sections below describe historical implementation details.
 
+Optional Code Assistant Build calls now live in `src/core/codeAssistant/`. See `docs/zh/build-dual-channel.md`: same page/context, `CodeAssistantOffline` and task-read RPCs, existing scheduler, experimental Chat Completions only. This is separate from the historical Build App Proxy* implementation. `npm test` includes isolated Build fixtures; these are not live Google acceptance. Build anti must remain gated until targeted live validation.
+
 ## Common Commands
 
 ### Development

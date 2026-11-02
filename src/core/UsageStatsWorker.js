@@ -62,6 +62,13 @@ function initialize() {
             PRIMARY KEY(day,account_key,model,api_format,request_category,stream_mode)
         );
     `);
+    if (
+        !db
+            .prepare("PRAGMA table_info(requests)")
+            .all()
+            .some(column => column.name === "usage_json")
+    )
+        db.exec("ALTER TABLE requests ADD COLUMN usage_json TEXT");
     if (!metaGet("schema_version")) metaSet("schema_version", 1);
     if (!metaGet("dataset_revision")) metaSet("dataset_revision", 1);
     if (!metaGet("started_at_ms")) metaSet("started_at_ms", Date.now());
@@ -92,6 +99,13 @@ function normalizeRecord(raw) {
         initialAuthIndex: Number.isInteger(raw.initialAuthIndex) ? raw.initialAuthIndex : null,
         isStreaming: Boolean(raw.isStreaming),
         method: raw.method || "GET",
+        usage:
+            raw.usage &&
+            ["prompt_tokens", "completion_tokens", "total_tokens"].every(
+                key => Number.isSafeInteger(raw.usage[key]) && raw.usage[key] >= 0
+            )
+                ? raw.usage
+                : null,
         model: nullable(raw.model),
         outcome,
         path: raw.path || "/",
@@ -147,6 +161,7 @@ function insertRequest(record) {
             return { inserted: false, invalid: false };
         }
         const rowId = Number(result.lastInsertRowid);
+        if (r.usage) db.prepare("UPDATE requests SET usage_json=? WHERE id=?").run(JSON.stringify(r.usage), rowId);
         const attempt = db.prepare(
             "INSERT INTO request_attempts(request_row_id,attempt_number,account_key) VALUES(?,?,?)"
         );
@@ -306,6 +321,7 @@ function summary() {
 
 function rowToRecord(row) {
     return {
+        usage: row.usage_json ? JSON.parse(row.usage_json) : null,
         apiFormat: row.api_format,
         durationMs: row.duration_ms,
         finishedAt: iso(row.finished_at_ms),

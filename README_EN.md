@@ -6,6 +6,8 @@ A browser automation service that exposes Google AI Studio Playground through Op
 
 This repository is independently maintained and derived from [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI), which is itself based on [Ellinav/ais2api](https://github.com/Ellinav/ais2api). It is not an official upstream release. Existing attribution is retained, and this version uses **CC BY-NC 4.0** for noncommercial use under the license terms.
 
+Optional **Build Code Assistant channel**: `build/` packs the full ordered conversation into a request attachment; `build-st/` accepts the bundled SillyTavern v1/v2 segmentation protocol. It reuses the existing account context, page and proxy. Disabled by default; only Chat Completions is exposed experimentally. All Build anti combinations remain unverified and unavailable. See [implementation, setup and acceptance limits](docs/zh/build-dual-channel.md).
+
 ## Features and changes
 
 Upstream features include browser automation, multiple accounts, compatible APIs, tool calls, image and speech models. Availability depends on account permissions and upstream model support.

@@ -550,6 +550,18 @@ class ProxyServerSystem extends EventEmitter {
             return this.requestHandler.withConfigurationSnapshot(next);
         });
 
+        app.use((req, res, next) => {
+            const build = require("./codeAssistant/ModelIdentity");
+            const model = req.body?.model || req.path?.match(/models\/(.+):/)?.[1];
+            if (build.isBuild(model) && req.path !== "/v1/chat/completions")
+                return res.status(400).json({
+                    error: {
+                        message: "Build 当前仅开放 /v1/chat/completions；此协议尚未验证",
+                        type: "unsupported_build_protocol",
+                    },
+                });
+            next();
+        });
         // Resource compatibility routes run after API authentication and admission.
         app.use((req, res, next) => this.playgroundResources?.handle(req, res, next) || next());
 
@@ -572,7 +584,11 @@ class ProxyServerSystem extends EventEmitter {
         });
 
         app.get(["/v1beta/models"], (req, res) => {
-            res.status(200).json({ models: this.config.modelList });
+            res.status(200).json({
+                models: this.config.modelList.filter(
+                    m => !require("./codeAssistant/ModelIdentity").isBuild(m.name.replace(/^models\//, ""))
+                ),
+            });
         });
 
         app.post("/v1/chat/completions", (req, res) => {

@@ -6,6 +6,8 @@ const normalizedModels = new Map();
 function normalizeModelName(model) {
     if (typeof model !== "string") throw schedulerError("Model must be a non-empty string", 400);
     if (normalizedModels.has(model)) return normalizedModels.get(model);
+    if (require("./codeAssistant/ModelIdentity").isBuild(model))
+        return require("./codeAssistant/ModelIdentity").parse(model).canonical;
     let normalized = FormatConverter.parseModelAntiPrefix(model).cleanModelName;
     normalized = FormatConverter.parseModelBuiltInToolSuffixes(normalized).cleanModelName;
     normalized = FormatConverter.parseModelStreamingModeSuffix(normalized).cleanModelName;

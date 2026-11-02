@@ -829,3 +829,138 @@ test("bridge delivers prompt feedback as a response for the existing block handl
         assert.equal(f.calls.length, 1);
     }
 });
+
+test("Playground and CodeAssistant share the proof queue while their fetches overlap", async t => {
+    const first = deferred(),
+        second = deferred();
+    const f = fixture(t, 0, {
+        fetch: async url => {
+            await (url.endsWith("/CodeAssistantOffline") ? second.promise : first.promise);
+            return new Response(url.endsWith("/CodeAssistantOffline") ? '["task"]' : "[]", { status: 200 });
+        },
+    });
+    await f.init();
+    f.sandbox.TextDecoder = TextDecoder;
+    const service = f.sandbox.__makerSuiteBridge,
+        gate = deferred();
+    service.proofTail = gate.promise;
+    const pg = service.run({
+        body: Array(5).fill(null),
+        ht: "pg",
+        id: "pg",
+        readyTimeoutMs: 100,
+        rpcMethod: "GenerateContent",
+        timeoutMs: 1000,
+    });
+    const build = service.run({
+        body: Object.assign(Array(29).fill(null), { 0: [[[[null, "build"]], "user"]] }),
+        ht: "build",
+        id: "build",
+        readyTimeoutMs: 100,
+        rpcMethod: "CodeAssistantOffline",
+        timeoutMs: 1000,
+    });
+    await tick();
+    assert.equal(f.calls.length, 0);
+    gate.resolve();
+    for (let n = 0; n < 10 && f.calls.length < 2; n++) await tick();
+    assert.equal(f.calls.length, 2);
+    const pgBody = JSON.parse(f.calls.find(c => c.url.endsWith("/GenerateContent")).init.body);
+    const buildBody = JSON.parse(f.calls.find(c => c.url.endsWith("/CodeAssistantOffline")).init.body);
+    assert.equal(typeof pgBody[4], "string");
+    assert.equal(typeof buildBody[1], "string");
+    assert.equal(buildBody[4], null);
+    first.resolve();
+    second.resolve();
+    const result = await Promise.all([pg, build]);
+    assert.ok(result.every(r => r.status === 200));
+});
+for (const mode of ["auto_fallback", "strict"])
+    test(`native PG ${mode} buffers functionCall validation before streaming executable output`, async t => {
+        const { encStruct } = require("../src/core/MakerSuiteCodec");
+        const { PlaygroundTransport } = require("../src/core/PlaygroundTransport");
+        const part = Array(11).fill(null);
+        part[10] = ["lookup", encStruct({ q: 123 }), "upstream-call"];
+        const wire = JSON.stringify([[[[[[part], "model"], 1]]]]);
+        const f = fixture(t, 0, { fetch: async () => new Response(wire, { status: 200 }) });
+        await f.init();
+        f.sandbox.TextDecoder = TextDecoder;
+        Object.setPrototypeOf(f.bridge, PlaygroundTransport.prototype);
+        f.bridge.ready = true;
+        const outputs = [];
+        const request = {
+            body: JSON.stringify({ contents: [{ parts: [{ text: "query" }], role: "user" }] }),
+            client_tool_contract: {
+                body: {
+                    messages: [{ content: "query", role: "user" }],
+                    tool_choice: "auto",
+                    tools: [
+                        {
+                            function: {
+                                name: "lookup",
+                                parameters: { properties: { q: { type: "string" } }, required: ["q"], type: "object" },
+                            },
+                            type: "function",
+                        },
+                    ],
+                },
+                mode,
+            },
+            method: "POST",
+            path: "/v1beta/models/gemini-3.8-flash:streamGenerateContent",
+        };
+        if (mode === "strict") {
+            await assert.rejects(
+                f.bridge.generate(request, x => outputs.push(x)),
+                { code: "invalid_tool_response" }
+            );
+            assert.equal(outputs.length, 0);
+        } else {
+            await f.bridge.generate(request, x => outputs.push(x));
+            assert.equal(outputs.length, 1);
+            assert.equal(outputs[0].candidates[0].content.parts[0].functionCall.args.q, 123);
+        }
+    });
+
+test("large Build attachments upload through the existing page and sign only their final parts", async t => {
+    const f = fixture(t, 0, {
+        fetch: async (url, init) => {
+            if (String(url) === "https://aistudio.google.com/_/upload")
+                return new Response("", {
+                    headers: { "X-Goog-Upload-URL": "https://aistudio.google.com/_/upload?upload_id=fixture" },
+                    status: 200,
+                });
+            if (String(url).includes("upload_id=")) {
+                assert.ok(ArrayBuffer.isView(init.body));
+                return new Response("fixture-upload-path", { status: 200 });
+            }
+            return new Response('["task"]', { status: 200 });
+        },
+    });
+    await f.init();
+    Object.assign(f.sandbox, { atob, btoa, crypto: require("node:crypto").webcrypto, TextDecoder });
+    const body = Array(29).fill(null);
+    body[0] = [
+        [
+            [
+                { __upload: ["text/plain", Buffer.from("large fixture").toString("base64"), "context.txt"] },
+                [null, "prompt"],
+            ],
+            "user",
+        ],
+    ];
+    const result = await f.sandbox.__makerSuiteBridge.run({
+        body,
+        ht: "before upload",
+        id: "large",
+        proofText: "prompt",
+        readyTimeoutMs: 100,
+        rpcMethod: "CodeAssistantOffline",
+        timeoutMs: 2000,
+    });
+    assert.equal(result.status, 200);
+    assert.equal(f.calls.length, 3);
+    const submitted = JSON.parse(f.calls[2].init.body);
+    assert.equal(submitted[0][0][0][0][17][1], "fixture-upload-path");
+    assert.equal(typeof submitted[1], "string");
+});

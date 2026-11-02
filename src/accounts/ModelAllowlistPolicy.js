@@ -33,7 +33,11 @@ function catalogModels(models) {
             models
                 .map(model => (typeof model === "string" ? model : model.name))
                 .filter(model => typeof model === "string" && !model.replace(/^models\//, "").startsWith("__"))
-                .filter(model => normalizeModelName(model) === model.replace(/^models\//, ""))
+                .filter(
+                    model =>
+                        require("../core/codeAssistant/ModelIdentity").isBuild(model) ||
+                        normalizeModelName(model) === model.replace(/^models\//, "")
+                )
                 .map(model => normalizeModelName(model))
         ),
     ];
@@ -45,7 +49,7 @@ function initialPolicy(models) {
             LEVELS.map(tier => [
                 tier,
                 tier === "free"
-                    ? names.filter(model => !PAID_MODELS.includes(model))
+                    ? names.filter(model => !PAID_MODELS.includes(model) && !model.startsWith("build/"))
                     : [...new Set([...names, ...PAID_MODELS])],
             ])
         ),

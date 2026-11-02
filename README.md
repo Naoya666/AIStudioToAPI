@@ -8,6 +8,8 @@
 
 抗截断文本传输：支持 `anti-` 模型前缀、请求级覆盖及独立全局策略，兼容非流式和 real/fake/early 三种流式模式。默认 off，范围及限制见 [使用说明](docs/zh/anti-truncation.md) 和 [实施验证记录](docs/zh/anti-truncation-implementation.md)。
 
+新增可选 **Build 代码助手双通道**：`build/` 免插件完整上下文附件、`build-st/` 酒馆精准分段；复用现有账号 context / 页面 / 代理。默认关闭，仅 OpenAI Chat Completions 实验入口，Build anti 全部待验证。配置、工具模式、扩展安装和验收边界见 [实施与使用说明](docs/zh/build-dual-channel.md)。
+
 ## 功能与本版本改动
 
 继承上游的多协议 API、浏览器自动化、多账号会话、工具调用、图片及语音模型支持，具体可用能力取决于账号权限和上游模型。

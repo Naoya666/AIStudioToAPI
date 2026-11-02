@@ -1,6 +1,42 @@
 const { MAX_GENERATION_TIMEOUT_MS } = require("./TransportConfig");
 
 module.exports = [
+    ...[
+        {
+            description:
+                "仅开放 OpenAI Chat Completions；复用现有账号 context 与页面。Build anti 全部待验证，显式 anti 请求报错；沿用既有抗截断设置。新增模型须在账号层级白名单授权。",
+            label: "启用 Build 代码助手（待真实上游验收）",
+            name: "BUILD_ENABLED",
+            path: "buildEnabled",
+            type: "boolean",
+        },
+        {
+            description: "默认关闭。仅 build/ 使用；管理区上传预设，未命中使用完整附件，build-st/ 始终遵循插件分段。",
+            label: "自用预设匹配",
+            name: "BUILD_PRESET_MATCHING",
+            path: "buildPresetMatching",
+            type: "boolean",
+        },
+        ...["PG", "BUILD"].map(channel => ({
+            choices: ["auto_fallback", "strict"],
+            description:
+                "OpenAI Chat Completions：auto_fallback 容许正文；strict 按原始工具契约校验，失败报错，不修复、不重试。工具结果缓冲验证后输出。其余 PG 协议维持既有行为。",
+            label: channel + " 工具模式",
+            name: channel + "_TOOL_CALLING_MODE",
+            path: channel === "PG" ? "pgToolCallingMode" : "buildToolCallingMode",
+            type: "enum",
+        })),
+        ...["PG", "BUILD"].map(channel => ({
+            description:
+                "与全局、账号、context、模型限制同时满足才准入。PG 0 为不附加限制；Build 跨模型与两个前缀共享。总 11 / PG 10 / Build 1 是待实测配置，不自动应用。",
+            label: channel + " 账号通道并发",
+            maximum: 1000,
+            minimum: channel === "PG" ? 0 : 1,
+            name: channel + "_MAX_CONCURRENCY",
+            path: "scheduler." + (channel === "PG" ? "pgConcurrency" : "buildConcurrency"),
+            type: "integer",
+        })),
+    ].map(field => ({ application: "restart", group: "Playground / Build 双通道", mode: "all", ...field })),
     {
         application: "hot",
         description: "按账号层级配置模型白名单。未知账号使用 Free；Ultra 两档初始复制 Pro。新增目录模型需显式授权。",

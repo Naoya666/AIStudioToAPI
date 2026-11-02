@@ -60,6 +60,12 @@ class ConfigLoader {
             },
         };
 
+        config.buildEnabled = env.BUILD_ENABLED === "true";
+        config.buildPresetMatching = env.BUILD_PRESET_MATCHING === "true";
+        config.pgToolCallingMode = env.PG_TOOL_CALLING_MODE || "auto_fallback";
+        config.buildToolCallingMode = env.BUILD_TOOL_CALLING_MODE || "auto_fallback";
+        for (const mode of [config.pgToolCallingMode, config.buildToolCallingMode])
+            if (!["auto_fallback", "strict"].includes(mode)) throw new Error("Invalid tool calling mode");
         config.scheduler = require("../core/SchedulerConfig")(env);
 
         // Environment variable overrides
@@ -278,6 +284,12 @@ class ConfigLoader {
             config.modelList = [{ name: "models/gemini-2.5-flash-lite" }];
         }
 
+        if (config.buildEnabled)
+            config.modelList.push(
+                ...require("../core/codeAssistant/ModelIdentity")
+                    .models()
+                    .map(name => ({ name: `models/${name}` }))
+            );
         const { catalogModels, initialPolicy, parsePolicy } = require("../accounts/ModelAllowlistPolicy");
         config.scheduler.modelAllowlist =
             env.MODEL_TIER_ALLOWLIST === undefined

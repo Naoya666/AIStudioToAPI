@@ -27,6 +27,7 @@
                 {{ display(item.name, snapshot.saved[item.name]) }}（{{ item.reason }}）
             </p>
         </details>
+        <BuildChannelPanel />
         <div v-if="snapshot" class="configuration-layout">
             <nav class="configuration-directory" :aria-label="t('adminConfigGroups')">
                 <p class="directory-title">{{ t("adminConfigGroups") }}</p>
@@ -272,6 +273,7 @@ const groupsContainer = ref(null);
 let groupObserver;
 
 import { useDraftGuard } from "../composables/useDraftGuard";
+import BuildChannelPanel from "./BuildChannelPanel.vue";
 import ModelAllowlistEditor from "./ModelAllowlistEditor.vue";
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { ElButton, ElSwitch, ElSelect, ElOption, ElInputNumber, ElInput, ElPopover, ElMessageBox } from "element-plus";

@@ -647,6 +647,13 @@ class ModelScheduler {
         });
     }
 
+    channelInflight(account, channel) {
+        return Object.entries(account.models).reduce(
+            (n, [model, slot]) => n + ((model.startsWith("build/") ? "build" : "pg") === channel ? slot.inflight : 0),
+            0
+        );
+    }
+
     canLease(account, model) {
         if (this.browserManager?.benefitCheckingIndices?.has(account.index)) return false;
         if (this.browserManager?.contexts?.get(account.index)?.draining) return false;
@@ -657,14 +664,18 @@ class ModelScheduler {
         if (!this.isTierAllowed(account.index, model)) return false;
         if (account.key === this.drainingAccount) return false;
         if (model !== "__files__" && this.isAccountQuotaExhausted(account)) return false;
+        const channel = model.startsWith("build/") ? "build" : "pg";
+        if (channel === "build" && account.buildRecoveryBlocked) return false;
+        const channelLimit = channel === "build" ? (this.config.buildConcurrency ?? 1) : this.config.pgConcurrency || 0;
+        if (channelLimit && this.channelInflight(account, channel) >= channelLimit) return false;
         const accountLimit = this.config.accountConcurrency || 0;
         const modelLimit = this.config.accountModelConcurrency?.[model] ?? accountLimit;
         if (accountLimit && account.inflight >= accountLimit) return false;
         if (modelLimit && this.slot(account, model).inflight >= modelLimit) return false;
+        const contextLimit = this.config.contextMaxConcurrency || 0;
+        if (contextLimit && account.inflight >= contextLimit) return false;
         if (this.config.readyContextOnly && this.browserManager) {
-            if (!this.browserManager.isContextReady(account.index)) return false;
-            const contextLimit = this.config.contextMaxConcurrency || 0;
-            return !contextLimit || account.inflight < contextLimit;
+            return this.browserManager.isContextReady(account.index);
         }
         return (
             account.inflight > 0 ||
@@ -1796,6 +1807,11 @@ class ModelScheduler {
         return {
             ...summary,
             accounts,
+            channels: ["pg", "build"].map(channel => ({
+                channel,
+                inflight: [...this.accounts.values()].reduce((n, a) => n + this.channelInflight(a, channel), 0),
+                queued: this.pending.filter(i => (i.model.startsWith("build/") ? "build" : "pg") === channel).length,
+            })),
             contexts: this.contextsSnapshot().contexts,
             estimated_remaining_quota: quotaTotal,
             models: summary.models.map(model => {

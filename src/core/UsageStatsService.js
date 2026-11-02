@@ -261,6 +261,7 @@ class UsageStatsService {
             startedAt: tracker.startedAt,
             statusCode,
             streamMode: tracker.requestCategory === "generation" ? tracker.streamMode || "non" : null,
+            usage: result.usage ?? null,
         };
 
         this.records.push(record);

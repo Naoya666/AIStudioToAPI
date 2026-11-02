@@ -294,7 +294,10 @@ test(
         await panel.getByText("查看待重启变更").waitFor();
         await panel.getByRole("button", { exact: true, name: "撤销待重启变更" }).click();
         await page.waitForFunction(
-            () => !document.querySelector(".configuration-panel details:not(.model-settings-collapse)")
+            () =>
+                !document.querySelector(
+                    ".configuration-panel details:not(.model-settings-collapse):not(.build-channel-panel)"
+                )
         );
         assert.equal(service.snapshot().pending.length, 0);
         assert.equal(await panel.getByText("MODEL_QUEUE_TIMEOUT_MS", { exact: true }).count(), 0);

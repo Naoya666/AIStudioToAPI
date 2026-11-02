@@ -1,0 +1,10 @@
+{
+    "author": "Build Standalone",
+    "description": "预设进入 Build 输入框，背景和历史进入项目文件；仅对 build-st/ 模型启用。",
+    "display_name": "Build 独立版 · 酒馆分流",
+    "js": "index.js",
+    "loading_order": 900,
+    "optional": [],
+    "requires": [],
+    "version": "0.6.0"
+}

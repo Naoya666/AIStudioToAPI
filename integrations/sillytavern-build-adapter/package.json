@@ -1,0 +1,6 @@
+{
+    "private": true,
+    "type": "module",
+    "version": "0.6.0",
+    "description": "Build Standalone adapter snapshot for AIStudioToAPI"
+}

@@ -78,6 +78,7 @@ class PlaygroundConnection extends EventEmitter {
                     status,
                     upstreamError: error.upstreamError,
                     upstreamOutputStarted: error.upstreamOutputStarted === true,
+                    usageMetadata: error.usageMetadata,
                 });
                 if (!this.transport.ready) this.close();
             }
@@ -235,6 +236,13 @@ class PlaygroundTransport extends MakerSuiteBridge {
             throw fail("Invalid request JSON", 400);
         }
         if (this.resources) this.resources.resolveFiles(input, this.authIndex);
+        const clientContract = request.client_tool_contract;
+        const Tools = require("./codeAssistant/ToolContract");
+        const contract = clientContract ? Tools.prepareTools(clientContract.body, { mode: clientContract.mode }) : null;
+        // Native functionCall parts remain structured. Buffer a tool-bearing turn
+        // before publishing executable calls, so late errors cannot leak actions.
+        const publishValidated = contract && onChunk;
+        if (publishValidated) onChunk = null;
         const { body, ht } =
             rpcMethod === "CountTokens"
                 ? { body: buildCountBody(match[1], input), ht: "" }
@@ -351,11 +359,38 @@ class PlaygroundTransport extends MakerSuiteBridge {
             if (result.proofBroken) this.ready = false;
             if (result.status !== 200) throw await this.upstreamError(result, invalidated);
             try {
-                return rpcMethod === "CountTokens"
-                    ? decodeCountResponse(result.text)
-                    : onChunk
-                      ? undefined
-                      : merge(chunks);
+                if (rpcMethod === "CountTokens") return decodeCountResponse(result.text);
+                if (onChunk) return undefined;
+                const response = merge(chunks);
+                if (contract) {
+                    try {
+                        for (const candidate of response.candidates || []) {
+                            const calls = (candidate.content?.parts || [])
+                                .filter(p => p.functionCall && p.functionCall.name !== clientContract.syntheticName)
+                                .map(p => ({
+                                    function: {
+                                        arguments:
+                                            typeof p.functionCall.args === "string"
+                                                ? p.functionCall.args
+                                                : JSON.stringify(p.functionCall.args),
+                                        name: p.functionCall.name,
+                                    },
+                                    id: p.functionCall.id || `call_${randomUUID()}`,
+                                    type: "function",
+                                }));
+                            Tools.validateReply({ tool_calls: calls }, contract);
+                        }
+                        if (!response.candidates?.length) Tools.validateReply({ tool_calls: [] }, contract);
+                    } catch (error) {
+                        error.usageMetadata = response.usageMetadata;
+                        throw error;
+                    }
+                }
+                if (publishValidated) {
+                    publishValidated(response);
+                    return undefined;
+                }
+                return response;
             } catch (error) {
                 if (error.rpcStatus)
                     throw await this.upstreamError(

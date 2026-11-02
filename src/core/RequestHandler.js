@@ -220,6 +220,7 @@ class RequestHandler {
             finalAuthIndex: overrides.finalAuthIndex,
             outcome,
             statusCode,
+            usage: overrides.usage ?? res.__actualUsage ?? null,
         });
     }
 
@@ -1362,6 +1363,8 @@ class RequestHandler {
         if (this.serverSystem.scheduler && !this.scheduled) {
             return require("./ScheduledRequestHandler").dispatch(this, "processOpenAIRequest", req, res);
         }
+        if (require("./codeAssistant/ModelIdentity").isBuild(req.body?.model))
+            return require("./codeAssistant/BuildRequestHandler").process(this, req, res);
         const requestId = this._generateRequestId();
         if (!res.headersSent) res.setHeader("X-Request-ID", requestId);
         res.__acceptedAt = Date.now();
@@ -1398,7 +1401,20 @@ class RequestHandler {
             const baseline = structuredClone(req.body);
             baseline.model = policy.model;
             delete baseline.anti_truncation;
-            const injected = policy.enabled ? AntiTruncation.inject(baseline) : { body: baseline };
+            let clientContract;
+            try {
+                clientContract = require("./codeAssistant/ToolContract").prepareTools(baseline, {
+                    mode: this.config.pgToolCallingMode || "auto_fallback",
+                });
+            } catch (error) {
+                return this._sendErrorResponse(res, error.status || 400, error.message);
+            }
+            const injected = policy.enabled ? AntiTruncation.inject(baseline) : { body: structuredClone(baseline) };
+            if (clientContract && !policy.enabled && this.config.pgToolCallingMode !== "strict") {
+                if (injected.body.tools) injected.body.tool_choice = clientContract.choice === "none" ? "none" : "auto";
+                if (injected.body.functions)
+                    injected.body.function_call = clientContract.choice === "none" ? "none" : "auto";
+            }
             const suffixMode = FormatConverter.parseModelStreamingModeSuffix(
                 FormatConverter.parseModelBuiltInToolSuffixes(req.body.model).cleanModelName
             ).streamingMode;
@@ -1463,6 +1479,12 @@ class RequestHandler {
                     this.config.modelTransportPolicy
                 ),
             };
+            if (clientContract)
+                proxyRequest.client_tool_contract = {
+                    body: baseline,
+                    mode: this.config.pgToolCallingMode || "auto_fallback",
+                    syntheticName: injected.name,
+                };
             if (policy.enabled) {
                 const context = {
                     baseline: proxyRequest.body,
@@ -4308,6 +4330,7 @@ class RequestHandler {
         // Parse and convert to OpenAI format
         try {
             const googleResponse = res.__antiAttempt ? AntiTruncation.parseResponse(fullBody) : JSON.parse(fullBody);
+            this._captureKnownUsage(res, googleResponse.usageMetadata);
             const openAIResponse = res.__antiAttempt
                 ? res.__antiAttempt.nonStream(googleResponse, this.formatConverter, model)
                 : this.formatConverter.convertGoogleToOpenAINonStream(googleResponse, model);
@@ -4395,7 +4418,10 @@ class RequestHandler {
     _addBlockedDetails(payload, error, format) {
         const normalized = normalizeError(error || {});
         if (normalized.details !== undefined) (payload.error || payload).details = normalized.details;
-        if (!isPromptBlocked(error)) return payload;
+        if (!isPromptBlocked(error)) {
+            if (error?.usageMetadata) (payload.error || payload).usageMetadata = error.usageMetadata;
+            return payload;
+        }
         const target = payload.error || payload;
         target.upstream = error.upstream;
         if (error.requestId) target.request_id = error.requestId;
@@ -4406,7 +4432,18 @@ class RequestHandler {
         return payload;
     }
 
+    _captureKnownUsage(res, metadata) {
+        if (
+            metadata &&
+            ["promptTokenCount", "candidatesTokenCount", "totalTokenCount"].every(
+                key => Number.isSafeInteger(metadata[key]) && metadata[key] >= 0
+            )
+        )
+            res.__actualUsage = this.formatConverter._parseUsage({ usageMetadata: metadata });
+    }
+
     _handleRequestError(error, res, requestId = null) {
+        this._captureKnownUsage(res, error.usageMetadata);
         if (isPromptBlocked(error)) this._prepareBlockedResponse(error, res, requestId);
         const format = this._resolveErrorFormat(res);
         const normalized = normalizeError(error);
@@ -4447,6 +4484,7 @@ class RequestHandler {
     }
 
     _sendErrorResponse(res, status, message, errorType = null, details = null) {
+        this._captureKnownUsage(res, details?.usageMetadata);
         if (isPromptBlocked(details)) this._prepareBlockedResponse(details, res, details.requestId);
         const normalized = normalizeError({ ...details, message, status });
         status = normalized.status;

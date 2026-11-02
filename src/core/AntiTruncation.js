@@ -46,6 +46,7 @@ function resolve(body, config, protocol = "openai", modelName = body.model || "g
     };
     if (!enabled) return { ...id, enabled: false, source };
     if (config.antiTruncationEnabled === false) return skip("anti_truncation_disabled");
+    if (require("./codeAssistant/ModelIdentity").isBuild(modelName)) return skip("build_anti_pending_verification");
     if (protocol !== "openai") return skip("anti_truncation_unsupported_protocol");
     const choice = body.tool_choice ?? body.function_call;
     if (choice && typeof choice === "object" && (choice.function?.name || choice.name))

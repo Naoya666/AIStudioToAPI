@@ -794,6 +794,7 @@
                                     <th>{{ t("apiFormat") }}</th>
                                     <th>{{ t("streamingMode") }}</th>
                                     <th>{{ t("requestModel") }}</th>
+                                    <th>Token 用量</th>
                                     <th>{{ t("requestOutcome") }}</th>
                                     <th>{{ t("requestStatus") }}</th>
                                     <th>{{ t("requestDuration") }}</th>
@@ -825,6 +826,13 @@
                                     <td>{{ translateLabel(record.apiFormat) }}</td>
                                     <td>{{ translateLabel(record.streamMode) }}</td>
                                     <td>{{ record.model || "-" }}</td>
+                                    <td>
+                                        {{
+                                            record.usage
+                                                ? `${record.usage.prompt_tokens} / ${record.usage.completion_tokens}`
+                                                : "未知"
+                                        }}
+                                    </td>
                                     <td>
                                         <span
                                             class="outcome-badge"

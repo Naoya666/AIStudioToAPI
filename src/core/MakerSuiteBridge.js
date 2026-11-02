@@ -292,6 +292,7 @@ function installPageBridge({ direct = false } = {}) {
             id,
             body,
             ht,
+            proofText,
             timeoutMs,
             readyTimeoutMs,
             expectedDocumentId,
@@ -351,9 +352,76 @@ function installPageBridge({ direct = false } = {}) {
                 check();
                 const M = window.default_MakerSuite,
                     tb = service.tb;
-                if (!["GenerateContent", "CountTokens", "GenerateAccessToken"].includes(rpcMethod))
+                if (
+                    ![
+                        "GenerateContent",
+                        "CountTokens",
+                        "GenerateAccessToken",
+                        "CreateApplet",
+                        "DeleteApplet",
+                        "CodeAssistantOffline",
+                        "StreamCodeAssistantOfflineGeneration",
+                        "CancelCodeAssistantOfflineGeneration",
+                    ].includes(rpcMethod)
+                )
                     throw new Error("Unsupported Playground RPC");
-                if (rpcMethod === "GenerateContent") {
+                if (rpcMethod === "CodeAssistantOffline") {
+                    const parts = body[0]?.[0]?.[0];
+                    if (!Array.isArray(parts)) throw new Error("Invalid Build parts");
+                    for (let index = 0; index < parts.length; index++) {
+                        const upload = parts[index]?.__upload;
+                        if (!upload) continue;
+                        const [mime, data, name] = upload;
+                        const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+                        if (mime !== "text/plain" || bytes.length > 8 * 1024 * 1024)
+                            throw new Error("Invalid Build attachment");
+                        const digest = new Uint8Array(await abortable(crypto.subtle.digest("SHA-256", bytes)));
+                        const hash = "sha256=" + btoa(String.fromCharCode(...digest));
+                        const headers = { "X-Goog-Authuser": auth.authuser, "X-Goog-Hash": hash };
+                        const start = await upstreamFetch("https://aistudio.google.com/_/upload", {
+                            credentials: "include",
+                            headers: {
+                                ...headers,
+                                "X-Goog-Upload-Command": "start",
+                                "X-Goog-Upload-Header-Content-Length": String(bytes.length),
+                                "X-Goog-Upload-Header-Content-Type": mime,
+                                "X-Goog-Upload-Protocol": "resumable",
+                            },
+                            method: "POST",
+                            signal,
+                        });
+                        if (start.status !== 200)
+                            return { status: start.status, text: '[13,"Build attachment upload failed"]' };
+                        const address = new URL(start.headers.get("X-Goog-Upload-URL"));
+                        // No arbitrary destination or user-provided upload URL. Extend only
+                        // after recording evidence of another official upload origin.
+                        if (
+                            address.origin !== "https://aistudio.google.com" ||
+                            !address.pathname.startsWith("/_/upload")
+                        )
+                            throw new Error("Unexpected Build upload origin");
+                        const result = await upstreamFetch(address.href, {
+                            body: bytes,
+                            credentials: "include",
+                            headers: {
+                                ...headers,
+                                "Content-Type": mime,
+                                "X-Goog-Upload-Command": "upload, finalize",
+                                "X-Goog-Upload-Offset": "0",
+                            },
+                            method: "POST",
+                            signal,
+                        });
+                        const filePath = (await abortable(result.text())).trim();
+                        if (result.status !== 200 || !filePath || filePath.length > 4096)
+                            return { status: 502, text: '[13,"Build attachment finalize failed"]' };
+                        const part = Array(18).fill(null);
+                        part[17] = [mime, filePath, name, String(bytes.length)];
+                        parts[index] = part;
+                    }
+                    ht = parts.map(p => p[1] ?? p[2]?.[1] ?? "").join(" ");
+                }
+                if (["GenerateContent", "CodeAssistantOffline"].includes(rpcMethod)) {
                     // The official snapshot observes the prompt box. Serialize only proof creation;
                     // fetches may overlap once their per-request proof has been generated.
                     const proof = (service.proofTail = (service.proofTail || Promise.resolve())
@@ -371,7 +439,7 @@ function installPageBridge({ direct = false } = {}) {
                                     setter.call(textarea, "");
                                     textarea.dispatchEvent(new Event("input", { bubbles: true }));
                                 };
-                                setter.call(textarea, ht.replace(/\r\n?/g, "\n"));
+                                setter.call(textarea, (proofText ?? ht).replace(/\r\n?/g, "\n"));
                                 textarea.dispatchEvent(new Event("input", { bubbles: true }));
                             }
                             record.proving = true;
@@ -383,7 +451,7 @@ function installPageBridge({ direct = false } = {}) {
                                 record.clearPrompt = null;
                             }
                         }));
-                    body[4] = await abortable(proof);
+                    body[rpcMethod === "CodeAssistantOffline" ? 1 : 4] = await abortable(proof);
                     check();
                 }
                 // Refresh metadata after token generation; never reuse Authorization across calls.
@@ -437,7 +505,7 @@ function installPageBridge({ direct = false } = {}) {
                         body: JSON.stringify(body),
                         credentials: "include",
                         headers: {
-                            ...(window.__buildBenefit?.tier
+                            ...(rpcMethod !== "StreamCodeAssistantOfflineGeneration" && window.__buildBenefit?.tier
                                 ? { "x-aistudio-g1-tier": window.__buildBenefit.tier }
                                 : {}),
                             ...(window.__buildBenefit?.ext
@@ -465,6 +533,24 @@ function installPageBridge({ direct = false } = {}) {
                             const block = decoder.decode(value, { stream: !done });
                             for (let offset = 0; offset < block.length; offset += 65536)
                                 await abortable(onChunk({ text: block.slice(offset, offset + 65536) }));
+                            if (done) break;
+                        }
+                    } finally {
+                        await reader.cancel().catch(() => {});
+                        reader.releaseLock();
+                    }
+                } else if (["CodeAssistantOffline", "StreamCodeAssistantOfflineGeneration"].includes(rpcMethod)) {
+                    const reader = response.body.getReader(),
+                        decoder = new TextDecoder();
+                    let bytes = 0;
+                    try {
+                        // eslint-disable-next-line no-constant-condition
+                        while (true) {
+                            const { value, done } = await abortable(reader.read());
+                            check();
+                            bytes += value?.length || 0;
+                            if (bytes > 16 * 1024 * 1024) throw new Error("Build response exceeds safety limit");
+                            text += decoder.decode(value, { stream: !done });
                             if (done) break;
                         }
                     } finally {

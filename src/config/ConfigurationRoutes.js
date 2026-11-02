@@ -13,6 +13,60 @@ class ConfigurationRoutes {
                     res.status(error.status || 500).json({ error: error.message });
                 }
             });
+        const presets = () => require("../core/codeAssistant/BuildRequestHandler").presetStore(this.system);
+        route("get", "/api/build/presets", (req, res) => res.json(presets().list()));
+        route("post", "/api/build/presets", (req, res) => {
+            if (Buffer.byteLength(JSON.stringify(req.body || {})) > 1024 * 1024)
+                throw Object.assign(new Error("预设超过 1 MiB"), { status: 413 });
+            res.json(presets().add(req.body?.name, req.body?.preset));
+        });
+        route("delete", "/api/build/presets/:id", (req, res) => res.json(presets().remove(req.params.id)));
+        route("patch", "/api/build/presets/:id", (req, res) => {
+            if (typeof req.body?.enabled !== "boolean")
+                throw Object.assign(new Error("enabled 必须为布尔值"), { status: 400 });
+            res.json(presets().setEnabled(req.params.id, req.body.enabled));
+        });
+        route("post", "/api/build/recover/:index", async (req, res) => {
+            const index = Number(req.params.index);
+            if (!Number.isSafeInteger(index) || index < 0)
+                throw Object.assign(new Error("无效账号编号"), { status: 400 });
+            const scheduler = this.system.scheduler;
+            const page = this.system.browserManager?.contexts?.get(index)?.page;
+            if (!scheduler || !page?.playgroundTransport?.ready)
+                throw Object.assign(new Error("账号页面未就绪"), { status: 503 });
+            const account = scheduler.account(index);
+            if (scheduler.channelInflight(account, "build"))
+                throw Object.assign(new Error("Build 仍有活动请求"), { status: 409 });
+            const { BuildRuntime } = require("../core/codeAssistant/BuildRuntime");
+            const runtime = (page.codeAssistantRuntime ||= new BuildRuntime({
+                accountKey: account.key,
+                page,
+                timeoutMs: this.system.config.makerSuiteTimeoutMs,
+            }));
+            await runtime.recover();
+            runtime.cleanupPending = false;
+            account.buildRecoveryBlocked = false;
+            scheduler.saveSoon();
+            scheduler.drain();
+            res.json({ ok: true });
+        });
+        route("get", "/api/build/status", (req, res) =>
+            res.json({
+                accounts: [...(this.system.browserManager?.contexts || [])].map(([index, c]) => ({
+                    active: c.page?.codeAssistantRuntime?.active.size || 0,
+                    cleanupPending:
+                        !!c.page?.codeAssistantRuntime?.cleanupPending ||
+                        !!this.system.scheduler?.account(index).buildRecoveryBlocked,
+                    index,
+                    pageReady: !!c.page?.playgroundTransport?.ready,
+                    projectsReady: c.page?.codeAssistantRuntime?.readyProjects || 0,
+                })),
+                anti: { status: "pending_verification", verified: [] },
+                channels: this.system.scheduler?.snapshot().channels || [],
+                enabled: this.system.config.buildEnabled,
+                quota: { remaining: null, reset: null },
+            })
+        );
         route("get", "/api/configuration", (req, res) => res.json(service.snapshot()));
         route("post", "/api/configuration/secrets", (req, res) =>
             res.json({
