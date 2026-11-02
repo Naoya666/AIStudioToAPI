@@ -25,9 +25,10 @@ function parse(name) {
         upstream: match[2],
     };
 }
-function models() {
-    return ["build/", "build-st/"].flatMap(p =>
+function models({ anti = true } = {}) {
+    const names = ["build/", "build-st/"].flatMap(p =>
         BASES.flatMap(b => [p + b, ...Object.keys(LEVELS).map(l => p + b + "-" + l.toLowerCase())])
     );
+    return anti ? [...names, ...names.map(name => "anti-" + name)] : names;
 }
 module.exports = { BASES, isBuild, models, parse };

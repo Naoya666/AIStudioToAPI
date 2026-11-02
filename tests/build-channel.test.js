@@ -95,20 +95,27 @@ test("model identity keeps requested aliases and separates channels while ST sha
         assert.throws(() => Identity.parse(name));
     assert.equal(getModelDailyQuota("build/gemini-3.8-flash"), null);
 });
-test("Build anti is fail-closed for explicit requests and skips global prefer across all modes", () => {
+test("Build anti follows explicit/default precedence and the existing master switch across modes", () => {
     for (const prefix of ["build/", "build-st/"])
         for (const mode of ["strict", "auto_fallback"]) {
             const body = { ...base, model: prefix + "gemini-3.8-flash-high-real" };
             assert.equal(
                 Anti.resolve(body, { ...config, antiTruncationDefault: "prefer", buildToolCallingMode: mode }).enabled,
-                false
+                true
             );
             for (const choice of ["none", "required", { function: { name: "lookup" }, type: "function" }])
-                assert.throws(
-                    () => Anti.resolve({ ...body, anti_truncation: true, tool_choice: choice, tools }, config),
-                    { code: "build_anti_pending_verification" }
+                assert.equal(
+                    Anti.resolve({ ...body, anti_truncation: true, tool_choice: choice, tools }, config).enabled,
+                    true
                 );
-            assert.throws(() => Anti.resolve({ ...body, model: "anti-" + body.model }, config));
+            assert.equal(
+                Anti.resolve({ ...body, anti_truncation: false, model: "anti-" + body.model }, config).enabled,
+                false
+            );
+            assert.throws(
+                () => Anti.resolve({ ...body, anti_truncation: true }, { ...config, antiTruncationEnabled: false }),
+                { code: "anti_truncation_disabled" }
+            );
         }
     assert.equal(Anti.resolve({ messages: base.messages, model: "anti-gemini-3.8-flash" }, config).enabled, true);
 });
@@ -462,11 +469,12 @@ function handlerFixture(t, { output = "answer", mode = "auto_fallback", generati
         generate: async (id, ctx, options) => {
             requests.push({ ctx, id, options });
             if (generationError) throw generationError;
+            const text = typeof output === "function" ? output(ctx) : output;
             if (options.onText) {
-                options.onText(output.slice(0, 2));
-                options.onText(output.slice(2));
+                options.onText(text.slice(0, 2));
+                options.onText(text.slice(2));
             }
-            return { text: output, usage: { completion_tokens: 2, prompt_tokens: 10, total_tokens: 12 } };
+            return { text, usage: { completion_tokens: 2, prompt_tokens: 10, total_tokens: 12 } };
         },
         readyProjects: 0,
     };
@@ -566,7 +574,7 @@ test("OpenAI plain streaming uses cumulative snapshots and disconnect releases a
     assert.deepEqual(broken.releases, [false]);
     assert.equal(broken.finished[0].outcome, "aborted");
 });
-test("synthetic answer protocol can round-trip offline through Build attachments and both tool modes without enabling anti", () => {
+test("synthetic answer protocol coexists with the Build adapter and both tool modes", () => {
     const FormatConverter = require("../src/core/FormatConverter");
     const converter = new FormatConverter({ debug() {}, info() {}, warn() {} }, { config: {} });
     for (const mode of ["auto_fallback", "strict"])
@@ -603,9 +611,8 @@ test("synthetic answer protocol can round-trip offline through Build attachments
             assert.equal(out.choices[0].message.tool_calls, undefined);
             assert.throws(() => Tools.parseToolReply('{"content":null,"tool_calls":[', contract));
         }
-    // This is adapter verification only: the gate remains closed, including ST.
-    assert.throws(() =>
-        prepare({ ...base, messages: wrapped(envelope()), model: "anti-build-st/gemini-3.8-flash" }, config, {})
+    assert.ok(
+        prepare({ ...base, messages: wrapped(envelope()), model: "anti-build-st/gemini-3.8-flash" }, config, {}).anti
     );
 });
 test("usage persists for failed validation and old SQLite records retain unknown usage", async t => {
@@ -643,7 +650,9 @@ test("bundled Tavern 0.6.0 preserves v2 tool metadata and custom/reverse-proxy d
             tool_choice: "required",
             tools,
         };
+        data.anti_truncation = false;
         assert.equal(adapter.isBuildConnection(data), true);
+        assert.equal(adapter.isBuildConnection({ ...data, model: "anti-build-st/gemini-3.8-flash" }), true);
         assert.equal(adapter.isBuildConnection({ ...data, model: "build/gemini-3.8-flash" }), false);
         const outgoing = adapter.prepareOutgoing(
             data,
@@ -660,6 +669,7 @@ test("bundled Tavern 0.6.0 preserves v2 tool metadata and custom/reverse-proxy d
             assert.deepEqual(included.tools, tools);
             assert.equal(included.tool_choice, "required");
             assert.equal(included.parallel_tool_calls, false);
+            assert.equal(included.anti_truncation, false);
         }
     }
 });
@@ -756,3 +766,54 @@ test("PG validation errors retain known usage without fabricating missing counts
     );
     assert.deepEqual(payload.error.usageMetadata, usageMetadata);
 });
+
+for (const stream of [false, true])
+    for (const repaired of [false, true])
+        test(`Build anti ${stream ? "stream" : "nonstream"} buffers and restores ${repaired ? "truncated" : "complete"} answer with usage`, async t => {
+            const expected = "中文😀\n```js\nconst x=42;\n```  ";
+            const f = handlerFixture(t, {
+                output: ctx => {
+                    const name = ctx.files[0].text.match(/agw_emit_[a-f0-9]{24}/)[0];
+                    const content = JSON.stringify(expected);
+                    const full = `{"content":null,"tool_calls":[{"name":${JSON.stringify(name)},"arguments":{"content":${content}}}]}`;
+                    return repaired ? full.slice(0, full.indexOf(content) + content.length - 1) : full;
+                },
+            });
+            await processBuild(
+                f.h,
+                {
+                    body: { ...base, anti_truncation: true, stream, stream_options: { include_usage: true } },
+                    method: "POST",
+                },
+                f.res
+            );
+            assert.equal(f.requests[0].options.onText, null);
+            assert.deepEqual(f.releases, [true]);
+            let answer, finish, usage;
+            if (stream) {
+                const events = f.res.output
+                    .split("\n")
+                    .filter(l => l.startsWith("data: {"))
+                    .map(l => JSON.parse(l.slice(6)));
+                answer = events
+                    .flatMap(e => e.choices || [])
+                    .map(c => c.delta?.content || "")
+                    .join("");
+                finish = events
+                    .flatMap(e => e.choices || [])
+                    .map(c => c.finish_reason)
+                    .filter(Boolean)
+                    .at(-1);
+                usage = events.find(e => e.usage)?.usage;
+                assert.match(f.res.output, /\[DONE\]/);
+                assert.doesNotMatch(f.res.output, /agw_emit_/);
+            } else {
+                answer = f.res.body.choices[0].message.content;
+                finish = f.res.body.choices[0].finish_reason;
+                usage = f.res.body.usage;
+                assert.equal(f.res.body.choices[0].message.tool_calls, undefined);
+            }
+            assert.equal(answer, expected);
+            assert.equal(finish, repaired ? "length" : "stop");
+            assert.equal(usage.total_tokens, 12);
+        });

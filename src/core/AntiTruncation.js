@@ -30,7 +30,13 @@ function identity(value) {
     const tools = FormatConverter.parseModelBuiltInToolSuffixes(model);
     const stream = FormatConverter.parseModelStreamingModeSuffix(tools.cleanModelName);
     const thinking = FormatConverter.parseModelThinkingLevel(stream.cleanModelName);
-    return { model, prefixed, realModel: thinking.cleanModelName, ...tools, streamingMode: stream.streamingMode };
+    return {
+        model,
+        prefixed,
+        realModel: thinking.cleanModelName,
+        ...tools,
+        streamingMode: stream.streamingMode,
+    };
 }
 
 function resolve(body, config, protocol = "openai", modelName = body.model || "gemini-2.5-flash-lite") {
@@ -46,7 +52,11 @@ function resolve(body, config, protocol = "openai", modelName = body.model || "g
     };
     if (!enabled) return { ...id, enabled: false, source };
     if (config.antiTruncationEnabled === false) return skip("anti_truncation_disabled");
-    if (require("./codeAssistant/ModelIdentity").isBuild(modelName)) return skip("build_anti_pending_verification");
+    if (require("./codeAssistant/ModelIdentity").isBuild(modelName)) {
+        if (protocol !== "openai") return skip("anti_truncation_unsupported_protocol");
+        require("./codeAssistant/ModelIdentity").parse(modelName);
+        return { ...id, enabled: true, source };
+    }
     if (protocol !== "openai") return skip("anti_truncation_unsupported_protocol");
     const choice = body.tool_choice ?? body.function_call;
     if (choice && typeof choice === "object" && (choice.function?.name || choice.name))
@@ -87,7 +97,11 @@ function inject(baseline) {
             description:
                 "Use this transport exactly once for the complete final user-visible answer in content. Never wrap genuine tool calls.",
             name,
-            parameters: { properties: { content: { type: "string" } }, required: ["content"], type: "object" },
+            parameters: {
+                properties: { content: { type: "string" } },
+                required: ["content"],
+                type: "object",
+            },
         },
         type: "function",
     };
@@ -345,4 +359,13 @@ class Attempt {
         return `data: ${JSON.stringify({ choices: [], created: shared.created, id: shared.id, model: shared.model, object: "chat.completion.chunk", usage: this.usage })}\n\n`;
     }
 }
-module.exports = { Attempt, decode, identity, inject, MAX_BYTES, parseResponse, resolve, TEXT_MODELS };
+module.exports = {
+    Attempt,
+    decode,
+    identity,
+    inject,
+    MAX_BYTES,
+    parseResponse,
+    resolve,
+    TEXT_MODELS,
+};

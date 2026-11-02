@@ -135,7 +135,7 @@ export function installSillyTavern({ getContext, openAI, owner = "legacy" }) {
         panel.innerHTML =
             '<div class="inline-drawer-toggle inline-drawer-header"><b>Build 独立版 · 酒馆分流</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content"><label class="checkbox_label"><input type="checkbox" data-enable>启用酒馆预设分流（默认开启）</label><p>版本 0.6.0（' +
             (owner === "browser" ? "浏览器连接器内置" : "兼容酒馆扩展") +
-            '）。支持自定义 OpenAI 或 OpenAI＋反向代理连接中的 <code>build-st/</code> 模型。预设进输入框；历史、世界书和角色资料进项目文件。普通连接不变。</p><p>允许合并系统消息和后期提示词修改；使用自定义连接时需清空自定义正文与排除正文参数。输入框估算上限 45000 token；Build 不支持的温度、Top-P、stop 等采样参数不会转发。思考强度仍由模型后缀决定。</p><p data-status role="status">等待酒馆专用模型请求；此扩展不会自行调用模型。</p></div>';
+            '）。支持自定义 OpenAI 或 OpenAI＋反向代理连接中的 <code>build-st/</code> 或 <code>anti-build-st/</code> 模型。预设进输入框；历史、世界书和角色资料进项目文件。普通连接不变。</p><p>允许合并系统消息和后期提示词修改；使用自定义连接时需清空自定义正文与排除正文参数。输入框估算上限 45000 token；Build 不支持的温度、Top-P、stop 等采样参数不会转发。思考强度仍由模型后缀决定。</p><p data-status role="status">等待酒馆专用模型请求；此扩展不会自行调用模型。</p></div>';
         host.append(panel);
         statusElement = panel.querySelector("[data-status]");
         const enabled = panel.querySelector("[data-enable]");

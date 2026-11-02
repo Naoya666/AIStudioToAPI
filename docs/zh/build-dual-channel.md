@@ -1,7 +1,7 @@
 # Playground + Build 代码助手双通道
 
-实施日期：2026-11-02。后续 Token 统计与用户提供的预算更新见 [Token 统计文档](token-statistics.md)；该更新取代下文初版中“所有 Build 额度未知”的展示口径，Build 上游重置和 anti 状态仍未验证。此版本完成代码与离线验收；**没有调用真实 Google 账号验收**。
-Build 默认关闭，全部 Build anti 组合维持待验证。Playground 既有通道和 anti 能力继续保留。
+实施日期：2026-11-02。后续 Token 统计与用户提供的预算更新见 [Token 统计文档](token-statistics.md)；该更新取代下文初版中“所有 Build 额度未知”的展示口径，Build 上游重置和 anti 状态仍未验证。初版完成代码与离线验收；初版**没有调用真实 Google 账号验收**；随后已完成本文记录的 bero 真实上游修复与 anti 验证。
+当前 Build 默认关闭；开启后可使用已验证的合成函数 anti 传输及客户端工具共存。Playground 既有通道和 anti 能力继续保留。下文保留初版与补测历史，当前 anti 行为以“模型身份与 anti”节为准。
 
 ## 2026-11-02 真实上游修复
 
@@ -17,13 +17,11 @@ Build 默认关闭，全部 Build anti 组合维持待验证。Playground 既有
 
 修改后的原生代码通过 Pro 流式工具调用及结果回传、Free 候选 Flash 普通生成与同账号
 双并发，结束后 journal 为空。Free 是现场默认权限分类，未由本次独立权益查询确认真实
-订阅。以上不构成 Build anti、长附件及酒馆端到端验收；Build anti 仍保持关闭。
+订阅。以上不构成 Build anti、长附件及酒馆端到端验收；该阶段 Build anti 尚未接入，当前状态见下文。
 
 同日后续在相同生产修复镜像下补测：Free 候选 Flash、Pro Flash、Pro Argon 各自同账号
 五并发均 5/5 成功，观测到五个不同已接受任务的等待区间重叠，结束后全部删除；
-Free 候选 Flash 与 Pro Argon 的非流式/流式工具往返共 8/8 成功。正式 API 带工具的
-anti 请求覆盖两模型、两响应模式、两开启方式，8/8 仍返回本地 pending 门禁错误，
-尚未验证真实截断恢复。这些结果仅适用于本次测试账号与样本。
+Free 候选 Flash 与 Pro Argon 的非流式/流式工具往返共 8/8 成功。接入 anti 前的正式 API 带工具请求覆盖两模型、两响应模式、两开启方式，8/8 返回本地 pending 门禁错误；后续接入已取代此门禁，见下文。这些结果仅适用于本次测试账号与样本。
 
 ## 来源与许可
 
@@ -49,7 +47,7 @@ OpenAI 请求先分流：
 - 不创建额外 context、页面或浏览器；不导航切换 PG / Build，不使用 DOM 点击生成。两通道只在签名阶段共享 `proofTail`，输入框在签名结束后清空；网络与任务读取不持有该锁。Build 签名 hash 和输入框文本分别处理，附件不作为输入框正文填入。
 - 每次请求使用临时项目并要求新轨迹，附件名称随机。请求之间复用账号、context、登录、代理和签名器；**不复用含历史的项目**。这比跨请求项目池增加项目 RPC 开销，但降低历史混入风险。不修改项目源码文件承载上下文，不常驻 Build 页面。
 
-Build 任务返回累计快照，普通正文可以按新增后缀发布。不是逐 token 传输；响应头 `X-Build-Streaming: cumulative-task-snapshots` 标记此行为。工具请求使用 `buffered-tool-validation`，完整验证后才发调用。等待期间每 10 秒发送 SSE 注释心跳。`-real` / `-fake` / `-early` 都可解析，Build 统一采用上述任务快照机制，不承诺等同 PG 的逐块行为。
+Build 任务返回累计快照，普通正文可以按新增后缀发布。不是逐 token 传输；响应头 `X-Build-Streaming: cumulative-task-snapshots` 标记此行为。工具请求使用 `buffered-tool-validation`，完整验证后才发调用；anti 请求使用 `buffered-anti-validation`，还原回答或校验工具后才发布。等待期间每 10 秒发送 SSE 注释心跳。`-real` / `-fake` / `-early` 都可解析，Build 统一采用上述任务快照机制，不承诺等同 PG 的逐块行为。
 
 读取网络失败或 JSON 中断只恢复**原任务 ID**，受当前请求期限限制；绝不因空任务、缺少用量、断流或校验失败再次生成、换号或修复调用。完成取决于模型步骤状态 1，状态 2 继续等，4 报错；上游内部工具动作不能作为最终内容完成。空任务与完成但无正文分别处理。累积正文被上游改写时停止发布，避免重复拼接。
 
@@ -86,13 +84,17 @@ Build 任务返回累计快照，普通正文可以按新增后缀发布。不�
 
 例：`build-st/gemini-3.8-flash-high-real`：用户别名完整保留在下游；规范额度 / 调度键 `build/gemini-3.8-flash`；上游 `gemini-3.8-flash`；通道 Build；上下文 sillytavern；思考 high；流式 real。
 
-沿用原 `ANTI_TRUNCATION_ENABLED` / `ANTI_TRUNCATION_DEFAULT` 和请求覆盖优先级。**全部 Build anti 能力尚未开放**：
+沿用原 `ANTI_TRUNCATION_ENABLED` / `ANTI_TRUNCATION_DEFAULT` 和请求覆盖优先级。
+2026-11-02 已在 bero 接入并验证 Build 合成函数 anti，开放两个已登记模型及其思考别名：
 
-- 模型目录无 Build anti 别名。
-- 全局 prefer 对普通 Build 跳过，不影响使用。
-- `anti-build/gemini-3.8-flash-high-real`、`anti-build-st/gemini-4-argon` 或 `anti_truncation:true` 明确返回 `build_anti_pending_verification`。
-- `anti_truncation:false` 仍按既有优先级关闭请求级 anti。
-- 现有 PG anti 测试继续执行。内部合成函数的离线注入 / 文本协议 / 解包测试不构成 Build 抗截断验收。没有开放白名单。
+- `anti-build/gemini-3.8-flash-high-real`、`anti-build-st/gemini-4-argon` 或 `anti_truncation:true` 开启；`ANTI_TRUNCATION_DEFAULT=prefer` 也作用于 Build。
+- 请求 `anti_truncation:false` 优先于别名和全局 prefer；`ANTI_TRUNCATION_ENABLED=false` 仍可整体关闭，关闭时目录不发布 Build anti 别名。
+- 每个请求生成独立、避开客户端同名函数的内部回答函数，只把它作为上游输出传输；返回前去除内部函数，保留原客户端工具契约、调用 ID 及历史关联。strict 的 required / 指定函数必须由真实客户端工具满足，不能用内部回答函数替代；none 不发布真实工具。
+- anti 流式响应先缓冲再验证，头为 `X-Build-Streaming: buffered-anti-validation`、`X-Build-Anti-Truncation: synthetic-answer-v1`；等待期间仍每 10 秒心跳。没有提前发布的内部函数或未验证工具参数。
+- 已收到的内部回答仅缺 JSON 结束符时，可确定性补闭合并返回 `finish_reason:length`；保留收到的正文及末尾空白。完整合法 JSON 可以带 Markdown 围栏及外层换行。不完整转义、非法协议、真实工具参数截断均明确报错，不补造字符或可执行参数。失败保留已知用量。
+- 不自动续写、重提生成或换账号。RPC 断流沿用原任务 ID 继续读取；任务未完成与最终正文的 JSON 截断分别处理。自然模型语义上漏写的内容无法由传输协议补回，不承诺任意截断后都能得到完整答案。
+
+真实验证包括两模型、两上下文协议、strict / auto_fallback、流式 / 非流式、真实工具往返、none / required / 指定函数 / legacy，以及两模型各 350 行中文、emoji、转义与代码片段。可控故障验证了闭合修复、原任务断流恢复和非法截断拒绝；这些注入故障不等同于自然触发上游输出上限。酒馆浏览器扩展仍需按下节安装，实际浏览器端到端使用尚未覆盖。
 
 ## 上下文与工具
 
@@ -115,11 +117,11 @@ Build 任务返回累计快照，普通正文可以按新增后缀发布。不�
 
 ## 酒馆安装与请求例子
 
-附带快照 `integrations/sillytavern-build-adapter/`，来源版本 0.6.0。复制到 SillyTavern 的第三方扩展目录（例如 `public/scripts/extensions/third-party/aistudio-build-adapter`），刷新并在扩展面板启用。此版本只识别 `build-st/`，不会拦截普通 `build/`；custom 连接或 OpenAI reverse_proxy 均有源码分支，沿用用户配置的服务地址与凭据。
+附带快照 `integrations/sillytavern-build-adapter/`，来源版本 0.6.0。复制到 SillyTavern 的第三方扩展目录（例如 `public/scripts/extensions/third-party/aistudio-build-adapter`），刷新并在扩展面板启用。本网关附带版本识别 `build-st/` 与 `anti-build-st/`，不会拦截普通 `build/`；custom 连接或 OpenAI reverse_proxy 均有源码分支，沿用用户配置的服务地址与凭据。
 
 实际线协议前缀为 `BUILD_ST_CONTEXT_V1\n`，内部 `version` 可以是 1 或 2；v2 保留 messageMetadata、contentNull、tool_calls、tool_call_id、function_call。normal / regenerate / swipe / continue / quiet / impersonate 均按封装执行。缺少扩展、损坏、主动 error 或不支持版本明确拒绝。不会对 build-st 自动完整附件降级或猜测分段。扩展 custom_include_body 中保留工具字段；与其他自定义 body 覆盖冲突时主动失败。
 
-此安装路径与服务器地址支持经过源码及适配器模拟测试；**尚未在真实新版酒馆浏览器中端到端验证**。anti-build-st 尚不开放，无需让插件拦截它。
+此安装路径与服务器地址支持经过源码及适配器模拟测试；**尚未在真实新版酒馆浏览器中端到端验证**。使用 `anti-build-st/` 时需复制当前附带适配器并刷新酒馆；服务端 v1/v2 封装已做真实生成验证。
 
 免插件调用：
 
@@ -158,7 +160,7 @@ curl http://localhost:7860/v1/chat/completions \
 
 客户端执行返回的工具后，将 assistant.tool_calls 和匹配 tool_call_id 的 tool 结果完整追加，再发下一轮。本网关不生成工具执行结果。使用默认 auto_fallback 时，即使上例指定函数，上游仍可能返回正常正文；strict 则会把未调用指定函数视为校验失败。
 
-anti 示例：PG `anti-gemini-3.8-flash-high-real` 保持既有行为；Build `anti-build/gemini-3.8-flash-high-real` 当前明确报待验证。不要把后者当成已可用能力。
+anti 示例：PG `anti-gemini-3.8-flash-high-real` 保持既有行为；Build 可使用 `anti-build/gemini-3.8-flash-high-real`，或在普通 `build/` 请求里设置 `anti_truncation:true`。
 
 ## 用量、诊断与最小真实验收
 
@@ -172,9 +174,9 @@ anti 示例：PG `anti-gemini-3.8-flash-high-real` 保持既有行为；Build `a
 4. 新版酒馆安装 0.6.0 快照，custom 与 OpenAI reverse_proxy 分别运行 v1 / v2；检查所有生成类型、消息名称、分段位置、工具字段及超预算主动失败。
 5. 两模式做真实工具往返：正文、合法调用、非法参数、指定函数、required、none、多调用和 legacy。验证 strict 工具片段不会提前发布，失败消耗仍在。
 6. 断流恢复只读同任务；在任务接受后、读取时、完成后分别取消，验证 Google 取消确认与临时项目清理、隔离恢复、PG 可用性。
-7. Build anti 仍保持关闭。独立实验需覆盖全文合成函数、长正文 / 转义 / 代码块 / 不完整参数、工具共存 / 同名冲突、两上下文模式、两工具模式、none / required / 指定函数、流式 / 非流式，并针对真实截断场景区分任务未完成、生成截断和传输断流。记录恢复额外生成、取消及用量证据后才能按模型组合开放；一次短文本解包不够。
+7. Build anti 已开放，后续回归继续覆盖全文合成函数、长正文 / 转义 / 代码块 / 不完整参数、工具共存 / 同名冲突、两上下文模式、两工具模式、none / required / 指定函数、流式 / 非流式，并针对真实截断场景区分任务未完成、生成截断和传输断流。继续记录生成次数、取消及用量；区分自然生成截断、可控故障注入和传输断流，不能将一次短文本解包视为全场景保证。
 
-## 本次实际检查记录
+## 初版实际检查记录（历史）
 
 - `npm test`：全量运行 **793 通过、47 跳过、0 失败**（840 项）。47 项为未设置 `ACCOUNT_LOGIN_BROWSER_TEST_EXECUTABLE` 的可选账号登录浏览器用例；不是 Google 账号验收。
 - 全量回归之后补充了预设原始文本分段、已禁用工具定义保留、清理状态持久化与 PG 校验失败用量等检查；对最终相关代码执行 `node --test tests/build-channel.test.js tests/anti-truncation.test.js tests/playground-capabilities.test.js tests/makersuite-bridge.test.js`：**90 / 90 通过**。含当前 Build 专项 31 项，均使用本地脱敏 / 人工 fixture 与模拟上游。

@@ -287,7 +287,7 @@ class ConfigLoader {
         if (config.buildEnabled)
             config.modelList.push(
                 ...require("../core/codeAssistant/ModelIdentity")
-                    .models()
+                    .models({ anti: config.antiTruncationEnabled })
                     .map(name => ({ name: `models/${name}` }))
             );
         const { catalogModels, initialPolicy, parsePolicy } = require("../accounts/ModelAllowlistPolicy");

@@ -4,6 +4,7 @@ const Identity = require("./ModelIdentity");
 const { parseSillyTavern, sillyTavernMessages } = require("./SillyTavern");
 const { makeAttachmentContext } = require("./AttachmentContext");
 const Tools = require("./ToolContract");
+const AntiTransport = require("./AntiTransport");
 const { BuildRuntime } = require("./BuildRuntime");
 const { PresetStore } = require("./Presets");
 const fail = (message, status = 400) => Object.assign(new Error(message), { kind: "capability", status });
@@ -12,7 +13,7 @@ function presetStore(system) {
 }
 function prepare(body, config, system) {
     const identity = Identity.parse(body.model);
-    require("../AntiTruncation").resolve(body, config);
+    const antiPolicy = require("../AntiTruncation").resolve(body, config);
     if (!config.buildEnabled) throw fail("Build 通道未开启", 403);
     if (!Array.isArray(body.messages) || !body.messages.length || body.messages.length > 10000)
         throw fail("messages 必须为非空数组，最多 10000 条");
@@ -39,17 +40,23 @@ function prepare(body, config, system) {
         { ...body, messages },
         { mode: config.buildToolCallingMode || "auto_fallback" }
     );
+    const anti = antiPolicy.enabled ? AntiTransport.prepare(contract) : null;
     if (!split && config.buildPresetMatching) split = presetStore(system).apply(messages);
     const context = makeAttachmentContext({
         messages,
         ...(split ? { sillytavern: split } : {}),
-        ...(contract ? { toolProtocol: Tools.toolInstructions(contract) } : {}),
+        ...(anti
+            ? { toolProtocol: anti.instructions }
+            : contract
+              ? { toolProtocol: Tools.toolInstructions(contract) }
+              : {}),
         requestedMaxOutputTokens: body.max_completion_tokens ?? body.max_tokens,
     });
+    if (anti) context.prompt += "\n\n" + anti.directInstructions;
     // A conservative local safety budget, not a Google RPC context limit.
     if (Buffer.byteLength(context.prompt) > 180000)
         throw fail("Build 直接输入超过 180000 字节保守预算；未移动或截断预设", 413);
-    return { context, contract, identity, presetHits: split?.hits || 0 };
+    return { anti, context, contract, identity, presetHits: split?.hits || 0 };
 }
 async function process(handler, req, res) {
     const requestId = randomUUID(),
@@ -88,6 +95,8 @@ async function process(handler, req, res) {
     };
     try {
         const prepared = prepare(req.body, config, system);
+        const buffered = Boolean(prepared.contract || prepared.anti);
+        if (prepared.anti) res.setHeader("X-Build-Anti-Truncation", "synthetic-answer-v1");
         if (!scheduler) throw fail("Build 需要现有多账号调度器；不支持 legacy 调度", 503);
         scheduler.assertModelAccessible(prepared.identity.canonical);
         if (stream) {
@@ -95,7 +104,11 @@ async function process(handler, req, res) {
                 "Cache-Control": "no-cache",
                 "Content-Type": "text/event-stream",
                 "X-Accel-Buffering": "no",
-                "X-Build-Streaming": prepared.contract ? "buffered-tool-validation" : "cumulative-task-snapshots",
+                "X-Build-Streaming": prepared.anti
+                    ? "buffered-anti-validation"
+                    : prepared.contract
+                      ? "buffered-tool-validation"
+                      : "cumulative-task-snapshots",
             });
             res.flushHeaders?.();
             res.write(": accepted\n\n");
@@ -125,7 +138,11 @@ async function process(handler, req, res) {
         handler
             ._getUsageStatsService()
             ?.recordAttempt(requestId, account.index, handler._getAccountNameForIndex(account.index));
-        if (stream) packet({ ...envelope, choices: [{ delta: { role: "assistant" }, finish_reason: null, index: 0 }] });
+        if (stream)
+            packet({
+                ...envelope,
+                choices: [{ delta: { role: "assistant" }, finish_reason: null, index: 0 }],
+            });
         scheduler.recordTokenUsage?.(lease, null, requestId);
         const tier =
             require("../../accounts/AccountTierPolicy").resolveTier(
@@ -139,7 +156,7 @@ async function process(handler, req, res) {
         });
         const result = await runtime.generate(prepared.identity, prepared.context, {
             onText:
-                stream && !prepared.contract
+                stream && !buffered
                     ? text =>
                           packet({
                               ...envelope,
@@ -155,15 +172,37 @@ async function process(handler, req, res) {
         });
         usage = result.usage;
         if (controller.signal.aborted) throw fail("客户端已断开", 499);
-        const message = Tools.parseToolReply(result.text, prepared.contract);
-        const finish = message.tool_calls?.length ? "tool_calls" : message.function_call ? "function_call" : "stop";
+        const restored = prepared.anti
+            ? AntiTransport.restore(result.text, prepared.anti)
+            : {
+                  message: Tools.parseToolReply(result.text, prepared.contract),
+                  repaired: false,
+              };
+        const message = restored.message;
+        const finish = restored.repaired
+            ? "length"
+            : message.tool_calls?.length
+              ? "tool_calls"
+              : message.function_call
+                ? "function_call"
+                : "stop";
         if (stream) {
-            if (prepared.contract) {
+            if (buffered) {
                 const { role, ...delta } = message;
-                if (delta.tool_calls) delta.tool_calls = delta.tool_calls.map((c, index) => ({ ...c, index }));
-                packet({ ...envelope, choices: [{ delta, finish_reason: null, index: 0 }] });
+                if (delta.tool_calls)
+                    delta.tool_calls = delta.tool_calls.map((c, index) => ({
+                        ...c,
+                        index,
+                    }));
+                packet({
+                    ...envelope,
+                    choices: [{ delta, finish_reason: null, index: 0 }],
+                });
             }
-            packet({ ...envelope, choices: [{ delta: {}, finish_reason: finish, index: 0 }] });
+            packet({
+                ...envelope,
+                choices: [{ delta: {}, finish_reason: finish, index: 0 }],
+            });
             if (req.body.stream_options?.include_usage) packet({ ...envelope, choices: [], usage: usage ?? null });
             res.end("data: [DONE]\n\n");
         } else
@@ -179,7 +218,11 @@ async function process(handler, req, res) {
         res.__usageTrackingOutcome = controller.signal.aborted ? "aborted" : "error";
         if (lease) await scheduler.failure(lease, error);
         const payload = {
-            error: { code: error.status || 502, message: error.message, type: error.code || "build_error" },
+            error: {
+                code: error.status || 502,
+                message: error.message,
+                type: error.code || "build_error",
+            },
             ...(usage ? { usage } : {}),
         };
         if (!res.destroyed) {

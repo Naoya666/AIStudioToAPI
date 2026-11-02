@@ -8,7 +8,7 @@
 
 抗截断文本传输：支持 `anti-` 模型前缀、请求级覆盖及独立全局策略，兼容非流式和 real/fake/early 三种流式模式。默认 off，范围及限制见 [使用说明](docs/zh/anti-truncation.md) 和 [实施验证记录](docs/zh/anti-truncation-implementation.md)。
 
-新增可选 **Build 代码助手双通道**：`build/` 免插件完整上下文附件、`build-st/` 酒馆精准分段；复用现有账号 context / 页面 / 代理。默认关闭，仅 OpenAI Chat Completions 实验入口，Build anti 全部待验证。配置、工具模式、扩展安装和验收边界见 [实施与使用说明](docs/zh/build-dual-channel.md)。
+新增可选 **Build 代码助手双通道**：`build/` 免插件完整上下文附件、`build-st/` 酒馆精准分段；复用现有账号 context / 页面 / 代理。默认关闭，仅 OpenAI Chat Completions 实验入口；已接入并验证合成函数抗截断，支持真实工具共存，anti 流式响应会先缓冲校验。配置、工具模式、扩展安装和验收边界见 [实施与使用说明](docs/zh/build-dual-channel.md)。
 
 PG / Build 已补充按尝试采集与持久化的 Token 统计，以及次数 / Token 双重预算展示。Pro Build 按账号共享 2000 万池；Ultra 与 Free Build 未知额度不会伪装成零或无限。详见 [Token 统计与预算口径](docs/zh/token-statistics.md)。
 

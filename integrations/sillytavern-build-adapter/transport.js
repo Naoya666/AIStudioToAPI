@@ -5,7 +5,10 @@ export const WIRE_PREFIX = "BUILD_ST_CONTEXT_V1\n";
 export const MODEL_PREFIX = "build-st/";
 export function isBuildConnection(data) {
     return (
-        String(data.model || "").startsWith(MODEL_PREFIX) &&
+        String(data.model || "")
+            .replace(/^models\//, "")
+            .replace(/^anti-/, "")
+            .startsWith(MODEL_PREFIX) &&
         (data.chat_completion_source === "custom" ||
             (data.chat_completion_source === "openai" &&
                 typeof data.reverse_proxy === "string" &&
@@ -254,7 +257,14 @@ export function applyOutgoing(data, envelope) {
     data.messages = [envelope];
     if (data.chat_completion_source === "custom") {
         const toolFields = {};
-        for (const key of ["tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"])
+        for (const key of [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "functions",
+            "function_call",
+            "anti_truncation",
+        ])
             if (data[key] !== undefined) toolFields[key] = data[key];
         data.custom_include_body = JSON.stringify({ messages: [envelope], ...toolFields });
         data.custom_exclude_body = JSON.stringify(excludedSampling);
