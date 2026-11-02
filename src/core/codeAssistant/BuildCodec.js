@@ -14,7 +14,9 @@ function encode(identity, context, app) {
     body[5] = 2;
     body[7] = "models/" + identity.upstream;
     body[11] = app;
-    body[13] = [2];
+    // Keep the complete framework configuration for a fresh default applet.
+    // [2] accepts submission but the generation then fails with Invalid argument.
+    body[13] = [2, null, 2];
     body[15] = 1;
     body[18] = [1, null, null, identity.thinking];
     body[22] = true;
@@ -43,8 +45,8 @@ function decode(raw, task) {
             return;
         }
         if (
-            Array.isArray(v[0]?.[0]?.[0]) &&
-            ["model", "user"].includes(v[0][0][1]) &&
+            ((Array.isArray(v[0]?.[0]?.[0]) && ["model", "user"].includes(v[0][0][1])) ||
+                (v[16] === task && v[12] === 4)) &&
             typeof v[13] === "string" &&
             v[13].startsWith("models/")
         ) {
@@ -54,18 +56,10 @@ function decode(raw, task) {
         v.forEach(x => walk(x, depth + 1));
     }
     walk(data);
-    const model = turns.filter(t => t[0][0][1] === "model" && t[16] === task).at(-1);
+    const model = turns.filter(t => t[16] === task && (t[0]?.[0]?.[1] === "model" || t[12] === 4)).at(-1);
     if (!model) {
         if (rpcError) throw rpcError;
         return { complete: false, empty: true, text: "", usage: null };
-    }
-    let text = "",
-        thought = "";
-    for (const p of model[0][0][0]) {
-        if (typeof p?.[1] === "string") {
-            if (p[12] === 1) thought += p[1];
-            else text += p[1];
-        }
     }
     let usage = null;
     const u = model[15];
@@ -86,7 +80,24 @@ function decode(raw, task) {
         rpcError.usage = usage;
         throw rpcError;
     }
-    if (model[12] === 4 || model[5]) throw Object.assign(fail("Build 上游任务失败"), { usage });
+    if (model[12] === 4 || model[5])
+        throw Object.assign(
+            fail("Build 上游任务失败" + (typeof model[5]?.[0] === "string" ? `：${model[5][0].slice(0, 300)}` : "")),
+            {
+                code: "BUILD_TASK_FAILED",
+                kind: "upstream",
+                taskTerminal: model[12] === 4,
+                usage,
+            }
+        );
+    let text = "",
+        thought = "";
+    for (const p of model[0][0][0]) {
+        if (typeof p?.[1] === "string") {
+            if (p[12] === 1) thought += p[1];
+            else text += p[1];
+        }
+    }
     // Completion is a task status, independent of availability of usage.
     return { complete: model[12] === 1 && !model[9], empty: !text && !thought, text, thought, usage };
 }

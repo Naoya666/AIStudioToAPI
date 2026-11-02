@@ -310,6 +310,7 @@ test("RPC codec isolates project/task identity, completion and unknown usage", (
         request = encode(prepared.identity, prepared.context, "project");
     assert.equal(request.body[11], "project");
     assert.equal(request.body[22], true);
+    assert.deepEqual(request.body[13], [2, null, 2]);
     assert.equal(request.body[1], null);
     assert.equal(request.body[18][3], 3);
     const attachment = request.body[0][0][0][0][2];
@@ -322,6 +323,36 @@ test("RPC codec isolates project/task identity, completion and unknown usage", (
     assert.throws(() => decode(wire("x", { status: 4 }), "task"));
     assert.throws(() => decode("[[", "task"), /中断/);
 });
+for (const tier of ["free", "pro"])
+    test(`${tier} production failure without content ends polling and deletes the terminal task project`, async t => {
+        const fixture = require(`./fixtures/build-${tier}-failed-task.json`);
+        const raw = JSON.stringify(fixture.response);
+        assert.throws(() => decode(raw, fixture.task), {
+            code: "BUILD_TASK_FAILED",
+            taskTerminal: true,
+        });
+        assert.equal(decode(raw, "other-task").empty, true);
+        const { r, calls } = runtime(t),
+            original = r.rpc;
+        r.rpc = async (method, body) => {
+            if (method === "CodeAssistantOffline") {
+                calls.push({ body, method });
+                return JSON.stringify([fixture.task]);
+            }
+            if (method === "StreamCodeAssistantOfflineGeneration") {
+                calls.push({ body, method });
+                return raw;
+            }
+            if (method === "CancelCodeAssistantOfflineGeneration") assert.fail("terminal task must not be cancelled");
+            return original(method, body);
+        };
+        const p = prepare(base, config, {});
+        await assert.rejects(r.generate(p.identity, p.context, {}), /Invalid argument/);
+        assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 1);
+        assert.equal(calls.filter(c => c.method === "DeleteApplet").length, 1);
+        assert.deepEqual(r.read(), {});
+        assert.equal(r.active.size, 0);
+    });
 test("task read recovery resumes the same generation without submitting a second task", async t => {
     const { r, calls } = runtime(t),
         original = r.rpc;

@@ -1,0 +1,64 @@
+{
+    "current_decoder_observation": "Returns empty/incomplete instead of recognizing the terminal failed model turn.",
+    "method": "StreamCodeAssistantOfflineGeneration",
+    "observed_error": "Invalid argument.",
+    "observed_terminal_status": 4,
+    "response": [
+        [
+            [
+                null,
+                null,
+                [
+                    [
+                        [[[[null, "[redacted test content]"]], "user"]],
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        ["1793604283", 151133000],
+                        ["1793604283", 361933000],
+                        null,
+                        null,
+                        ["00000000-0000-4000-8000-000000000002", ["1793604283", 361933000]],
+                        0,
+                        1,
+                        "models/gemini-3.8-flash",
+                        null,
+                        null,
+                        "00000000-0000-4000-8000-000000000001"
+                    ]
+                ],
+                "00000000-0000-4000-8000-000000000003"
+            ],
+            [
+                null,
+                null,
+                [
+                    [
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        ["Invalid argument.", []],
+                        ["1793604285", 424700000],
+                        ["1793604285", 424700000],
+                        null,
+                        null,
+                        null,
+                        1,
+                        4,
+                        "models/gemini-3.8-flash",
+                        null,
+                        null,
+                        "00000000-0000-4000-8000-000000000001"
+                    ]
+                ],
+                "00000000-0000-4000-8000-000000000003"
+            ]
+        ]
+    ],
+    "task": "00000000-0000-4000-8000-000000000001",
+    "tier_label": "free"
+}

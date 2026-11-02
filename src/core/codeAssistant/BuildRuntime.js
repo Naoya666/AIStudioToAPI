@@ -146,6 +146,11 @@ class BuildRuntime {
                 try {
                     result = decode(raw, entry.task);
                 } catch (e) {
+                    if (e.taskTerminal) {
+                        // Failed tasks are terminal too. Do not cancel an already ended generation.
+                        entry.complete = true;
+                        this.save(op, entry);
+                    }
                     if (e.code !== "BUILD_READ_INTERRUPTED") throw e;
                     await new Promise(resolve => setTimeout(resolve, 500));
                     continue;
