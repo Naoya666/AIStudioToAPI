@@ -2,6 +2,22 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { atomicWrite } = require("../../config/ConfigurationService");
 const stores = new Map();
+class RevisionSet extends Set {
+    version = 0;
+    add(value) {
+        if (!this.has(value)) this.version++;
+        return super.add(value);
+    }
+    delete(value) {
+        const changed = super.delete(value);
+        if (changed) this.version++;
+        return changed;
+    }
+    clear() {
+        if (this.size) this.version++;
+        super.clear();
+    }
+}
 class BuildRecoveryStore {
     static open(file) {
         if (!stores.has(file)) stores.set(file, new BuildRecoveryStore(file));
@@ -9,7 +25,7 @@ class BuildRecoveryStore {
     }
     constructor(file) {
         this.file = file;
-        this.active = new Set();
+        this.active = new RevisionSet();
         this.executing = new Set();
         this.accountTails = new Map();
         const state = this.read();
@@ -80,7 +96,39 @@ class BuildRecoveryStore {
             throw new Error("Build recovery journal unreadable; dispatch blocked", { cause: error });
         }
     }
+    admissionRecords() {
+        // Every admission still checks the inode and nanosecond timestamps. Only
+        // parsed, validated records are reused; missing/corrupt replacements fail closed.
+        const signature = () => {
+            const stat = fs.statSync(this.file, { bigint: true });
+            return {
+                key: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, stat.mode].join(":"),
+                // Coarse timestamp filesystems can report equal metadata for two
+                // same-size writes. Never reuse a snapshot inside that ambiguity window.
+                stable:
+                    Date.now() - Number(stat.ctimeMs > stat.mtimeMs ? stat.ctimeMs : stat.mtimeMs) >
+                    (stat.ctimeNs % 1000000000n === 0n ? 1000 : 10),
+            };
+        };
+        try {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const before = signature();
+                if (before.stable && this._admissionRecords?.signature === before.key)
+                    return this._admissionRecords.records;
+                const records = this.read();
+                if (signature().key !== before.key) continue;
+                this._admissionRecords = { records, signature: before.key };
+                return records;
+            }
+            throw new Error("Journal changed during validation");
+        } catch (error) {
+            this._admissionRecords = null;
+            if (error.code === "ENOENT" && !this.existed) return {};
+            throw new Error("Build recovery journal unreadable; dispatch blocked", { cause: error });
+        }
+    }
     commit(state) {
+        this._admissionRecords = null;
         atomicWrite(this.file, state);
         this.existed = true;
         this.syncDirectory();

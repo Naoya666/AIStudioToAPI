@@ -110,24 +110,66 @@ class BuildRecoveryManager {
             used: own.length + Math.max(0, reserved - live),
         };
     }
-    admission(account) {
+    admission(account, records = null) {
         if (this.fault || !this.store) return { allowed: false, reason: this.fault || "recovery_storage_unavailable" };
         try {
-            const records = this.store.read();
-            const usage = this.debtUsage(account, records);
-            let total = usage.pending.length;
-            for (const a of this.system.scheduler.accounts.values()) {
-                const u = this.debtUsage(a, records);
-                total += u.used - u.pending.filter(([, e]) => e.account === a.key).length;
+            records ||= this.store.admissionRecords?.() || this.store.read();
+            const activeVersion = this.store.active.version;
+            let index = this._admissionIndex;
+            // Mock/legacy stores without ownership revisions deliberately use fresh calculations.
+            if (
+                !index ||
+                index.records !== records ||
+                activeVersion === undefined ||
+                index.activeVersion !== activeVersion
+            ) {
+                index = { accounts: new Map(), activeVersion, pending: 0, records };
+                for (const [id, entry] of Object.entries(records)) {
+                    if (entry.deleteConfirmedAt || entry.resourceState === "verified_not_created") continue;
+                    const live = this.store.active.has(id);
+                    if (!entry.app && !live) continue;
+                    const own = index.accounts.get(entry.account) || { debt: 0, live: 0, pending: 0 };
+                    own.pending++;
+                    own.live += Number(live);
+                    own.debt += Number(!live);
+                    index.accounts.set(entry.account, own);
+                    index.pending++;
+                }
+                this._admissionIndex = index;
             }
+            const scheduler = this.system.scheduler;
+            const version = scheduler.buildReservationVersion;
+            let reservations = this._admissionReservations;
+            if (
+                !reservations ||
+                version === undefined ||
+                reservations.version !== version ||
+                reservations.accounts !== scheduler.accounts ||
+                reservations.size !== scheduler.accounts.size
+            ) {
+                const counts = new Map();
+                for (const a of scheduler.accounts.values())
+                    counts.set(a.key, Math.max(0, scheduler.channelInflight?.(a, "build") || 0));
+                reservations = { accounts: scheduler.accounts, counts, size: scheduler.accounts.size, version };
+                this._admissionReservations = reservations;
+            }
+            if (index.reservations !== reservations) {
+                let total = index.pending;
+                for (const [key, reserved] of reservations.counts)
+                    total += Math.max(0, reserved - (index.accounts.get(key)?.live || 0));
+                index.total = total;
+                index.reservations = reservations;
+            }
+            const own = index.accounts.get(account.key) || { debt: 0, live: 0, pending: 0 };
+            const used = own.pending + Math.max(0, (reservations.counts.get(account.key) || 0) - own.live);
             const recovering = this.activeAccounts.has(account.key);
-            const limit = usage.used >= this.debtLimit || total >= this.nodeDebtLimit;
+            const limit = used >= this.debtLimit || index.total >= this.nodeDebtLimit;
             return {
                 allowed: !recovering && !limit,
-                debt: usage.debt,
-                degraded: usage.debt > 0,
+                debt: own.debt,
+                degraded: own.debt > 0,
                 reason: recovering ? "recovery_lease" : limit ? "cleanup_debt_limit" : null,
-                used: usage.used,
+                used,
             };
         } catch (error) {
             this.storageFailed(error);
@@ -166,7 +208,7 @@ class BuildRecoveryManager {
                     });
                     records = this.store.read();
                 }
-                const policy = this.admission(account);
+                const policy = this.admission(account, records);
                 this.knownBlocked.add(account.key);
                 account.cleanupDebtCount = policy.debt || 0;
                 account.buildCleanupDegraded = policy.degraded || false;
@@ -278,7 +320,8 @@ class BuildRecoveryManager {
         const scheduler = this.system.scheduler,
             browser = this.system.browserManager;
         const entries = Object.entries(this.store.read());
-        const preferred = this.preferredIndex;
+        const demand = browser.recoveryContextDemand;
+        const preferred = this.preferredIndex ?? (demand?.until > Date.now() ? demand.index : null);
         this.preferredIndex = null;
         const preferredOffset =
             preferred === null || preferred === undefined
@@ -329,7 +372,7 @@ class BuildRecoveryManager {
             }
             // Reserve the current execution resource, stop new dispatch, and drain existing work.
             // This is a finite recovery lease even under continuous Playground traffic.
-            browser.requestRecoveryContext(account.index);
+            if (browser.requestRecoveryContext(account.index) === false) continue;
             if (account.inflight) return;
             if (!browser.isContextReady(account.index) || !page?.playgroundTransport?.ready) {
                 if (entry.retryState !== "waiting_context") {
@@ -490,9 +533,11 @@ class BuildRecoveryManager {
     }
     snapshot() {
         let entries = [];
+        let records = {};
         try {
+            records = this.store ? this.store.read() : {};
             entries = this.store
-                ? Object.entries(this.store.read())
+                ? Object.entries(records)
                       .filter(([id]) => !this.store.active.has(id) || this.store.executing.has(id))
                       .map(([, entry]) => entry)
                 : [];
@@ -502,7 +547,7 @@ class BuildRecoveryManager {
         const count = state => entries.filter(e => e.retryState === state).length;
         return {
             accounts: [...this.system.scheduler.accounts.values()].map(a => {
-                const policy = this.admission(a);
+                const policy = this.admission(a, records);
                 return {
                     index: a.index,
                     ...policy,

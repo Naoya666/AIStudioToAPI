@@ -2335,9 +2335,17 @@ class BrowserManager {
             this.recoveryContextDemand.until > Date.now() &&
             this.recoveryContextDemand.index !== authIndex
         )
-            return;
-        this.recoveryContextDemand = { index: authIndex, until: Date.now() + 40000 };
-        if (this.isContextReady(authIndex)) return;
+            return false;
+        if (!this.recoveryContextDemand || this.recoveryContextDemand.until <= Date.now()) {
+            if (this.recoveryContextDemand) this.contextDemand?.delete(this.recoveryContextDemand.index);
+            this.recoveryContextDemand = {
+                index: authIndex,
+                // Initialization can legitimately exceed 40 seconds. Do not renew
+                // this deadline on every tick or strand a context forever.
+                until: Date.now() + Math.max(40000, this.contextInitTotalTimeoutMs || 180000),
+            };
+        }
+        if (this.isContextReady(authIndex)) return true;
         this.contextDemand ??= new Map();
         this.contextDemand.set(authIndex, {
             at: Date.now(),
@@ -2346,6 +2354,7 @@ class BrowserManager {
             unscopedUntil: Date.now() + 30000,
         });
         this._pumpContextPool();
+        return true;
     }
 
     finishRecoveryContext(authIndex) {

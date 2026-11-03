@@ -207,6 +207,7 @@ class ModelScheduler {
         this.authSource = authSource;
         this.logger = logger;
         this.accounts = new Map();
+        this.buildReservationVersion = 0;
         this.fileAffinities = new Map();
         this.hiddenModels = new Set();
         this.pending = [];
@@ -264,12 +265,15 @@ class ModelScheduler {
     }
 
     getPacificDateKey(now = Date.now()) {
+        if (this._pacificDateCache?.now === now) return this._pacificDateCache.value;
         const parts = Object.fromEntries(
             PACIFIC_DATE_FORMATTER.formatToParts(new Date(now))
                 .filter(part => part.type !== "literal")
                 .map(part => [part.type, part.value])
         );
-        return `${parts.year}-${parts.month}-${parts.day}`;
+        const value = `${parts.year}-${parts.month}-${parts.day}`;
+        this._pacificDateCache = { now, value };
+        return value;
     }
 
     rolloverDailyUsage(slot, now = Date.now()) {
@@ -317,7 +321,7 @@ class ModelScheduler {
         const models = new Set(
             [...this._snapshotModels()].filter(model => !model.startsWith("__") && !this.hiddenModels.has(model))
         );
-        if (this._draining) this._roundVisibleModels = models;
+        if (this._draining || this._snapshotViewDepth) this._roundVisibleModels = models;
         return models;
     }
 
@@ -686,9 +690,9 @@ class ModelScheduler {
         if (account.key === this.drainingAccount) return false;
         if (model !== "__files__" && this.isAccountQuotaExhausted(account)) return false;
         const channel = model.startsWith("build/") ? "build" : "pg";
-        if (channel === "build" && (this.buildCleanupBlocked(account) || this.buildRecoveryManager?.fault))
-            return false;
-        const degraded = channel === "build" && this.buildRecoveryManager?.admission(account).degraded;
+        const admission = channel === "build" ? this.buildRecoveryManager?.admission(account) : null;
+        if (channel === "build" && (admission ? !admission.allowed : this.buildCleanupBlocked(account))) return false;
+        const degraded = admission?.degraded;
         const channelLimit =
             channel === "build" ? (degraded ? 1 : (this.config.buildConcurrency ?? 1)) : this.config.pgConcurrency || 0;
         if (channelLimit && this.channelInflight(account, channel) >= channelLimit) return false;
@@ -909,6 +913,7 @@ class ModelScheduler {
             if (!account.inflight) this._roundActiveAccountCount++;
             account.inflight++;
             slot.inflight++;
+            if (item.model.startsWith("build/")) this.buildReservationVersion++;
             slot.last_used_at = Date.now();
             slot.last_selected = ++this.sequence;
             const lease = {
@@ -1273,6 +1278,7 @@ class ModelScheduler {
         }
         lease.account.inflight--;
         lease.slot.inflight--;
+        if (lease.model.startsWith("build/")) this.buildReservationVersion++;
         lease.worker.lease = null;
         this.saveSoon();
         this.drain();
@@ -1518,7 +1524,7 @@ class ModelScheduler {
             ...[...this.accounts.values()].flatMap(account => Object.keys(account.models)),
         ]);
         const models = new Set([...names].map(model => (model.startsWith("__") ? model : normalizeModelName(model))));
-        if (this._draining) this._roundModels = models;
+        if (this._draining || this._snapshotViewDepth) this._roundModels = models;
         return models;
     }
 
@@ -1591,6 +1597,10 @@ class ModelScheduler {
     }
 
     accountsOverviewSnapshot() {
+        return this._withSnapshotView(() => this._accountsOverviewSnapshot());
+    }
+
+    _accountsOverviewSnapshot() {
         const now = this.now();
         const rotationIndices = this.authSource.getRotationIndices();
         const summary = {
@@ -1635,7 +1645,34 @@ class ModelScheduler {
         return { accounts, revision: `accounts:${this.sequence}`, summary };
     }
 
+    _withSnapshotView(callback) {
+        if (this._snapshotViewDepth) return callback();
+        const previous = {
+            _eligibleRound: this._eligibleRound,
+            _readyRound: this._readyRound,
+            _roundModels: this._roundModels,
+            _roundVisibleModels: this._roundVisibleModels,
+            _snapshotViewDepth: this._snapshotViewDepth,
+        };
+        this._eligibleRound = new Map();
+        this._readyRound = new Map();
+        this._roundModels = null;
+        this._roundVisibleModels = null;
+        this._snapshotViewDepth = 1;
+        try {
+            // Snapshot methods are synchronous. Never retain this view across
+            // requests, dispatches, configuration edits or an event-loop yield.
+            return callback();
+        } finally {
+            Object.assign(this, previous);
+        }
+    }
+
     summarySnapshot() {
+        return this._withSnapshotView(() => this._summarySnapshot());
+    }
+
+    _summarySnapshot() {
         const now = this.now();
         const indices = this.authSource.getRotationIndices();
         for (const index of indices) this.account(index);
@@ -1805,6 +1842,10 @@ class ModelScheduler {
      * than being materialized through account() / slot().
      */
     publicSummarySnapshot() {
+        return this._withSnapshotView(() => this._publicSummarySnapshot());
+    }
+
+    _publicSummarySnapshot() {
         const now = Date.now();
         const date = this.getPacificDateKey(now);
         const indices = this.authSource.getRotationIndices();
@@ -1954,6 +1995,10 @@ class ModelScheduler {
     }
 
     snapshot() {
+        return this._withSnapshotView(() => this._snapshot());
+    }
+
+    _snapshot() {
         const summary = this.summarySnapshot();
         const details = this.accountsSnapshot([...this.accounts.values()].map(account => account.index));
         const accounts = details.accounts.map(account => ({
@@ -2027,6 +2072,7 @@ class ModelScheduler {
     }
 
     load() {
+        this.buildReservationVersion++;
         if (!this.config.statePath) return;
         try {
             const data = JSON.parse(fs.readFileSync(this.config.statePath, "utf8"));
