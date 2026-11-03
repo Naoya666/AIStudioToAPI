@@ -79,7 +79,20 @@ class BuildRuntime {
         }
     }
     async cleanup(op, entry) {
+        if (this.active.has(op)) throw fail("Build operation still has foreground ownership");
+        if (entry.account !== this.accountKey) throw fail("Build recovery account mismatch", 401);
         if (this.store.executing.has(op)) throw fail("Build cleanup already owned");
+        if (
+            entry.app &&
+            Object.entries(this.read()).some(
+                ([id, other]) =>
+                    id !== op &&
+                    other.account === entry.account &&
+                    other.app === entry.app &&
+                    (this.active.has(id) || this.store.executing.has(id))
+            )
+        )
+            throw fail("Build project is used by another operation");
         this.store.executing.add(op);
         const previous = this.store.accountTails.get(entry.account);
         let release;
@@ -88,52 +101,94 @@ class BuildRuntime {
         });
         this.store.accountTails.set(entry.account, tail);
         await previous;
+        const now = () => this.recoveryManager?.now() ?? Date.now();
+        const deadline = this.cleanupDeadline || Date.now() + 35000;
         try {
-            if (entry.cleanupStage === "verify_pending" || (!entry.app && entry.generationState === "unknown"))
-                throw buildError({
-                    message: "Uncertain upstream submission; manual verification required",
-                    status: 400,
-                });
-            const run = async (method, body) => {
-                this.assertCurrent?.();
-                entry.cleanupStage = method === "DeleteApplet" ? "delete_pending" : "cancel_pending";
-                entry.attempts ||= {};
-                entry.attempts[method] = (entry.attempts[method] || 0) + 1;
+            if (!entry.app) {
+                entry.resourceState = "discovery_pending";
+                entry.cleanupStage = "verify_pending";
                 this.save(op, entry);
-                const startedAt = Date.now();
+                throw buildError({ message: "资源定位待核查：尚无已验证的资源查询协议", status: 400 });
+            }
+            const run = async (method, body, read = false) => {
+                this.assertCurrent?.();
+                entry.attempts ||= {};
+                entry.lastErrorsByMethod ||= {};
+                entry.attempts[method] = (entry.attempts[method] || 0) + 1;
+                entry.lastAttemptAt = now();
+                this.save(op, entry);
+                const startedAt = now();
                 let failure,
                     confirmed = false;
                 try {
+                    const eventBudget = this.recoveryManager?.eventTimeoutMs || 0;
+                    const remaining = deadline - Date.now();
+                    // Reserve a full Delete plus durable event checkpoints before spending on Read/Cancel.
+                    const available =
+                        method === "DeleteApplet"
+                            ? remaining - eventBudget
+                            : (remaining - 10000 - 2 * eventBudget) / (read ? 2 : 1);
                     const response = await this.rpc(method, body, {
-                        timeoutMs: this.recoveryManager?.rpcTimeoutMs || 10000,
+                        timeoutMs: Math.min(
+                            10000,
+                            this.recoveryManager?.rpcTimeoutMs || 10000,
+                            Math.max(1, Math.floor(available))
+                        ),
                     });
-                    let acknowledgement;
-                    try {
-                        acknowledgement = JSON.parse(response);
-                    } catch {
-                        throw buildError({ message: "Unparseable cleanup acknowledgement", status: 400 });
-                    }
-                    if (!Array.isArray(acknowledgement) || acknowledgement.some(value => value !== null))
-                        throw buildError({ message: "Unrecognized cleanup acknowledgement", status: 400 });
                     this.assertCurrent?.();
+                    if (read) {
+                        let result;
+                        try {
+                            result = decode(response, entry.task, { httpStatus: 200 });
+                        } catch (error) {
+                            if (!error.taskTerminal) throw error;
+                            result = { complete: true };
+                        }
+                        if (result.complete) {
+                            entry.taskState = "terminal";
+                            entry.taskTerminalAt = now();
+                            entry.complete = true;
+                        }
+                    } else {
+                        let acknowledgement;
+                        try {
+                            acknowledgement = JSON.parse(response);
+                        } catch {
+                            throw buildError({ message: "Unparseable cleanup acknowledgement", status: 400 });
+                        }
+                        if (
+                            !Array.isArray(acknowledgement) ||
+                            acknowledgement.length > 1 ||
+                            acknowledgement.some(value => value !== null)
+                        )
+                            throw buildError({ message: "Unrecognized cleanup acknowledgement", status: 400 });
+                    }
                     confirmed = true;
+                    entry.lastErrorsByMethod[method] = null;
+                    return { at: now(), method, source: "acknowledgement" };
                 } catch (error) {
                     error.cleanupMethod = method;
                     failure = error;
+                    entry.lastErrorsByMethod[method] = errorInfo(error);
                     this.assertCurrent?.();
-                    // A proxy HTTP 404 is never proof. Only a parsed RPC NOT_FOUND
-                    // on the current authenticated context can acknowledge this method.
-                    if (!(error.source === "google_rpc" && error.upstreamError?.rpcCode === 5)) throw error;
-                    this.assertCurrent?.();
+                    // Only method-bound NOT_FOUND in the correct authenticated context is evidence.
+                    if (
+                        method !== "DeleteApplet" ||
+                        error.source !== "google_rpc" ||
+                        error.upstreamError?.rpcCode !== 5
+                    )
+                        throw error;
                     confirmed = true;
+                    return { at: now(), method, source: "rpc_not_found" };
                 } finally {
+                    this.save(op, entry);
                     await this.recoveryManager?.recordEvent(op, entry, {
                         attempt: entry.attempts[method],
-                        endedAt: Date.now(),
+                        endedAt: now(),
                         error: failure ? errorInfo(failure) : null,
                         httpStatus: failure ? (failure.upstreamError?.httpStatus ?? null) : 200,
                         method,
-                        nextAttemptAt: failure && !confirmed ? this.recoveryManager?.retryAt(entry, failure) : null,
+                        nextAttemptAt: null,
                         outcome: confirmed ? "confirmed" : "failed",
                         rpcCode: failure?.upstreamError?.rpcCode ?? null,
                         startedAt,
@@ -141,23 +196,72 @@ class BuildRuntime {
                     });
                 }
             };
-            if (entry.task && !entry.complete && !entry.cancelConfirmedAt) {
-                await run("CancelCodeAssistantOfflineGeneration", [entry.task, entry.app]);
+            const stopOnIdentityFailure = error => {
                 this.assertCurrent?.();
-                entry.cancelConfirmedAt = Date.now();
-                entry.cleanupStage = "delete_pending";
-                this.save(op, entry);
+                if (error.status === 401 || this.recoveryManager?.fault) throw error;
+            };
+            // Deleted projects carry a separate, low-frequency task audit. It consumes no debt slot.
+            if (entry.deleteConfirmedAt) {
+                if (entry.task && !entry.complete && !entry.cancelConfirmedAt) {
+                    try {
+                        await run("StreamCodeAssistantOfflineGeneration", [entry.task, null, null, entry.app], true);
+                    } catch (error) {
+                        stopOnIdentityFailure(error);
+                    }
+                    entry.auditNextAttemptAt = now() + 1800000;
+                    this.save(op, entry);
+                }
+                return;
             }
-            if (entry.app && !entry.deleteConfirmedAt) {
-                await run("DeleteApplet", [entry.app]);
+            // A previous Delete failure resumes at Delete, rather than spending its budget on Cancel again.
+            if (
+                entry.task &&
+                !entry.complete &&
+                !entry.cancelConfirmedAt &&
+                (!entry.attempts?.DeleteApplet || entry.stopRequired)
+            ) {
+                try {
+                    await run("StreamCodeAssistantOfflineGeneration", [entry.task, null, null, entry.app], true);
+                } catch (error) {
+                    stopOnIdentityFailure(error);
+                }
+                if (!entry.complete) {
+                    try {
+                        await run("CancelCodeAssistantOfflineGeneration", [entry.task, entry.app]);
+                        entry.cancelConfirmedAt = now();
+                        entry.taskState = "cancel_confirmed";
+                        this.save(op, entry);
+                    } catch (error) {
+                        stopOnIdentityFailure(error);
+                    }
+                }
+            }
+            entry.stopRequired = false;
+            entry.cleanupStage = "delete_pending";
+            entry.projectState = "delete_pending";
+            this.save(op, entry);
+            try {
+                const evidence = await run("DeleteApplet", [entry.app]);
                 this.assertCurrent?.();
-                entry.deleteConfirmedAt = Date.now();
-                this.save(op, entry);
-            }
-            if (this.recoveryManager) {
+                entry.deleteConfirmedAt = now();
+                entry.deletionEvidence = evidence;
+                entry.projectState = "deleted";
                 entry.cleanupStage = "done";
+                entry.retryState = "done";
+                entry.nextAttemptAt = null;
+                entry.lastError = null;
+                entry.auditNextAttemptAt = now() + 1800000;
                 this.save(op, entry);
-            } else this.save(op, null);
+                if (!this.recoveryManager) this.store.archive(op, entry);
+            } catch (error) {
+                // Revisit cancellation only when an explicit structured upstream reason requires it.
+                const details = error.upstreamError?.details;
+                entry.stopRequired = (Array.isArray(details) ? details : [details]).some(
+                    detail => detail?.reason === "GENERATION_RUNNING"
+                );
+                this.save(op, entry);
+                throw error;
+            }
         } finally {
             this.store.executing.delete(op);
             release();
@@ -166,7 +270,8 @@ class BuildRuntime {
     }
     async recover() {
         for (const [op, entry] of Object.entries(this.read()))
-            if (entry.account === this.accountKey && !this.active.has(op)) await this.cleanup(op, entry);
+            if (entry.account === this.accountKey && !this.active.has(op) && !entry.deleteConfirmedAt)
+                await this.cleanup(op, entry);
     }
     async generate(identity, context, { signal, onText, onUsage, timeoutMs = this.timeoutMs, requestId = null } = {}) {
         const deadline = Date.now() + timeoutMs;
@@ -188,17 +293,22 @@ class BuildRuntime {
                 complete: false,
                 consecutiveFailures: 0,
                 createdAt: Date.now(),
+                creationIntentAt: Date.now(),
                 deleteConfirmedAt: null,
                 generationState: "active",
                 lastError: null,
                 nextAttemptAt: null,
                 operationId: op,
+                operationMarker: `gateway-operation:${op}`,
                 ownership: process.pid,
+                projectState: "delete_pending",
                 requestId,
+                resourceState: "discovery_pending",
                 retryState: "scheduled",
                 revision: 0,
-                schemaVersion: 2,
+                schemaVersion: 3,
                 task: null,
+                taskState: "unknown",
             };
         this.save(op, entry);
         this.active.add(op);
@@ -224,7 +334,7 @@ class BuildRuntime {
             const created = JSON.parse(
                 await rpc("CreateApplet", [
                     null,
-                    ["Gateway text conversation", "Temporary request project", null, null, "default"],
+                    ["Gateway text conversation", entry.operationMarker, null, null, "default"],
                     null,
                     null,
                     1,
@@ -233,10 +343,12 @@ class BuildRuntime {
             if (typeof created?.[0] !== "string" || !/^[a-f0-9-]{36}$/i.test(created[0]))
                 throw fail("Build CreateApplet 响应无效", 502);
             entry.app = created[0];
+            entry.resourceState = "known";
             entry.cleanupStage = "delete_pending";
             this.save(op, entry);
             this.readyProjects++;
             const { body, ht } = encode(identity, context, entry.app);
+            entry.submissionIntentAt = Date.now();
             entry.cleanupStage = "verify_pending";
             this.save(op, entry);
             const createdTask = JSON.parse(await rpc("CodeAssistantOffline", body, ht, context.prompt));
@@ -274,6 +386,8 @@ class BuildRuntime {
                         // Failed tasks are terminal too. Do not cancel an already ended generation.
                         entry.complete = true;
                         entry.generationState = "terminal";
+                        entry.taskState = "terminal";
+                        entry.taskTerminalAt = Date.now();
                         this.save(op, entry);
                     }
                     if (e.code !== "BUILD_READ_INTERRUPTED") throw e;
@@ -293,6 +407,8 @@ class BuildRuntime {
                 if (result.complete) {
                     entry.complete = true;
                     entry.generationState = "terminal";
+                    entry.taskState = "terminal";
+                    entry.taskTerminalAt = Date.now();
                     this.save(op, entry);
                     if (!result.text) throw fail("Build 已完成但没有可返回内容", 502);
                     return (completedResult = { ...result, usage: lastUsage });
@@ -328,8 +444,11 @@ class BuildRuntime {
             entry.ownership = null;
             try {
                 this.save(op, entry);
-                this.recoveryManager?.block(entry.account);
-                await this.cleanup(op, entry);
+                // The durable journal is the handoff. Release foreground ownership only after this write.
+                this.active.delete(op);
+                if (this.recoveryManager) {
+                    this.cleanupPending = true;
+                } else await this.cleanup(op, entry);
             } catch (error) {
                 this.cleanupError = errorInfo(error);
                 entry.lastError = this.cleanupError;

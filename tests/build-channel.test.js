@@ -397,7 +397,7 @@ test("task read recovery resumes the same generation without submitting a second
     assert.deepEqual(r.read(), {});
     assert.equal(r.active.size, 0);
 });
-test("cancelled tasks await cleanup and failed cleanup journal prevents another generation", async t => {
+test("cancelled tasks preserve primary 499 and still delete after Cancel failure", async t => {
     const { r, calls } = runtime(t),
         original = r.rpc;
     const controller = new AbortController();
@@ -411,12 +411,11 @@ test("cancelled tasks await cleanup and failed cleanup journal prevents another 
     };
     const p = prepare(base, config, {});
     await assert.rejects(r.generate(p.identity, p.context, { signal: controller.signal }), { status: 499 });
-    assert.equal(r.cleanupPending, true);
-    assert.equal(Object.values(r.read())[0].task, "task");
-    await assert.rejects(r.generate(p.identity, p.context, {}), /unconfirmed/);
-    assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
-    r.rpc = original;
-    await r.recover();
+    assert.equal(r.cleanupPending, false);
+    assert.equal(calls.filter(c => c.method === "DeleteApplet").length, 1);
+    const archive = JSON.parse(fs.readFileSync(`${r.statePath}.archive.json`, "utf8"));
+    assert.equal(Object.values(archive)[0].cancelConfirmedAt, null);
+    assert.ok(Object.values(archive)[0].deleteConfirmedAt);
     assert.deepEqual(r.read(), {});
 });
 test("atomic channel admission permits PG10 + Build1, shares prefixes/models, and releases on abort", async t => {
@@ -1252,7 +1251,7 @@ test("overall deadline bounds known task read recovery without resubmission or q
     });
     assert.ok(Date.now() - started < 1500);
     assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
-    assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 1);
+    assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 2);
     assert.deepEqual(r.read(), {});
 });
 test("successful generation with pending cleanup records success and separate cleanup diagnostics", async t => {

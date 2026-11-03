@@ -296,8 +296,6 @@ async function process(handler, req, res) {
         clearInterval(timer);
         res.removeListener("close", close);
         if (lease && runtime?.cleanupPending) {
-            lease.account.buildRecoveryBlocked = true;
-            scheduler.saveSoon();
             system.buildRecoveryManager?.reconcile();
             system.buildRecoveryManager?.wake();
         }

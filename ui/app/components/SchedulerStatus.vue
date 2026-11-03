@@ -8,11 +8,12 @@
             "
             role="status"
         >
-            等待任务清理：{{ data.build_recovery.pending_operations }} 个操作，
-            {{ data.build_recovery.blocked_accounts }} 个账号暂停 Build，正在恢复
-            {{ data.build_recovery.active_recoveries }}； 等待页面 {{ data.build_recovery.waiting_context }} / 认证
-            {{ data.build_recovery.waiting_auth }} / 权限 {{ data.build_recovery.waiting_permission }} / 待人工处理
-            {{ data.build_recovery.quarantined }}。 下次重试：{{
+            项目删除债务：{{ data.build_recovery.pending_operations }} 个操作，
+            {{ data.build_recovery.blocked_accounts }} 个账号临时等待 Build，降速账号
+            {{ data.build_recovery.degraded_accounts }}，正在恢复 {{ data.build_recovery.active_recoveries }}； 等待页面
+            {{ data.build_recovery.waiting_context }} / 认证 {{ data.build_recovery.waiting_auth }} / 权限
+            {{ data.build_recovery.waiting_permission }} / 协议核查 {{ data.build_recovery.protocol_review }}。
+            下次重试：{{
                 data.build_recovery.next_attempt_at
                     ? new Date(data.build_recovery.next_attempt_at).toLocaleString()
                     : "—"
@@ -26,7 +27,15 @@
             <details v-if="data.build_recovery.operations?.length">
                 <summary>清理进度与原因</summary>
                 <p v-for="operation in data.build_recovery.operations" :key="operation.operationId">
-                    {{ operation.operationId }} · {{ operation.stage }} · {{ operation.state }} ·
+                    {{ operation.operationId }} · {{ operation.stage }} · {{ operation.state }} · 项目{{
+                        operation.projectDeleted ? "已确认删除" : "待删除"
+                    }}
+                    · 任务停止{{
+                        operation.taskState === "terminal" || operation.taskState === "cancel_confirmed"
+                            ? "已确认"
+                            : "未核实"
+                    }}
+                    ·
                     {{ operation.lastError?.message || "等待清理确认" }}
                 </p>
             </details>

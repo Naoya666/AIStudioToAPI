@@ -16,33 +16,38 @@ class BuildRecoveryStore {
         let migrated = false;
         for (const [id, entry] of Object.entries(state)) {
             if (!entry || typeof entry !== "object" || !entry.account) throw new Error("Invalid Build recovery entry");
-            if (entry.schemaVersion === 2) continue;
-            if (entry.schemaVersion !== undefined) throw new Error("Unsupported Build recovery schema");
+            if (entry.schemaVersion === 3) continue;
+            if (entry.schemaVersion !== undefined && entry.schemaVersion !== 2)
+                throw new Error("Unsupported Build recovery schema");
             migrated = true;
             state[id] = {
-                ...entry,
                 attempts: {},
                 cancelConfirmedAt: null,
-                cleanupStage:
-                    entry.task && !entry.complete ? "cancel_pending" : entry.app ? "delete_pending" : "verify_pending",
                 consecutiveFailures: 0,
                 createdAt: null,
                 deleteConfirmedAt: null,
-                generationState: entry.complete ? "terminal" : "unknown",
                 importedAt: Date.now(),
                 lastError: null,
-                nextAttemptAt: null,
-                operationId: id,
                 ownership: null,
                 requestId: null,
-                retryState: "scheduled",
                 revision: 1,
-                schemaVersion: 2,
                 updatedAt: null,
+                ...entry,
+                cleanupStage: entry.deleteConfirmedAt ? "done" : entry.app ? "delete_pending" : "verify_pending",
+                generationState: entry.generationState || (entry.complete ? "terminal" : "unknown"),
+                // Upgrade wakes previously isolated records without inventing upstream facts.
+                nextAttemptAt: entry.retryState === "quarantined" ? null : (entry.nextAttemptAt ?? null),
+
+                operationId: id,
+                projectState: entry.deleteConfirmedAt ? "deleted" : "delete_pending",
+                resourceState: entry.app ? "known" : "discovery_pending",
+                retryState: entry.retryState === "quarantined" ? "scheduled" : entry.retryState || "scheduled",
+                schemaVersion: 3,
+                taskState: entry.cancelConfirmedAt ? "cancel_confirmed" : entry.complete ? "terminal" : "unknown",
             };
         }
         if (migrated) {
-            const backup = `${file}.pre-v2-${Date.now()}`;
+            const backup = `${file}.pre-v3-${Date.now()}`;
             fs.copyFileSync(file, backup);
             fs.chmodSync(backup, 0o600);
             this.commit(state);
@@ -57,14 +62,14 @@ class BuildRecoveryStore {
                     !entry ||
                     typeof entry !== "object" ||
                     typeof entry.account !== "string" ||
+                    (entry.schemaVersion !== undefined && ![2, 3].includes(entry.schemaVersion)) ||
                     (entry.app != null && typeof entry.app !== "string") ||
                     (entry.task != null && typeof entry.task !== "string") ||
-                    (entry.schemaVersion === 2 &&
+                    ([2, 3].includes(entry.schemaVersion) &&
                         (!["cancel_pending", "delete_pending", "verify_pending", "done"].includes(entry.cleanupStage) ||
                             (entry.cleanupStage === "done" &&
-                                (!entry.app ||
-                                    !entry.deleteConfirmedAt ||
-                                    (entry.task && !entry.complete && !entry.cancelConfirmedAt)))))
+                                !entry.deleteConfirmedAt &&
+                                entry.resourceState !== "verified_not_created")))
                 )
                     throw new Error("Invalid Build recovery record");
             }
@@ -78,12 +83,30 @@ class BuildRecoveryStore {
     commit(state) {
         atomicWrite(this.file, state);
         this.existed = true;
+        this.syncDirectory();
+    }
+    syncDirectory() {
         const directory = fs.openSync(path.dirname(this.file), "r");
         try {
             fs.fsyncSync(directory);
         } finally {
             fs.closeSync(directory);
         }
+    }
+    archive(id, entry) {
+        if (!entry.deleteConfirmedAt && entry.resourceState !== "verified_not_created")
+            throw new Error("Cannot archive unresolved Build debt");
+        const file = `${this.file}.archive.json`;
+        let records = {};
+        try {
+            records = JSON.parse(fs.readFileSync(file, "utf8"));
+        } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+        }
+        if (!records || Array.isArray(records) || typeof records !== "object") throw new Error("Invalid Build archive");
+        atomicWrite(file, { ...records, [id]: entry });
+        this.syncDirectory();
+        this.save(id, null);
     }
     save(id, entry) {
         // Synchronous read/modify/atomic replace: no await can interleave writers in this process.

@@ -122,7 +122,7 @@ else:
 
 # Pin the SQLite read transaction while the small recovery files are stable.
 # Copying a large DB can then continue while the application keeps writing.
-recovery_names = ('scheduler-state.json', 'build-projects.json', 'build-projects.json.events.json')
+recovery_names = ('scheduler-state.json', 'build-projects.json', 'build-projects.json.events.json', 'build-projects.json.archive.json')
 usage_path = root / 'aistudio/data/usage-stats.sqlite'
 for attempt in range(5):
     before = {name: (root / 'aistudio/data' / name).read_bytes()
@@ -139,7 +139,7 @@ for attempt in range(5):
                 target = snapshot / 'aistudio/data' / name
                 target.write_bytes(content)
                 target.chmod(0o600)
-            for source_file in (root / 'aistudio/data').glob('build-projects.json.pre-v2-*'):
+            for source_file in (root / 'aistudio/data').glob('build-projects.json.pre-v[23]-*'):
                 target = snapshot / 'aistudio/data' / source_file.name
                 target.write_bytes(source_file.read_bytes())
                 target.chmod(0o600)

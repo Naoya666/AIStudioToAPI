@@ -97,6 +97,21 @@ class StatusRoutes {
                 res.status(503).json({ error: "recovery_storage_unavailable" });
             }
         });
+        app.post("/api/build-recovery/:operationId/bind", isAuthenticated, async (req, res) => {
+            try {
+                const manager = this.serverSystem.buildRecoveryManager;
+                if (!manager) return res.status(503).json({ error: "recovery_unavailable" });
+                await manager.bindResource(
+                    req.params.operationId,
+                    req.body?.accountIndex,
+                    req.body?.appId,
+                    req.body?.revision
+                );
+                res.json({ identityVerificationPending: true, scheduled: true });
+            } catch (error) {
+                res.status(error.status || 503).json({ error: error.message });
+            }
+        });
         app.post("/api/build-recovery/wake", isAuthenticated, (req, res) => {
             this.serverSystem.buildRecoveryManager?.wake();
             res.json({ scheduled: true });

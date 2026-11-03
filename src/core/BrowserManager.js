@@ -2336,7 +2336,7 @@ class BrowserManager {
             this.recoveryContextDemand.index !== authIndex
         )
             return;
-        this.recoveryContextDemand = { index: authIndex, until: Date.now() + 30000 };
+        this.recoveryContextDemand = { index: authIndex, until: Date.now() + 40000 };
         if (this.isContextReady(authIndex)) return;
         this.contextDemand ??= new Map();
         this.contextDemand.set(authIndex, {

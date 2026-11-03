@@ -1,70 +1,74 @@
-# Build 清理恢复交付说明
+# Build 持续可用与最终删除
 
-本次实现以 `babaf38` 为基线，对应 2026-11-03 修复要求。所有验证使用本地模拟、临时存储与现有离线回归；未访问 JP/US 生产节点、未调用真实生成或清理 RPC、未发布。现场历史错误缺失仍为未知，不能据此归因为 503 或推导日限额。
+对应 2026-11-03《build-sustainable-cleanup-fix-spec》。本次为项目源码修改和离线验证；未登录 JP/US 节点、未调用真实生成/删除 RPC、未发布或修改外部渠道控制器。旧文档中“Cancel 必须先成功”“quarantined 永不自动执行”“任何历史债务阻挡账号”的策略已被替换。
 
-## 执行与数据
+## 执行与事实
 
-`BuildRecoveryStore` 集中同步读改写，文件 fsync、原子替换并 fsync 父目录。operation 映射保持旧 account/app/task/complete 字段；schemaVersion=2 追加 requestId、revision、generationState、cleanupStage、独立 Cancel/Delete 确认、调度状态、时间、方法尝试计数和最后错误。更新检查 revision；迁移后的尝试计数只累计新执行，不表示历史尝试为零；进程内共享 active、operation 执行锁和账号串行队列，运行中的生成不会被恢复扫描取消。
+CreateApplet 前写入 operationId、accountKey、requestId 和创建意图；描述包含 `gateway-operation:<operationId>`，不包含用户内容。App ID、提交意图、Task ID、任务终态分别立即落盘。每个新请求创建新项目；恢复只处理已有资源，不能重新创建或提交生成。
 
-迁移前保留 `build-projects.json.pre-v2-*`，权限 0600；旧 requestId、创建时间、确认时间、错误保持 null，unknown 不代表任务还在运行。未知字段保留。启动时把旧进程 active 转为 unknown，清理只依据资源 ID、终态和已确认的进度。已加载 journal 丢失、JSON 损坏、格式错误、未知版本或写入失败均保持 Build 阻挡并报告 storage fault。scheduler 有阻挡、journal 无对应记录时保留 `recovery_state_inconsistent`，不自动清标记。
+前台结束先保存进度和无前台所有权的交接记录，再释放 active 所有权，由同一个恢复管理器接管。清理不继承客户端 signal，不延长前台生成请求。后续清理失败不改变已成立的生成成功、主错误或统计。日志或事件存储不可写时显式报告节点故障并对 Build 临时背压；修复后定时重新读入并协调。
 
-Linux `flock` 文件描述符锁（`build-projects.json.lock`）阻止另一存活的新版本进程消费同目录，内核在进程退出时释放，避免过期 PID 抢锁竞态。Docker 明确安装 util-linux；本地 Build 恢复也需要 flock，缺失时故障隔离。锁文件保留为固定 inode，不得删除运行中锁。此实现按单应用进程部署；旧版本没有锁，升级前必须停止旧进程，不能新旧并行写同一目录。进程退出后锁可自动接管；文件中的 PID 仅作诊断，锁异常需保留证据核查。关闭停止领取任务，等待当前有界清理；前台仍执行时保留锁，后续进程只在旧进程退出后接管。
+后台对于已知 App：任务已终态或已确认取消时直接 Delete；未知任务先有界读取原 Task，再尝试 Cancel。读取失败、Cancel RPC9、超时、其他业务失败均不会截断 Delete。401、页面或会话身份改变时停止当前上下文调用，保留删除义务等待正确身份。每个方法每轮最多一次，RPC 有独立超时，清理 RPC 强制最多 10 秒，一轮最多读取、Cancel、Delete 三步。Delete 首次失败后下轮默认直接 Delete；只有上游结构化 reason=`GENERATION_RUNNING` 时才重新安排读取/取消。
 
-正常清理最多 Cancel 和 Delete 两次独立 RPC；Cancel 未确认时绝不 Delete。Cancel 确认先写入，Delete 成功确认也先写入，保存 done 检查点；调度阻挡状态 fsync 落盘后再移除完成记录。若两者之间崩溃，启动根据 done 的已确认进度核对阻挡，避免产生新的孤立标记；崩溃窗口按幂等语义重试。Create/Submit 结果不明进入 verify_pending 并隔离，不生成新内容。资源未创建且可确认未发送的场景不需要上游清理；无法证明时保守隔离。
+项目删除和任务停止分别记录。Cancel 失败、Delete 成功不会填造 cancelConfirmedAt 或 taskTerminalAt；项目债务释放，已知 Task 每 30 分钟进行一次可行的只读核查，不因此永久阻挡账号。没有 Task ID 的任务状态继续显示未知。
 
-当前仅接受空数组或全 null 的 protobuf 清理确认，以及当前账号、页面、会话和方法匹配的结构化 RPC code 5。通用 HTTP 404 不构成证明。页面替换、关闭、会话版本变化和 bridge 不就绪均使旧确认失效。未验证“删除项目可终止任务”的契约，不使用该假设。没有已验证的只读核实 RPC，未知资源需要人工核实。
+删除确认仅接受当前有效账号/页面/会话中，已限定方法返回的既有 protobuf 确认形状 `[]` 或 `[null]`，或 Delete 的明确结构化 RPC code 5。通用 HTTP404、任意 HTTP200、空正文、未知数组、超时不算删除证据。代码不假定项目删除意味着任务停止或额度返还。上述响应契约仍须在小范围真实账号上验证。
 
-恢复每秒合并扫描，单节点同时一个后台 operation；前台清理使用同一账号串行执行器。每次后台执行最多两个独立超时 RPC，执行后让出资源；正常派发使用现有池，恢复入口共用全局 context 上限并只登记一个恢复需求，不使用 Build acquire。不能驱逐在途生成或恢复执行页面。阻挡账号仍保留 PG 价值，正常冷账号可以替换空闲的阻挡驻留账号。
+## 日志、迁移与调度
 
-## 配置
+`BuildRecoveryStore` 使用 schemaVersion=3；保留旧标识、错误、尝试计数和确认，不从 complete=false 推断运行状态。资源定位、任务证据、项目删除、调度状态分开保存。v1/v2 迁移前保留权限 0600 的 `build-projects.json.pre-v3-*`。旧 quarantined 自动重新调度；App 已知的 verify_pending 进入 Delete，App 未知则保留 discovery_pending。旧孤立清理阻挡标记转成可见的资源定位债务，不盲目认为资源不存在。
 
-以下环境变量在进程启动读取，需重启生效：
+同步 read/modify/write、revision 检查、文件 fsync、原子替换、目录 fsync、跨进程 flock 和进程内 operation/账号执行锁保留。活动 operation 及其他活动 operation 正在使用的项目不能被删除；旧页、旧会话、旧回调不能提交新确认。单应用进程部署；禁止旧版无锁进程与新版并行写日志，禁止删除运行中的 lock inode。
 
-| 配置                           | 默认   | 校验范围/含义                                        |
-| ------------------------------ | ------ | ---------------------------------------------------- |
-| BUILD_RECOVERY_RPC_TIMEOUT_MS  | 10000  | 100–60000 毫秒，每个清理 RPC                         |
-| BUILD_RECOVERY_BACKOFF_MS      | 5000   | 1000–300000 毫秒，初始退避                           |
-| BUILD_RECOVERY_MAX_BACKOFF_MS  | 300000 | 不小于初始值，最多 3600000 毫秒                      |
-| BUILD_RECOVERY_ACCOUNT_INDICES | 未设置 | 允许所有账号；逗号分隔非负整数；空字符串暂停后台领取 |
+单节点恢复并发 1，按账号轮转。恢复需求使用原 context 池和容量上限。现有页面有 PG 在途时，先登记恢复需求阻止该页面接收新派发，等待在途结束后清理；其他账号需要 context 时使用原池的 drain/replacement。不会仅因持续 PG 流量永远跳过恢复。
 
-退避指数增加并加入 0–20% 抖动；可信 Retry-After 优先作为等待下限。503/RPC14、网络中断和超时持续恢复，不设三次截止。429/RPC8 不推断午夜重置。401/RPC16 等待页面会话版本变化或现有认证服务确认恢复；403/RPC7 至少间隔五分钟核实；400、通用 404、未知提交和无法识别的确认隔离处理。没有 context 不增加 RPC 尝试号。唤醒不绕过 nextAttemptAt。认证恢复仍遵守已持久化的退避。
+普通故障从 5 秒指数退避至 5 分钟，带抖动；400、未知协议、持续权限问题低频最多 30 分钟。达到账号债务上限时将恢复探测间隔压至最多 5 分钟，可信 Retry-After 仍是下限。401/403 在同账号会话或认证恢复证据变化后可提前唤醒。没有失败次数截止，也不清除真实认证、管理员禁用、模型权限或生成额度状态。
 
-## 事件、API 与界面
+## 有界准入
 
-启用用量存储时，独立 `build_recovery_events` 表保存清理尝试，不创建 requests 或 token 记录；按 operation、request 和结束时间建立索引。最多保留最近 30 天、10000 条，插入时清理。用量存储关闭时，使用 `build-projects.json.events.json`，保留相同时间/数量上限。未解决任务的当前原因仍保存在 journal，不随历史轮换丢失。
+无债务使用原规则；有债务且未满时，同账号 Build 并发降到 1；达到账号或节点上限时停止新建资源，后台继续恢复，删除成功后自动接单。临时恢复租约仅阻挡争用页面的派发。债务、活动 operation 与尚未写入 operation 的 Build 派发预留合并计数；检查和 scheduler inflight 预留在同一同步派发路径执行，避免并发超限。达到上限不会随时间自动遗忘债务。
 
-记录包含 operationId、可空 requestId、账号编号、方法、阶段、触发来源、开始/结束、尝试号、HTTP/RPC/归一化状态、脱敏错误、结果和下一次时间。允许字段、有界诊断，并脱敏认证信息、密钥、URL、邮箱和 UUID。账号键、app/task ID 只在受限恢复存储中使用；管理界面不输出资源 ID。资源 ID 未知时不靠时间猜测 requestId。
+下列环境变量在启动读取，需重启生效，当前选择在恢复 snapshot 中展示：
 
-所有恢复 API 沿用管理员认证：
+| 配置                           | 默认       | 含义                                                             |
+| ------------------------------ | ---------- | ---------------------------------------------------------------- |
+| BUILD_CLEANUP_DEBT_LIMIT       | 3          | 每账号未删除/未定位资源与活动预留总上限，范围 1–1000             |
+| BUILD_CLEANUP_NODE_DEBT_LIMIT  | 账号数 × 3 | 节点总上限；更改账号阈值后默认随之变化，范围 1–100000            |
+| BUILD_RECOVERY_RPC_TIMEOUT_MS  | 10000      | 配置范围 100–60000 毫秒；清理方法实际强制最多 10000 毫秒         |
+| BUILD_RECOVERY_BACKOFF_MS      | 5000       | 普通重试初始退避，范围 1000–300000 毫秒                          |
+| BUILD_RECOVERY_MAX_BACKOFF_MS  | 300000     | 普通退避上限，不小于初始值，最多 3600000 毫秒                    |
+| BUILD_RECOVERY_ACCOUNT_INDICES | 未设置     | 恢复账号 allowlist；空字符串暂停后台领取，不能清空债务或绕过上限 |
 
-- GET `/api/build-recovery?operationId=...&requestId=...&limit=100`：当前任务、最近事件、各方法尝试/确认/失败及总耗时。单页最多 500 条。
-- POST `/api/build-recovery/wake`：合并唤醒，不改变进度、确认或退避。
-- POST `/api/build/recover/:index`：优先扫描该账号；允许人工重新尝试资源已知的隔离任务，但不绕过 nextAttemptAt。verify_pending 保持隔离，仍由同一执行器负责；不直接清阻挡。
-- GET `/api/build/status` 和 scheduler/status：提供 recovery 状态。
+真实管理员禁用、认证失效、模型权限、上游额度仍独立生效。清理从不写永久禁用或日额度耗尽。scheduler summary 使用动态准入统计；对外 model-health 的 Build available_accounts 使用 canLease，临时归零后自动恢复。已只读核对外部控制器：它消费 realtime.available_accounts，自动模式在连续两个有效可用采样后自动启用；清理不会被写成 MANUAL_OFF 或日锁存，因此本次不修改控制器。
 
-scheduler 保留 `available_accounts`（符合模型条件）、`ready_accounts`（历史候选字段）；增加 `eligible_accounts`、`context_ready_accounts`（实际页面就绪）、`dispatchable_accounts`（候选通过 canLease）、`cleanup_blocked_accounts`、`queue_wait_reason`。dispatchable_accounts 是当前账号准入数量，全局工作槽占用仍单独展示。后台页面展示清理数量、等待页面/认证/权限、隔离、下次时间、操作当前原因及实际可派发账号。孤立阻挡账号在恢复 API 的 inconsistent_accounts 中列出。公示继续使用原聚合白名单，不公开操作或账号诊断。
+## 诊断与未知资源
 
-## 按账号恢复与验收
+沿用管理员鉴权：
 
-1. 核对各节点当前镜像、Compose mounts/volumes、journal、scheduler 状态、SQLite、在途生成、磁盘和备份。停止旧进程后取得一致手动快照，在线数据库用 SQLite backup 或在完全停止写入后复制，不能漏 WAL。
-2. 验证快照完整性与云端副本，手动快照独立保留。定时备份仍本地最多 1、云端最多 10。本仓库 US 备份脚本新增 journal/迁移快照/回退事件文件，并在建立 SQLite 只读事务前后核对 journal 与 scheduler 未变；固定快照后允许线上继续写入，复制始终使用该事务。获取快照时变化重试五次后失败，不上传不一致备份。生产脚本尚未安装；JP 的实际任务需发布时核对。
-3. 先单节点设置 `BUILD_RECOVERY_ACCOUNT_INDICES=`，启动只迁移、重建阻挡并观察。确认无活跃生成后将列表设为一个目标账号并重启；观察具体方法、确认、退避、错误、context 总数及 PG 状态。
-4. 验证遗留 operation 的解决率与年龄、自然流量 active/queue timeout、冷账号派发、可派发统计和控制器语义。逐步扩大 allowlist；第二节点在第一节点稳定后再处理。新业务会产生新 journal，不能要求总数严格递减。
-5. verify_pending/quarantined 或 recovery_state_inconsistent 必须先核实真实资源与历史快照。不得通过清 journal、修改 complete、删除确认字段或强行清阻挡来恢复服务。没有可信核实方法的项目继续隔离；代码没有提供伪造确认的管理接口。
+- GET `/api/build-recovery`：操作、账号债务与阈值、降速/临时等待原因、方法计数与错误、删除证据、任务停止证据、下次恢复/审计时间、定位/协议告警及独立事件指标。
+- POST `/api/build-recovery/wake`：合并唤醒，保留退避。
+- POST `/api/build/recover/:index`：优先扫描该账号，保留退避及真实事实。
+- POST `/api/build-recovery/:operationId/bind`，正文 `{accountIndex, appId, revision}`：精确资源候选绑定，校验账号、revision、所有权并留审计；不会直接把候选当成可删除项目。恢复执行器须先在当前同账号 context 中核实资源身份。
+- GET `/api/build/status`、scheduler 和健康接口展示投影；管理页明确区分“项目已删除”和“任务停止未核实”。
 
-## 备份与回退
+**尚未验证的上游能力：** 仓库没有经过验证的资源列举/元数据查询 RPC。operation 标记已写入创建描述，但没有现场证据证明其保存和查询能力。默认 `resource_lookup_verified=false`，未知 App 会保留 discovery_pending/protocol_review，持续计入债务并低频告警。精确绑定只记录候选，不凭用户提交的 ID、时间接近或标题相似删除项目。
 
-至少保存 accounts/auth、scheduler-state.json、build-projects.json、pre-v2 快照、usage-stats.sqlite 一致备份及禁用用量存储时的 events.json；包括部署配置与 allowlist。运行期 lock 文件不用于恢复。备份还原需保持这些数据属于同一停写窗口，并在临时目录验证 JSON、schema、权限和 SQLite integrity_check 后演练。
+已实现只读验证适配接口 `system.buildResourceVerifier.lookup({page, accountKey, operationMarker, appId})`，并测试候选核实与删除的状态机。生产未安装此适配器；必须先实现并真实验证查询协议后才能启用。适配器只可返回唯一核实的 `{verified:true, accountKey, appId, operationMarker}`；恢复器再次检查账号、标记、目标 ID、重复绑定和当前会话。旧记录无标记时只允许管理员精确指定资源并经账号元数据核实。不能把接口存在当成未知资源找回能力已经交付。
 
-回退前设空 allowlist 停止后台领取，关闭进程并等待有界收尾，另存最新恢复与用量数据。不能把上线前快照覆盖到上线后业务数据。优先回退到理解 schema v2 的兼容版本；必须回 babaf38 时暂停相关 Build 派发和恢复消费，保留所有新数据，由只读工具核对/制定转换方案后再启用。旧版本不认识独立确认和 verify_pending，不能仅保留旧字段就宣称安全兼容。离线测试证明旧 reader 能读 operation 映射，不证明旧 runtime 可安全恢复新记录。
+事件写独立 build_recovery_events 表或 events.json，不产生生成/token；诊断遵循白名单、有界脱敏，运行时对象不进持久化 DTO。未解决债务不按年龄丢弃。已删除记录保留 30 天，之后符合条件的证据先可靠写入 archive.json 再移出主日志；已知 Task 停止仍未知时继续保留主日志审计。无恢复管理器的独立 runtime 在成功后也先归档证据再移除。
 
-## 验证记录
+## 发布、备份和验证边界
 
-专项测试覆盖清理状态机、Cancel 确认重启、503 退避、旧页结果失效、同账号串行、活动 operation 保护、重复唤醒、代理 404、结构化 NOT_FOUND、本地写入崩溃窗口、损坏/丢失 journal、旧格式迁移、孤立阻挡、401 会话变化、PG 状态保留、SQLite 独立计数、冷账号派发和单 context 恢复。新增测试加入 npm test。验证结果：
+本次不执行生产发布。上线前必须逐地核对 Compose 挂载、数据库、journal、旧隔离记录和可恢复备份，停止旧版写入并另存一致手动快照。先一地、一个账号 allowlist，验证 RPC9 后确实调用 Delete、确认形状与资源实际不存在，再逐步扩大。关联 requestId、operationId、方法事件和删除证据；客户端成功不能证明删除。
 
-- `npm test` 完整执行成功：898 项通过、47 项按仓库条件跳过、0 失败。
-- 最后一次针对性验收（Build 通道、恢复、浏览器 worker）：178 项通过，包括完整回归运行期间补充的账号编号复用保护。
-- `npm run build:ui`（含公示构建）、修改文件 ESLint、CSS lint、文档格式、备份 shell/内嵌 Python 语法和 diff 空白检查通过。
-- `npm run lint` 被 6 个未修改的既有 JSON fixture 的 1721 项格式/排序问题阻塞；未批量重写这些调查或测试数据。修改的 JS/Vue 文件单独检查通过。
+备份脚本保留 journal、scheduler、独立事件、archive、v2/v3 迁移快照及 SQLite 一致快照；新增 archive 和 v3 备份恢复测试。JP 实际备份任务及云端上传仍待发布时核实。确认新备份及云端副本后才可剪枝，独立手动快照保留。回退必须使用理解 schema v3 的修正版本，保留最新 journal 和证据，不能用旧镜像/旧库覆盖上线后的状态。
 
-这些是合成离线验收，不代替生产逐节点恢复观察或上游契约验证。
+本地验收使用临时存储、可控时钟、模拟 RPC，覆盖 Cancel RPC9/超时后 Delete、缺 Task、Delete 重试、代理404、严格确认、旧记录迁移、债务和原子预留、降速与自动恢复、活动项目保护、页面/账号代际、401、存储修复、PG 恢复租约、绑定身份校验以及统计回归。离线测试和构建结果见本次修改交付记录；这些不替代上述上游查询能力、真实删除契约及逐地发布验收。
+
+## 本次离线验证结果
+
+- 完整 `npm test`：914 项通过，47 项按仓库条件跳过，0 失败。
+- 最后修改后的 Build 通道/恢复专项：96 项通过（含事件存储无响应时有界让出恢复租约）；调度器 65 项、公示投影 8 项复核通过。
+- `npm run build:ui`（含公示）、修改文件 ESLint、备份恢复模拟、备份 shell 语法和 `git diff --check` 通过。
+
+完整回归之后补充了事件写入超时与删除预算预留，已由最后专项复核。上游资源查询适配器、真实删除确认与两地发布仍未验收，不能据此宣布整个生产方案已经完成。

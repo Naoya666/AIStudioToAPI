@@ -29,6 +29,8 @@ def verify(script):
         journal.write_text(json.dumps({'version': 1}))
         scheduler.write_text(json.dumps({'version': 1}))
         (data / 'build-projects.json.pre-v2-fixture').write_text('{}')
+        (data / 'build-projects.json.pre-v3-fixture').write_text('{}')
+        (data / 'build-projects.json.archive.json').write_text('{"retained-proof": true}')
         db = data / 'usage-stats.sqlite'
         with sqlite3.connect(db) as writer:
             writer.execute('PRAGMA journal_mode=WAL')
@@ -59,6 +61,8 @@ def verify(script):
         assert json.loads((target / scheduler.name).read_text()) == {'version': 1}
         assert json.loads(journal.read_text()) == {'version': 2}
         assert (target / 'build-projects.json.pre-v2-fixture').read_text() == '{}'
+        assert (target / 'build-projects.json.pre-v3-fixture').read_text() == '{}'
+        assert json.loads((target / 'build-projects.json.archive.json').read_text()) == {'retained-proof': True}
         assert (target / journal.name).stat().st_mode & 0o777 == 0o600
     print('Concurrent writes preserved; archived DB and recovery files retain the pinned snapshot')
 

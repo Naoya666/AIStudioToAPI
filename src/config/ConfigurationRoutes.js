@@ -47,9 +47,15 @@ class ConfigurationRoutes {
                                   manager.store.active.has(id)
                           ).length
                         : c.page?.codeAssistantRuntime?.active.size || 0,
-                    cleanupPending:
-                        !!c.page?.codeAssistantRuntime?.cleanupPending ||
-                        !!this.system.scheduler?.account(index).buildRecoveryBlocked,
+                    cleanupPending: manager
+                        ? !!manager.fault ||
+                          Object.entries(journal).some(
+                              ([id, entry]) =>
+                                  entry.account === this.system.scheduler.account(index).key &&
+                                  !entry.deleteConfirmedAt &&
+                                  !manager.store.active.has(id)
+                          )
+                        : !!c.page?.codeAssistantRuntime?.cleanupPending,
                     index,
                     pageReady: !!c.page?.playgroundTransport?.ready,
                     projectsReady: manager
