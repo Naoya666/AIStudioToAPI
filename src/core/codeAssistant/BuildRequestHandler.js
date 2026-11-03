@@ -146,11 +146,31 @@ async function process(handler, req, res) {
         const page = handler.browserManager.contexts.get(account.index)?.page;
         if (!page?.playgroundTransport?.ready) throw fail("账号 Playground 页面尚未就绪，Build 未发送", 503);
         handler.browserManager.notifyUserActivity(account.index);
-        runtime = page.codeAssistantRuntime ||= new BuildRuntime({
-            accountKey: account.key,
-            page,
-            timeoutMs: config.makerSuiteTimeoutMs,
-        });
+        runtime =
+            page.codeAssistantRuntime ||
+            new BuildRuntime({
+                accountKey: account.key,
+                page,
+                recoveryManager: system.buildRecoveryManager,
+                timeoutMs: config.makerSuiteTimeoutMs,
+            });
+        if (system.buildRecoveryManager) {
+            const data = handler.browserManager.contexts.get(account.index);
+            const version = page.accountSessionVersion ?? data.sessionVersion;
+            runtime.assertCurrent = () => {
+                if (
+                    scheduler.account(account.index).key !== account.key ||
+                    !system.buildRecoveryManager.isSessionCurrent(account.index, version) ||
+                    handler.browserManager.isContextReady?.(account.index) === false ||
+                    handler.browserManager.contexts.get(account.index) !== data ||
+                    data.page !== page ||
+                    page.isClosed?.() ||
+                    (page.accountSessionVersion ?? data.sessionVersion) !== version ||
+                    !page.playgroundTransport?.ready
+                )
+                    throw buildError({ message: "Build cleanup context changed", source: "local", status: 503 });
+            };
+        }
         lease.abort = () => controller.abort();
         scheduler.startAttempt(lease);
         handler
@@ -170,6 +190,7 @@ async function process(handler, req, res) {
             accountKey: account.key,
             day: require("../../public/DashboardProtocol").usageDate(Date.now()),
             model: prepared.identity.canonical,
+            recoveryManager: system.buildRecoveryManager,
             tier,
         });
         const result = await runtime.generate(prepared.identity, prepared.context, {
@@ -186,6 +207,7 @@ async function process(handler, req, res) {
                 scheduler.recordTokenUsage(lease, observedUsage, requestId);
                 handler._getUsageStatsService()?.recordTokenUsage?.(requestId, requestId, observedUsage);
             },
+            requestId,
             signal: controller.signal,
             timeoutMs: config.makerSuiteTimeoutMs,
         });
@@ -244,6 +266,9 @@ async function process(handler, req, res) {
                   usage: caught.usage || usage,
               })
             : caught;
+        if (error !== caught && caught.secondaryErrors) error.secondaryErrors = caught.secondaryErrors;
+        if (controller.signal.aborted && runtime?.cleanupError && !error.secondaryErrors)
+            error.secondaryErrors = [runtime.cleanupError];
         usage ||= error.usage;
         error.usage ||= usage;
         const info = errorInfo(error);
@@ -274,20 +299,8 @@ async function process(handler, req, res) {
         if (lease && runtime?.cleanupPending) {
             lease.account.buildRecoveryBlocked = true;
             scheduler.saveSoon();
-            // Finite background recovery. Failure stays visible and blocks only Build.
-            let attempts = 0;
-            const recover = async () => {
-                try {
-                    await runtime.recover();
-                    runtime.cleanupPending = false;
-                    lease.account.buildRecoveryBlocked = false;
-                    scheduler.saveSoon();
-                    scheduler.drain();
-                } catch {
-                    if (++attempts < 3) setTimeout(recover, 5000).unref?.();
-                }
-            };
-            setTimeout(recover, 5000).unref?.();
+            system.buildRecoveryManager?.reconcile();
+            system.buildRecoveryManager?.wake();
         }
         if (lease) {
             scheduler.release(lease, success);

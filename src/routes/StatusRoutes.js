@@ -83,6 +83,24 @@ class StatusRoutes {
             next();
         });
 
+        app.get("/api/build-recovery", isAuthenticated, async (req, res) => {
+            try {
+                const manager = this.serverSystem.buildRecoveryManager;
+                const events = this.serverSystem.usageStatsService?.storage
+                    ? await this.serverSystem.usageStatsService.storage.call("build_recovery_query", req.query)
+                    : [];
+                const metrics = this.serverSystem.usageStatsService?.storage
+                    ? await this.serverSystem.usageStatsService.storage.call("build_recovery_metrics", {})
+                    : [];
+                res.json({ ...manager?.snapshot(), events, metrics });
+            } catch {
+                res.status(503).json({ error: "recovery_storage_unavailable" });
+            }
+        });
+        app.post("/api/build-recovery/wake", isAuthenticated, (req, res) => {
+            this.serverSystem.buildRecoveryManager?.wake();
+            res.json({ scheduled: true });
+        });
         app.get("/api/scheduler", isAuthenticated, (req, res) => {
             res.json(this.serverSystem.scheduler?.snapshot() || { enabled: false });
         });

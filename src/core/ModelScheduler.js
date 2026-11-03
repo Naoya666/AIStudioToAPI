@@ -622,7 +622,8 @@ class ModelScheduler {
             account &&
             (item.excluded.has(account.key) ||
                 !this.authSource.getRotationIndices().includes(account.index) ||
-                !this.isResourceEligible(account, item.model))
+                !this.isResourceEligible(account, item.model) ||
+                (item.model.startsWith("build/") && account.buildRecoveryBlocked))
         )
             return false;
         return !this.readyCandidates(item.model, item.excluded).some(
@@ -649,7 +650,8 @@ class ModelScheduler {
             return (
                 !item.excluded.has(account.key) &&
                 this.authSource.getRotationIndices().includes(index) &&
-                this.isResourceEligible(account, item.model)
+                this.isResourceEligible(account, item.model) &&
+                !(item.model.startsWith("build/") && account.buildRecoveryBlocked)
             );
         });
     }
@@ -672,7 +674,7 @@ class ModelScheduler {
         if (account.key === this.drainingAccount) return false;
         if (model !== "__files__" && this.isAccountQuotaExhausted(account)) return false;
         const channel = model.startsWith("build/") ? "build" : "pg";
-        if (channel === "build" && account.buildRecoveryBlocked) return false;
+        if (channel === "build" && (account.buildRecoveryBlocked || this.buildRecoveryManager?.fault)) return false;
         const channelLimit = channel === "build" ? (this.config.buildConcurrency ?? 1) : this.config.pgConcurrency || 0;
         if (channelLimit && this.channelInflight(account, channel) >= channelLimit) return false;
         const accountLimit = this.config.accountConcurrency || 0;
@@ -975,7 +977,10 @@ class ModelScheduler {
             )
                 continue;
             const coldAccounts = this.eligibleAccounts(item.model, item.excluded).filter(
-                account => !demanded.has(account.index) && !this.browserManager.isContextReady(account.index)
+                account =>
+                    !demanded.has(account.index) &&
+                    !this.browserManager.isContextReady(account.index) &&
+                    !(item.model.startsWith("build/") && account.buildRecoveryBlocked)
             );
             const coldIndex =
                 this.browserManager.orderPoolInitializationCandidates ||
@@ -1680,6 +1685,7 @@ class ModelScheduler {
             ...(egress ? { egress } : {}),
             active_browser_workers: contexts.filter(context => context.inflight > 0).length,
             active_workers: this.workers.filter(worker => worker.lease).length,
+            build_recovery: this.buildRecoveryManager?.snapshot() || null,
             busy_browser_workers: busyContexts,
             contexts_summary: {
                 all_visible_models_rate_limited:
@@ -1724,10 +1730,27 @@ class ModelScheduler {
                     return {
                         active_workers: this.active(model),
                         available_accounts: this.eligibleAccounts(model, new Set()).length,
+                        cleanup_blocked_accounts: model.startsWith("build/")
+                            ? this.eligibleAccounts(model).filter(a => a.buildRecoveryBlocked).length
+                            : 0,
                         configured_workers: this.config.allocation[model] || { min: 0, preferred: 1 },
+                        context_ready_accounts: this.eligibleAccounts(model).filter(a =>
+                            this.browserManager?.isContextReady(a.index)
+                        ).length,
                         daily_requests: slots.reduce((sum, slot) => sum + slot.daily_request_count, 0),
+                        dispatchable_accounts: this.readyCandidates(model, new Set()).filter(a =>
+                            this.canLease(a, model)
+                        ).length,
+                        eligible_accounts: this.eligibleAccounts(model, new Set()).length,
                         model,
                         queue_length: this.pending.filter(item => item.model === model).length,
+                        queue_wait_reason:
+                            model.startsWith("build/") &&
+                            this.pending.some(i => i.model === model) &&
+                            this.eligibleAccounts(model).some(a => a.buildRecoveryBlocked) &&
+                            !this.readyCandidates(model).some(a => this.canLease(a, model))
+                                ? "waiting_build_cleanup"
+                                : null,
                         rate_limited_accounts: slots.filter(slot => slot.rate_limited).length,
                         ready_accounts: this.readyCandidates(model, new Set()).length,
                         warm_contexts: this.browserManager?.getModelWarmCoverage?.(model) || {
@@ -1799,6 +1822,10 @@ class ModelScheduler {
                     availableAccounts: accountSlots.filter(
                         item =>
                             isAvailable(item.account, item.slot) &&
+                            !(
+                                model.startsWith("build/") &&
+                                (item.account?.buildRecoveryBlocked || this.buildRecoveryManager?.fault)
+                            ) &&
                             !this.authSource.isExpired?.(item.index) &&
                             this.isTierAllowed(item.index, model)
                     ).length,
@@ -2096,7 +2123,7 @@ class ModelScheduler {
     flush() {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;
-        if (!this.config.statePath) return;
+        if (!this.config.statePath) return true;
         try {
             fs.mkdirSync(path.dirname(this.config.statePath), { recursive: true });
             const temporary = `${this.config.statePath}.${process.pid}.tmp`;
@@ -2112,9 +2139,23 @@ class ModelScheduler {
                     mode: 0o600,
                 }
             );
+            const file = fs.openSync(temporary, "r");
+            try {
+                fs.fsyncSync(file);
+            } finally {
+                fs.closeSync(file);
+            }
             fs.renameSync(temporary, this.config.statePath);
+            const directory = fs.openSync(path.dirname(this.config.statePath), "r");
+            try {
+                fs.fsyncSync(directory);
+            } finally {
+                fs.closeSync(directory);
+            }
+            return true;
         } catch (error) {
             this.logger.error(`[Scheduler] Cannot persist state: ${error.message}`);
+            return false;
         }
     }
 

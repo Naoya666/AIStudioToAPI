@@ -1360,3 +1360,27 @@ test("runtime returns cleanup diagnosis on its own successful result and keeps i
     assert.equal(first.cleanupError.message, "Delete pending");
     assert.deepEqual(r.read(), {});
 });
+
+test("client disconnect retains cleanup secondary diagnostics and primary 499", async t => {
+    const f = handlerFixture(t);
+    const runtime = f.h.browserManager.contexts.get(0).page.codeAssistantRuntime;
+    const cleanup = BuildErrors.buildError({
+        httpStatus: 503,
+        message: "Unavailable",
+        phase: "cleanup",
+        rpcCode: 14,
+        source: "google_rpc",
+    });
+    runtime.generate = async () => {
+        f.h.controller.abort();
+        const error = BuildErrors.buildError({ message: "Aborted", phase: "poll", status: 499 });
+        error.secondaryErrors = [cleanup];
+        throw error;
+    };
+    await processBuild(f.h, { body: base, method: "POST" }, f.res);
+    assert.equal(f.finished[0].outcome, "aborted");
+    assert.equal(f.finished[0].error.status, 499);
+    assert.equal(f.finished[0].error.secondaryErrors[0].upstreamError.httpStatus, 503);
+    assert.equal(f.finished[0].error.secondaryErrors[0].upstreamError.rpcCode, 14);
+    assert.equal(f.failures.length, 0);
+});

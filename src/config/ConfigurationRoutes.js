@@ -30,43 +30,44 @@ class ConfigurationRoutes {
             const index = Number(req.params.index);
             if (!Number.isSafeInteger(index) || index < 0)
                 throw Object.assign(new Error("无效账号编号"), { status: 400 });
-            const scheduler = this.system.scheduler;
-            const page = this.system.browserManager?.contexts?.get(index)?.page;
-            if (!scheduler || !page?.playgroundTransport?.ready)
-                throw Object.assign(new Error("账号页面未就绪"), { status: 503 });
-            const account = scheduler.account(index);
-            if (scheduler.channelInflight(account, "build"))
-                throw Object.assign(new Error("Build 仍有活动请求"), { status: 409 });
-            const { BuildRuntime } = require("../core/codeAssistant/BuildRuntime");
-            const runtime = (page.codeAssistantRuntime ||= new BuildRuntime({
-                accountKey: account.key,
-                page,
-                timeoutMs: this.system.config.makerSuiteTimeoutMs,
-            }));
-            await runtime.recover();
-            runtime.cleanupPending = false;
-            account.buildRecoveryBlocked = false;
-            scheduler.saveSoon();
-            scheduler.drain();
-            res.json({ ok: true });
+            const manager = this.system.buildRecoveryManager;
+            if (!manager || manager.fault) throw Object.assign(new Error("清理恢复管理器不可用"), { status: 503 });
+            manager.retryAccount(index);
+            res.json({ ok: true, recovery: manager.snapshot(), scheduled: true });
         });
-        route("get", "/api/build/status", (req, res) =>
+        route("get", "/api/build/status", (req, res) => {
+            const manager = this.system.buildRecoveryManager;
+            const journal = manager?.store && !manager.fault ? manager.store.read() : {};
             res.json({
                 accounts: [...(this.system.browserManager?.contexts || [])].map(([index, c]) => ({
-                    active: c.page?.codeAssistantRuntime?.active.size || 0,
+                    active: manager
+                        ? Object.entries(journal).filter(
+                              ([id, entry]) =>
+                                  entry.account === this.system.scheduler.account(index).key &&
+                                  manager.store.active.has(id)
+                          ).length
+                        : c.page?.codeAssistantRuntime?.active.size || 0,
                     cleanupPending:
                         !!c.page?.codeAssistantRuntime?.cleanupPending ||
                         !!this.system.scheduler?.account(index).buildRecoveryBlocked,
                     index,
                     pageReady: !!c.page?.playgroundTransport?.ready,
-                    projectsReady: c.page?.codeAssistantRuntime?.readyProjects || 0,
+                    projectsReady: manager
+                        ? Object.entries(journal).filter(
+                              ([id, entry]) =>
+                                  entry.account === this.system.scheduler.account(index).key &&
+                                  entry.app &&
+                                  manager.store.active.has(id)
+                          ).length
+                        : c.page?.codeAssistantRuntime?.readyProjects || 0,
                 })),
                 anti: { status: "pending_verification", verified: [] },
                 channels: this.system.scheduler?.snapshot().channels || [],
                 enabled: this.system.config.buildEnabled,
                 quota: { remaining: null, reset: null },
-            })
-        );
+                recovery: this.system.buildRecoveryManager?.snapshot() || null,
+            });
+        });
         route("get", "/api/configuration", (req, res) => res.json(service.snapshot()));
         route("post", "/api/configuration/secrets", (req, res) =>
             res.json({

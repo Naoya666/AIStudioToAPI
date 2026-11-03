@@ -70,11 +70,13 @@ Build 任务返回累计快照，普通正文可以按新增后缀发布。不�
 
 示例：`CONTEXT_MAX_CONCURRENCY=11`、`PG_MAX_CONCURRENCY=10`、`BUILD_MAX_CONCURRENCY=1`；同时需要足够的 `GLOBAL_MAX_CONCURRENCY`、账号 / 模型上限。该组合仅通过调度模拟，**不是 Google 已允许混跑的证明**。
 
-断连 / 超时先终止当前 fetch，再对已知任务调用 `CancelCodeAssistantOfflineGeneration`，然后删除临时项目。清理使用独立 10 秒 RPC 期限，结束前保留并发租约。失败任务记录只包含账号键、项目 / 任务 ID、完成标记，原子写入 `data/build-projects.json`（0600），不存正文 / 附件。
+断连 / 超时后，已知且非终态的任务先等待 `CancelCodeAssistantOfflineGeneration` 确认，再删除临时项目；观察到终态的任务直接删除。取消确认先落盘，删除失败和重启都不会重复取消。清理失败独立保存，不改变生成主错误、成功结果或 token 记录。
 
-取消或删除未确认时，账号标记 `buildRecoveryBlocked`，释放本地请求资源但不准入该账号的新 Build 生成。后台最多恢复三次，每次间隔 5 秒，成功才解锁；失败保持可见隔离。控制台提供“恢复清理”，也可使用管理员会话 POST `/api/build/recover/:index`；它只清理 journal 中的项目，不重新生成。进程重启后，已知残留项目也必须先清理。PG 不受此标记阻塞。
+恢复由进程级 `BuildRecoveryManager` 接管，通过当前账号页面执行，不保留旧页面闭包。`data/build-projects.json` 保留原 operation 映射与旧字段，追加版本化进度和退避状态。旧记录迁移前生成 0600 快照。未完成记录重建账号 Build 阻挡，PG 准入仍按自身状态。全部账号阻挡或 context 上限为 1 时，也可通过共用全局容量的受限入口恢复。
 
-账号登录失效按现有账号级失效处理。Build 配额 / 模型错误只作用于其规范模型槽。上游任务创建成功但响应在返回 ID 前丢失，无法凭空重建未知 ID；此时尝试删除已知临时项目。创建项目响应完全丢失也可能遗留未知项目。这是无幂等查询证据时的限制，需要真实环境检查残留，不宣称强保证零孤儿。
+管理员 POST `/api/build/recover/:index` 现在只唤醒统一管理器并优先检查目标账号，遵守退避和执行所有权，不直接清标记。GET `/api/build-recovery` 查询状态、独立事件历史和按方法聚合；POST `/api/build-recovery/wake` 合并唤醒。详细配置、迁移、受控恢复与回退见 [Build 清理恢复交付说明](build-cleanup-recovery.md)。
+
+Create/Submit 结果未知且没有可验证资源 ID 时，保留 `verify_pending / quarantined`，等待人工核实。没有已验证的只读查询契约，不能删除项目来绕过未知任务取消，也不会重新提交生成来探测。普通代理 404 不证明清理成功；只有当前有效会话、正确方法请求中解析出的 RPC NOT_FOUND 可幂等推进。
 
 ## 模型身份与 anti
 

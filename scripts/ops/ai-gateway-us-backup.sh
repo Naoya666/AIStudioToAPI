@@ -117,6 +117,30 @@ if accounts.exists():
         time.sleep(1)
 else:
     copy_account_files()
+
+# Recovery state and event history must travel together. Retry an optimistic
+# snapshot instead of archiving a journal that changed during the DB backup.
+recovery_names = ('scheduler-state.json', 'build-projects.json', 'build-projects.json.events.json')
+for attempt in range(5):
+    before = {name: (root / 'aistudio/data' / name).read_bytes()
+              for name in recovery_names if (root / 'aistudio/data' / name).exists()}
+    backup(root / 'aistudio/data/usage-stats.sqlite', snapshot / 'aistudio/data/usage-stats.sqlite')
+    after = {name: (root / 'aistudio/data' / name).read_bytes()
+             for name in recovery_names if (root / 'aistudio/data' / name).exists()}
+    if before == after:
+        for name, content in before.items():
+            target = snapshot / 'aistudio/data' / name
+            target.write_bytes(content)
+            target.chmod(0o600)
+        for source in (root / 'aistudio/data').glob('build-projects.json.pre-v2-*'):
+            target = snapshot / 'aistudio/data' / source.name
+            target.write_bytes(source.read_bytes())
+            target.chmod(0o600)
+        print('Build recovery journal and event database snapshot verified')
+        break
+    if attempt == 4:
+        raise RuntimeError('Build recovery state changed during backup; no archive uploaded')
+    time.sleep(1)
 PY
 
 tar -C "$snapshot" -czf "$archive" .

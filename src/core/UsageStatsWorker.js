@@ -27,6 +27,13 @@ function initialize() {
         PRAGMA synchronous=FULL;
         PRAGMA busy_timeout=5000;
         PRAGMA auto_vacuum=INCREMENTAL;
+        CREATE TABLE IF NOT EXISTS build_recovery_events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, request_id TEXT,
+            ended_at_ms INTEGER NOT NULL, event_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_build_recovery_operation ON build_recovery_events(operation_id,id);
+        CREATE INDEX IF NOT EXISTS idx_build_recovery_request ON build_recovery_events(request_id,id);
+        CREATE INDEX IF NOT EXISTS idx_build_recovery_time ON build_recovery_events(ended_at_ms,id);
         CREATE TABLE IF NOT EXISTS storage_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS requests(
             id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE,
@@ -754,6 +761,43 @@ function publicModelWindows({ visibleModels, asOfMs }) {
 }
 
 async function handle(command, payload) {
+    if (command === "build_recovery_insert") {
+        db.prepare(
+            "INSERT INTO build_recovery_events(operation_id,request_id,ended_at_ms,event_json) VALUES(?,?,?,?)"
+        ).run(payload.operationId, payload.requestId, payload.endedAt, JSON.stringify(payload));
+        db.prepare(
+            "DELETE FROM build_recovery_events WHERE ended_at_ms < ? OR id <= (SELECT COALESCE(MAX(id),0)-10000 FROM build_recovery_events)"
+        ).run(Date.now() - 30 * DAY_MS);
+        return true;
+    }
+    if (command === "build_recovery_metrics") {
+        return db
+            .prepare(
+                `SELECT json_extract(event_json,'$.method') AS method, COUNT(*) AS attempts,
+            SUM(json_extract(event_json,'$.outcome')='confirmed') AS successes,
+            SUM(json_extract(event_json,'$.outcome')='failed') AS failures,
+            SUM(ended_at_ms-json_extract(event_json,'$.startedAt')) AS total_duration_ms,
+            MAX(CASE WHEN json_extract(event_json,'$.outcome')='confirmed' THEN ended_at_ms END) AS last_progress_at,
+            MAX(ended_at_ms) AS last_attempt_at
+            FROM build_recovery_events GROUP BY method`
+            )
+            .all();
+    }
+    if (command === "build_recovery_query") {
+        const limit = Math.max(1, Math.min(500, Number(payload?.limit) || 100));
+        return db
+            .prepare(
+                "SELECT event_json FROM build_recovery_events WHERE (? IS NULL OR operation_id=?) AND (? IS NULL OR request_id=?) ORDER BY id DESC LIMIT ?"
+            )
+            .all(
+                payload?.operationId || null,
+                payload?.operationId || null,
+                payload?.requestId || null,
+                payload?.requestId || null,
+                limit
+            )
+            .map(row => JSON.parse(row.event_json));
+    }
     if (command === "token_statistics") return tokenStatistics(payload);
     if (command === "insert") return insertRequest(payload);
     if (command === "public_model_windows") return publicModelWindows(payload);

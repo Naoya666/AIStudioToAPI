@@ -2328,6 +2328,34 @@ class BrowserManager {
         if (!this._demandBatch) this._pumpContextPool();
     }
 
+    requestRecoveryContext(authIndex) {
+        // One recovery demand shares ordinary capacity, including maxWorkers=1.
+        if (
+            this.recoveryContextDemand &&
+            this.recoveryContextDemand.until > Date.now() &&
+            this.recoveryContextDemand.index !== authIndex
+        )
+            return;
+        this.recoveryContextDemand = { index: authIndex, until: Date.now() + 30000 };
+        if (this.isContextReady(authIndex)) return;
+        this.contextDemand ??= new Map();
+        this.contextDemand.set(authIndex, {
+            at: Date.now(),
+            models: new Set(),
+            unscoped: true,
+            unscopedUntil: Date.now() + 30000,
+        });
+        this._pumpContextPool();
+    }
+
+    finishRecoveryContext(authIndex) {
+        if (this.recoveryContextDemand?.index === authIndex) {
+            this.recoveryContextDemand = null;
+            this.contextDemand?.delete(authIndex);
+        }
+        this.scheduler.coordinateContextPool();
+    }
+
     requestContexts(requests) {
         if (!requests.length) return;
         this._demandBatch = true;
@@ -2345,6 +2373,8 @@ class BrowserManager {
         if (!demand) return false;
         const account = this.scheduler.account(authIndex);
         if (account.disabled || account.healthy === false || this.authSource.isExpired?.(authIndex)) return false;
+        if (this.recoveryContextDemand?.index === authIndex && this.recoveryContextDemand.until > Date.now())
+            return true;
         if (this._foregroundContextWaiters?.has(authIndex)) return true;
         if (
             (demand.unscoped || !demand.model) &&
@@ -2372,6 +2402,8 @@ class BrowserManager {
     }
 
     _contextPoolPurpose(authIndex) {
+        if (this.recoveryContextDemand?.index === authIndex && this.recoveryContextDemand.until > Date.now())
+            return "build_recovery";
         if (this._foregroundContextWaiters?.has(authIndex)) return "foreground";
         if (this._hasQueuedContextDemand(authIndex)) return "demand";
         return this._hasValidContextDemand(authIndex) ? "recovery" : "warm";
@@ -2603,6 +2635,7 @@ class BrowserManager {
                 index =>
                     !this.benefitCheckingIndices?.has(index) &&
                     !this.contexts.get(index)?.draining &&
+                    !this.buildRecoveryManager?.activeAccounts.has(this.scheduler.account(index).key) &&
                     !this._poolClosingContexts?.has(index) &&
                     !this._contextPoolReplacements?.has(index) &&
                     ![...(this._contextCapacityClosures?.values() || [])].includes(index) &&
@@ -2662,6 +2695,12 @@ class BrowserManager {
         if (!replacement) return true;
         const { incoming, purpose } = replacement;
         if (this.scheduler.closed || this.isContextReady(incoming)) return false;
+        if (purpose === "build_recovery")
+            return (
+                this.recoveryContextDemand?.index === incoming &&
+                this.recoveryContextDemand.until > Date.now() &&
+                this._hasValidContextDemand(incoming)
+            );
         return purpose === "warm"
             ? this._modelWarmPlan().has(incoming)
             : purpose === "foreground"
@@ -2726,6 +2765,7 @@ class BrowserManager {
                           !this.initializingContexts.has(index) &&
                           (!this.contexts.has(index) || this._isContextIdle(index)) &&
                           !this.contexts.get(index)?.draining &&
+                          !this.buildRecoveryManager?.activeAccounts.has(this.scheduler.account(index).key) &&
                           !closing.has(index) &&
                           (!unavailable?.retryAt || unavailable.retryAt <= Date.now())
                       );
@@ -2833,6 +2873,7 @@ class BrowserManager {
         // Coverage and real demand share the existing capacity/close machinery.
         // Shared accounts drain first; in-flight requests always finish normally.
         if (
+            purpose !== "build_recovery" &&
             purpose !== "warm" &&
             purpose !== "foreground" &&
             (purpose !== "demand" || !this._hasQueuedContextDemand(authIndex))
@@ -2850,10 +2891,11 @@ class BrowserManager {
                 index =>
                     index !== authIndex &&
                     !this.contexts.get(index)?.draining &&
+                    !this.buildRecoveryManager?.activeAccounts.has(this.scheduler.account(index).key) &&
                     !this.benefitCheckingIndices?.has(index) &&
                     !this.initializingContexts.has(index) &&
                     !this.contextCapacityReservations?.has(index) &&
-                    (activeTargets || this._isContextIdle(index)) &&
+                    (activeTargets || purpose === "build_recovery" || this._isContextIdle(index)) &&
                     (purpose !== "warm" || !protectedIndices.has(index))
             )
             .sort(
@@ -2903,6 +2945,7 @@ class BrowserManager {
 
     _isContextIdle(authIndex) {
         if (this.benefitCheckingIndices?.has(authIndex)) return false;
+        if (this.buildRecoveryManager?.activeAccounts.has(this.scheduler?.account(authIndex).key)) return false;
         return !this.scheduler?.account(authIndex).inflight && !this._hasActiveQueueForAuth(authIndex);
     }
 

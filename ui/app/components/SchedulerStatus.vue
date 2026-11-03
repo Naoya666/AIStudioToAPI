@@ -1,5 +1,36 @@
 <template>
     <section v-if="data" class="status-card scheduler-status">
+        <div
+            v-if="
+                data.build_recovery?.pending_operations ||
+                data.build_recovery?.blocked_accounts ||
+                data.build_recovery?.fault
+            "
+            role="status"
+        >
+            等待任务清理：{{ data.build_recovery.pending_operations }} 个操作，
+            {{ data.build_recovery.blocked_accounts }} 个账号暂停 Build，正在恢复
+            {{ data.build_recovery.active_recoveries }}； 等待页面 {{ data.build_recovery.waiting_context }} / 认证
+            {{ data.build_recovery.waiting_auth }} / 权限 {{ data.build_recovery.waiting_permission }} / 待人工处理
+            {{ data.build_recovery.quarantined }}。 下次重试：{{
+                data.build_recovery.next_attempt_at
+                    ? new Date(data.build_recovery.next_attempt_at).toLocaleString()
+                    : "—"
+            }}
+            <span v-if="data.build_recovery.fault"
+                >{{ data.build_recovery.fault }} · {{ data.build_recovery.fault_error?.message }}</span
+            >
+            <span v-if="data.build_recovery.inconsistent_accounts?.length"
+                >恢复状态不一致（recovery_state_inconsistent），需核查历史 journal 与账号阻挡记录。</span
+            >
+            <details v-if="data.build_recovery.operations?.length">
+                <summary>清理进度与原因</summary>
+                <p v-for="operation in data.build_recovery.operations" :key="operation.operationId">
+                    {{ operation.operationId }} · {{ operation.stage }} · {{ operation.state }} ·
+                    {{ operation.lastError?.message || "等待清理确认" }}
+                </p>
+            </details>
+        </div>
         <!-- 1. Header & Load Capacity Bar -->
         <div class="scheduler-header">
             <div class="header-title-wrap">
@@ -584,6 +615,11 @@
                         <!-- 可用账号: 纯数字，过低时黄色预警 -->
                         <td class="font-mono font-bold" :class="{ 'text-warning': model.available_accounts <= 1 }">
                             {{ model.tier_allowed_accounts ?? "—" }} / {{ model.available_accounts }}
+                            <div :title="'符合模型条件 / 页面就绪 / 符合实际准入条件'">
+                                可派发 {{ model.dispatchable_accounts ?? "—" }} · 页面就绪
+                                {{ model.context_ready_accounts ?? model.ready_accounts }} · 清理阻挡
+                                {{ model.cleanup_blocked_accounts || 0 }}
+                            </div>
                         </td>
                         <!-- 429: 表头已有明确定义，单元格仅保留纯数字徽章，绝不重复文字 -->
                         <td class="text-center">
@@ -595,6 +631,7 @@
                         <!-- 排队: 纯数字 -->
                         <td class="font-mono" :class="{ 'text-warning font-bold': model.queue_length > 0 }">
                             {{ model.queue_length }}
+                            <span v-if="model.queue_wait_reason === 'waiting_build_cleanup'">等待任务清理</span>
                         </td>
                         <!-- 逻辑执行槽: 纯数字 -->
                         <td class="font-mono font-medium text-slate-700">{{ model.active_workers }}</td>

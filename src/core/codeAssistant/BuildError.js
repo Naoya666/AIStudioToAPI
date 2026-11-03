@@ -1,10 +1,12 @@
 // Build diagnostics are allowlisted and bounded before reaching clients or storage.
-const RPC_STATUS = { 1: 499, 3: 400, 4: 504, 5: 404, 7: 403, 8: 429, 16: 401 };
+const RPC_STATUS = { 1: 499, 3: 400, 4: 504, 5: 404, 7: 403, 8: 429, 14: 503, 16: 401 };
 const MESSAGE_BYTES = 4096;
 const DETAILS_BYTES = 16384;
 function clean(value) {
     return String(value)
         .replace(/\b(?:cookie|authorization)\s*:\s*[^\r\n]+/gi, "[redacted-header]")
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+        .replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, "[redacted-resource]")
         .replace(/https?:\/\/[^\s"<>]+/gi, "[redacted-url]")
         .replace(/\b(?:Bearer|SAPISIDHASH|SAPISID1PHASH|SAPISID3PHASH)\s+[^\s,;"']+/gi, "[redacted-auth]")
         .replace(/\b(?:AIza[\w-]+|ya29\.[\w.-]+)/g, "[redacted-key]")
@@ -224,11 +226,26 @@ function fromResponse(result, phase) {
         upstreamStatus: local ? null : rpc?.status,
     });
 }
+function redactResources(error, resources) {
+    const ids = resources.filter(value => typeof value === "string" && value.length >= 3);
+    const visit = value => {
+        if (typeof value === "string")
+            return ids.reduce((text, id) => text.split(id).join("[redacted-resource]"), value);
+        if (Array.isArray(value)) return value.map(visit);
+        if (value && typeof value === "object")
+            return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item)]));
+        return value;
+    };
+    error.message = visit(error.message);
+    if (error.upstreamError) error.upstreamError = visit(error.upstreamError);
+    return error;
+}
 function errorInfo(error) {
     const m = bounded(error.message || "Build 请求失败", MESSAGE_BYTES);
     const d = safeDetails(error.upstreamError?.details);
     return {
         code: error.code || "BUILD_LOCAL_ERROR",
+        ...(error.cleanupMethod ? { cleanupMethod: error.cleanupMethod } : {}),
         message: m.text,
         phase: error.phase || "decode",
         rateLimit: error.rateLimit || null,
@@ -259,4 +276,4 @@ function serializeError(error, requestId) {
         ...(error.usage ? { usage: error.usage } : {}),
     };
 }
-module.exports = { buildError, errorInfo, fromResponse, retryAfter, rpcRecord, serializeError };
+module.exports = { buildError, errorInfo, fromResponse, redactResources, retryAfter, rpcRecord, serializeError };
