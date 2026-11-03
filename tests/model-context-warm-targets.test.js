@@ -379,3 +379,27 @@ test("mixed zero capacity stays distinct from quota and recovers through the rea
     await new Promise(resolve => setImmediate(resolve));
     assert.ok(manager._poolCandidates().includes(1));
 });
+
+test("warm planning shares one model projection and refreshes permissions on the next pass", t => {
+    const { manager, scheduler, ready } = fixture(t, { a: 3, b: 3 }, 12, 236);
+    for (let i = 0; i < 236; i++) {
+        const account = scheduler.account(i);
+        for (let m = 0; m < 8; m++) scheduler.slot(account, "model" + m);
+    }
+    ready(0, 1, 2, 3, 4, 5);
+    let projections = 0;
+    const project = scheduler._snapshotModels.bind(scheduler);
+    scheduler._snapshotModels = () => {
+        if (!scheduler._roundModels) projections++;
+        return project();
+    };
+    const first = manager._modelWarmPlan();
+    assert.ok(first.size > 0);
+    assert.equal(projections, 1);
+    assert.equal(scheduler._snapshotViewDepth, undefined);
+    for (const index of first) scheduler.account(index).disabled = true;
+    const second = manager._modelWarmPlan();
+    assert.equal(projections, 2);
+    assert.ok([...second].every(index => !first.has(index)));
+    assert.equal(scheduler._snapshotViewDepth, undefined);
+});

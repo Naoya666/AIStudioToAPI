@@ -2431,6 +2431,8 @@ class BrowserManager {
     }
 
     reconcileContextPool() {
+        if (this.scheduler?._withSnapshotView && !this.scheduler._snapshotViewDepth)
+            return this.scheduler._withSnapshotView(() => this.reconcileContextPool());
         if (!this.scheduler || this.scheduler.closed || this._reconcilingPool) return;
         this._reconcilingPool = true;
         try {
@@ -2630,6 +2632,8 @@ class BrowserManager {
     // Select at most M-1 coverage accounts; every other account remains shared,
     // even when it can also serve a target model. Prefer incumbents on equal gain.
     _modelWarmPlan() {
+        if (this.scheduler?._withSnapshotView && !this.scheduler._snapshotViewDepth)
+            return this.scheduler._withSnapshotView(() => this._modelWarmPlan());
         const protectedIndices = new Set();
         if (!this._modelWarmTargets().length) return protectedIndices;
         const admitted = new Set([
@@ -2801,6 +2805,8 @@ class BrowserManager {
     }
 
     _pumpContextPool() {
+        if (this.scheduler?._withSnapshotView && !this.scheduler._snapshotViewDepth)
+            return this.scheduler._withSnapshotView(() => this._pumpContextPool());
         if (
             !this.scheduler ||
             this.scheduler.closed ||
