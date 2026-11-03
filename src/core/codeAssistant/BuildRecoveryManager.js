@@ -95,7 +95,11 @@ class BuildRecoveryManager {
     }
     debtUsage(account, records = this.store.read()) {
         const pending = Object.entries(records).filter(
-            ([, e]) => !e.deleteConfirmedAt && e.resourceState !== "verified_not_created"
+            ([id, e]) =>
+                !e.deleteConfirmedAt &&
+                e.resourceState !== "verified_not_created" &&
+                // Unknown resources remain auditable, but only live operations reserve admission capacity.
+                (Boolean(e.app) || this.store.active.has(id))
         );
         const own = pending.filter(([, e]) => e.account === account.key);
         const live = own.filter(([id]) => this.store.active.has(id)).length;
@@ -515,6 +519,9 @@ class BuildRecoveryManager {
             }),
             active_recoveries: this.activeAccounts.size,
             blocked_accounts: [...this.system.scheduler.accounts.values()].filter(a => a.buildRecoveryBlocked).length,
+            cleanup_debt_count: entries.filter(
+                e => e.app && !e.deleteConfirmedAt && e.resourceState !== "verified_not_created"
+            ).length,
             debt_limit: this.debtLimit,
             degraded_accounts: [...this.system.scheduler.accounts.values()].filter(a => a.buildCleanupDegraded).length,
             deleted_projects: entries.filter(e => e.deleteConfirmedAt).length,

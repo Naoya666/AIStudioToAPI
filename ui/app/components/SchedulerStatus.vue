@@ -8,12 +8,12 @@
             "
             role="status"
         >
-            项目删除债务：{{ data.build_recovery.pending_operations }} 个操作，
-            {{ data.build_recovery.blocked_accounts }} 个账号临时等待 Build，降速账号
-            {{ data.build_recovery.degraded_accounts }}，正在恢复 {{ data.build_recovery.active_recoveries }}； 等待页面
-            {{ data.build_recovery.waiting_context }} / 认证 {{ data.build_recovery.waiting_auth }} / 权限
-            {{ data.build_recovery.waiting_permission }} / 协议核查 {{ data.build_recovery.protocol_review }}。
-            下次重试：{{
+            项目删除债务：{{ data.build_recovery.cleanup_debt_count }} 个，待定位（不占名额）：
+            {{ data.build_recovery.resource_discovery }} 个， {{ data.build_recovery.blocked_accounts }} 个账号临时等待
+            Build，降速账号 {{ data.build_recovery.degraded_accounts }}，正在恢复
+            {{ data.build_recovery.active_recoveries }}； 等待页面 {{ data.build_recovery.waiting_context }} / 认证
+            {{ data.build_recovery.waiting_auth }} / 权限 {{ data.build_recovery.waiting_permission }} / 协议核查
+            {{ data.build_recovery.protocol_review }}。 下次重试：{{
                 data.build_recovery.next_attempt_at
                     ? new Date(data.build_recovery.next_attempt_at).toLocaleString()
                     : "—"
@@ -28,7 +28,11 @@
                 <summary>清理进度与原因</summary>
                 <p v-for="operation in data.build_recovery.operations" :key="operation.operationId">
                     {{ operation.operationId }} · {{ operation.stage }} · {{ operation.state }} · 项目{{
-                        operation.projectDeleted ? "已确认删除" : "待删除"
+                        operation.projectDeleted
+                            ? "已确认删除"
+                            : operation.resourceState === "discovery_pending"
+                              ? "待定位（不占名额）"
+                              : "待删除"
                     }}
                     · 任务停止{{
                         operation.taskState === "terminal" || operation.taskState === "cancel_confirmed"

@@ -16,7 +16,7 @@ CreateApplet 前写入 operationId、accountKey、requestId 和创建意图；�
 
 ## 日志、迁移与调度
 
-`BuildRecoveryStore` 使用 schemaVersion=3；保留旧标识、错误、尝试计数和确认，不从 complete=false 推断运行状态。资源定位、任务证据、项目删除、调度状态分开保存。v1/v2 迁移前保留权限 0600 的 `build-projects.json.pre-v3-*`。旧 quarantined 自动重新调度；App 已知的 verify_pending 进入 Delete，App 未知则保留 discovery_pending。旧孤立清理阻挡标记转成可见的资源定位债务，不盲目认为资源不存在。
+`BuildRecoveryStore` 使用 schemaVersion=3；保留旧标识、错误、尝试计数和确认，不从 complete=false 推断运行状态。资源定位、任务证据、项目删除、调度状态分开保存。v1/v2 迁移前保留权限 0600 的 `build-projects.json.pre-v3-*`。旧 quarantined 自动重新调度；App 已知的 verify_pending 进入 Delete，App 未知则保留 discovery_pending。旧孤立清理阻挡标记转成可见的资源定位记录，不盲目认为资源不存在。
 
 同步 read/modify/write、revision 检查、文件 fsync、原子替换、目录 fsync、跨进程 flock 和进程内 operation/账号执行锁保留。活动 operation 及其他活动 operation 正在使用的项目不能被删除；旧页、旧会话、旧回调不能提交新确认。单应用进程部署；禁止旧版无锁进程与新版并行写日志，禁止删除运行中的 lock inode。
 
@@ -26,13 +26,15 @@ CreateApplet 前写入 operationId、accountKey、requestId 和创建意图；�
 
 ## 有界准入
 
-无债务使用原规则；有债务且未满时，同账号 Build 并发降到 1；达到账号或节点上限时停止新建资源，后台继续恢复，删除成功后自动接单。临时恢复租约仅阻挡争用页面的派发。债务、活动 operation 与尚未写入 operation 的 Build 派发预留合并计数；检查和 scheduler inflight 预留在同一同步派发路径执行，避免并发超限。达到上限不会随时间自动遗忘债务。
+按用户后续决定，已退出前台且没有 App ID 的未知记录仅用于审计和后续定位，不占账号或节点债务名额，不触发降速或暂停；这取代原规范中“未定位 operation 也占名额”的条款。找到并核实 App ID 后，尚未删除的项目重新纳入债务。活动请求在拿到 App ID 前仍占预留，结束后才释放。
+
+无债务使用原规则；有债务且未满时，同账号 Build 并发降到 1；达到账号或节点上限时停止新建资源，后台继续恢复，删除成功后自动接单。临时恢复租约仅阻挡争用页面的派发。已知 App 的债务、活动 operation 与尚未写入 operation 的 Build 派发预留合并计数；检查和 scheduler inflight 预留在同一同步派发路径执行，避免并发超限。达到上限不会随时间自动遗忘债务。
 
 下列环境变量在启动读取，需重启生效，当前选择在恢复 snapshot 中展示：
 
 | 配置                           | 默认       | 含义                                                             |
 | ------------------------------ | ---------- | ---------------------------------------------------------------- |
-| BUILD_CLEANUP_DEBT_LIMIT       | 3          | 每账号未删除/未定位资源与活动预留总上限，范围 1–1000             |
+| BUILD_CLEANUP_DEBT_LIMIT       | 3          | 每账号已知未删除项目与活动预留总上限，范围 1–1000                |
 | BUILD_CLEANUP_NODE_DEBT_LIMIT  | 账号数 × 3 | 节点总上限；更改账号阈值后默认随之变化，范围 1–100000            |
 | BUILD_RECOVERY_RPC_TIMEOUT_MS  | 10000      | 配置范围 100–60000 毫秒；清理方法实际强制最多 10000 毫秒         |
 | BUILD_RECOVERY_BACKOFF_MS      | 5000       | 普通重试初始退避，范围 1000–300000 毫秒                          |
@@ -51,7 +53,7 @@ CreateApplet 前写入 operationId、accountKey、requestId 和创建意图；�
 - POST `/api/build-recovery/:operationId/bind`，正文 `{accountIndex, appId, revision}`：精确资源候选绑定，校验账号、revision、所有权并留审计；不会直接把候选当成可删除项目。恢复执行器须先在当前同账号 context 中核实资源身份。
 - GET `/api/build/status`、scheduler 和健康接口展示投影；管理页明确区分“项目已删除”和“任务停止未核实”。
 
-**尚未验证的上游能力：** 仓库没有经过验证的资源列举/元数据查询 RPC。operation 标记已写入创建描述，但没有现场证据证明其保存和查询能力。默认 `resource_lookup_verified=false`，未知 App 会保留 discovery_pending/protocol_review，持续计入债务并低频告警。精确绑定只记录候选，不凭用户提交的 ID、时间接近或标题相似删除项目。
+**尚未验证的上游能力：** 仓库没有经过验证的资源列举/元数据查询 RPC。operation 标记已写入创建描述，但没有现场证据证明其保存和查询能力。默认 `resource_lookup_verified=false`，未知 App 会保留 discovery_pending/protocol_review，保留审计并低频告警，不占债务名额，也不单独触发降速或暂停。精确绑定只记录候选，不凭用户提交的 ID、时间接近或标题相似删除项目。
 
 已实现只读验证适配接口 `system.buildResourceVerifier.lookup({page, accountKey, operationMarker, appId})`，并测试候选核实与删除的状态机。生产未安装此适配器；必须先实现并真实验证查询协议后才能启用。适配器只可返回唯一核实的 `{verified:true, accountKey, appId, operationMarker}`；恢复器再次检查账号、标记、目标 ID、重复绑定和当前会话。旧记录无标记时只允许管理员精确指定资源并经账号元数据核实。不能把接口存在当成未知资源找回能力已经交付。
 

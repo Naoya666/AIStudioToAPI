@@ -164,7 +164,7 @@ test("duplicate wakeups respect ownership, backoff and all operations on the acc
     assert.equal(account.buildRecoveryBlocked, false);
     m.store.active.delete("active");
 });
-test("unresolved submission remains discovery debt with low-frequency protocol review without any generation or cleanup RPC", async t => {
+test("unresolved submission remains an audit record with low-frequency protocol review without any generation or cleanup RPC", async t => {
     const f = fixture(t, { op: entry({ app: null, task: null }) });
     const { m, page } = manager(t, f);
     page.evaluate = async () => {
@@ -191,14 +191,15 @@ test("crash window after upstream deletion retains journal for idempotent replay
     await f.r.recover();
     assert.deepEqual(f.r.read(), {});
 });
-test("orphan scheduler flags remain isolated and a second live manager cannot consume journal", async t => {
+test("orphan scheduler flags retain visible discovery records and a second live manager cannot consume journal", async t => {
     const f = fixture(t);
     const { m, system, account } = manager(t, f);
     account.buildRecoveryBlocked = true;
     m.knownBlocked.delete(account.key); // simulate a persisted orphan flag at startup
     m.reconcile();
     assert.deepEqual(m.snapshot().inconsistent_accounts, [0]);
-    assert.equal(m.admission(account).degraded, true);
+    assert.equal(m.admission(account).degraded, false);
+    assert.equal(m.admission(account).allowed, true);
     const second = new BuildRecoveryManager(system, { statePath: f.statePath });
     assert.equal(second.fault, "recovery_storage_unavailable");
     await second.close();
@@ -616,6 +617,8 @@ test("Build debt cap includes synchronous dispatch reservations, degrades concur
     scheduler.buildRecoveryManager = m;
     scheduler.browserManager = browser;
     const model = "build/gemini-3.8-flash";
+    for (let n = 0; n < 3; n++) m.store.save(`unknown${n}`, entry({ account: account.key, app: null, task: null }));
+    assert.equal(m.admission(account).used, 0);
     const leases = await Promise.all(Array.from({ length: 3 }, () => scheduler.acquire(model)));
     assert.equal(account.inflight, 3);
     assert.equal(m.admission(account).used, 3);
@@ -728,4 +731,63 @@ test("a stalled event checkpoint is bounded and releases the recovery execution 
     assert.equal(m.store.executing.size, 0);
     assert.equal(m.store.read().op.deleteConfirmedAt, null);
     assert.ok(m.store.read().op.nextAttemptAt);
+});
+
+test("unknown historical projects remain visible without consuming account or node debt slots", async t => {
+    const f = fixture(
+        t,
+        Object.fromEntries(Array.from({ length: 3 }, (_, n) => [`unknown${n}`, entry({ app: null, task: null })]))
+    );
+    const { m, account } = manager(t, f);
+    m.nodeDebtLimit = 1;
+    assert.deepEqual(m.admission(account), { allowed: true, debt: 0, degraded: false, reason: null, used: 0 });
+    assert.equal(account.buildRecoveryBlocked, false);
+    await m.run();
+    const snapshot = m.snapshot();
+    assert.equal(snapshot.resource_discovery, 3);
+    assert.equal(snapshot.cleanup_debt_count, 0);
+    assert.equal(snapshot.pending_operations, 3);
+    assert.equal(snapshot.blocked_accounts, 0);
+    assert.equal(snapshot.degraded_accounts, 0);
+    assert.equal(Object.keys(m.store.read()).length, 3);
+    assert.ok(m.store.read().unknown0.nextAttemptAt);
+    assert.equal(m.admission(account).allowed, true);
+});
+
+test("live unknown operations still reserve capacity until foreground handoff without double counting leases", t => {
+    const f = fixture(t, { op: entry({ app: null, task: null }) });
+    const { m, account, system } = manager(t, f);
+    let reserved = 1;
+    system.scheduler.channelInflight = () => reserved;
+    m.store.active.add("op");
+    assert.equal(m.admission(account).used, 1);
+    assert.equal(m.admission(account).debt, 0);
+    m.store.active.delete("op");
+    assert.equal(m.admission(account).used, 1); // foreground lease has not yet been released
+    reserved = 0;
+    m.reconcile();
+    assert.equal(m.admission(account).used, 0);
+    assert.equal(m.admission(account).degraded, false);
+    assert.ok(m.store.read().op);
+});
+
+test("a verified recovered App rejoins known cleanup debt when its Delete fails", async t => {
+    const f = fixture(t, { op: entry({ app: null, operationMarker: "gateway-operation:op", task: null }) });
+    const { m, account, system, page } = manager(t, f);
+    system.buildResourceVerifier = {
+        lookup: async () => ({
+            accountKey: account.key,
+            appId: "12345678-1234-1234-1234-123456789abc",
+            operationMarker: "gateway-operation:op",
+            verified: true,
+        }),
+    };
+    mockRpcPage(page, async () => ({ status: 503, text: '[14,"Unavailable"]' }));
+    assert.equal(m.admission(account).used, 0);
+    await m.run();
+    assert.equal(m.store.read().op.resourceState, "known");
+    assert.equal(m.admission(account).debt, 1);
+    assert.equal(m.admission(account).degraded, true);
+    assert.equal(m.snapshot().cleanup_debt_count, 1);
+    assert.equal(m.snapshot().resource_discovery, 0);
 });
