@@ -46,13 +46,15 @@ import time
 
 root, snapshot = map(pathlib.Path, sys.argv[1:])
 
-def backup(source_path, target_path):
+def backup(source_path, target_path, source=None):
     deadline = time.monotonic() + 60
     def progress(*_):
         if time.monotonic() > deadline:
             raise TimeoutError('SQLite backup exceeded 60 seconds')
     # Online SQLite backup includes committed WAL contents; never copy a live DB.
-    source = sqlite3.connect(source_path.as_uri() + '?mode=ro', uri=True, timeout=10)
+    owns_source = source is None
+    if owns_source:
+        source = sqlite3.connect(source_path.as_uri() + '?mode=ro', uri=True, timeout=10)
     target = sqlite3.connect(target_path)
     try:
         source.backup(target, pages=256, progress=progress)
@@ -62,10 +64,10 @@ def backup(source_path, target_path):
             raise RuntimeError('SQLite foreign key check failed')
     finally:
         target.close()
-        source.close()
+        if owns_source:
+            source.close()
 
 backup(root / 'antigravity/data/keys.sqlite', snapshot / 'antigravity/data/keys.sqlite')
-backup(root / 'aistudio/data/usage-stats.sqlite', snapshot / 'aistudio/data/usage-stats.sqlite')
 def copy_account_files():
     for directory in ('aistudio/auth', 'aistudio/data/account-login-artifacts'):
         source = root / directory
@@ -118,29 +120,38 @@ if accounts.exists():
 else:
     copy_account_files()
 
-# Recovery state and event history must travel together. Retry an optimistic
-# snapshot instead of archiving a journal that changed during the DB backup.
+# Pin the SQLite read transaction while the small recovery files are stable.
+# Copying a large DB can then continue while the application keeps writing.
 recovery_names = ('scheduler-state.json', 'build-projects.json', 'build-projects.json.events.json')
+usage_path = root / 'aistudio/data/usage-stats.sqlite'
 for attempt in range(5):
     before = {name: (root / 'aistudio/data' / name).read_bytes()
               for name in recovery_names if (root / 'aistudio/data' / name).exists()}
-    backup(root / 'aistudio/data/usage-stats.sqlite', snapshot / 'aistudio/data/usage-stats.sqlite')
-    after = {name: (root / 'aistudio/data' / name).read_bytes()
-             for name in recovery_names if (root / 'aistudio/data' / name).exists()}
-    if before == after:
-        for name, content in before.items():
-            target = snapshot / 'aistudio/data' / name
-            target.write_bytes(content)
-            target.chmod(0o600)
-        for source in (root / 'aistudio/data').glob('build-projects.json.pre-v2-*'):
-            target = snapshot / 'aistudio/data' / source.name
-            target.write_bytes(source.read_bytes())
-            target.chmod(0o600)
-        print('Build recovery journal and event database snapshot verified')
-        break
+    snapshot_source = sqlite3.connect(usage_path.as_uri() + '?mode=ro', uri=True, timeout=10)
+    try:
+        snapshot_source.execute('BEGIN')
+        snapshot_source.execute('SELECT rootpage FROM sqlite_master LIMIT 1').fetchone()
+        after = {name: (root / 'aistudio/data' / name).read_bytes()
+                 for name in recovery_names if (root / 'aistudio/data' / name).exists()}
+        if before == after:
+            backup(usage_path, snapshot / 'aistudio/data/usage-stats.sqlite', source=snapshot_source)
+            for name, content in before.items():
+                target = snapshot / 'aistudio/data' / name
+                target.write_bytes(content)
+                target.chmod(0o600)
+            for source_file in (root / 'aistudio/data').glob('build-projects.json.pre-v2-*'):
+                target = snapshot / 'aistudio/data' / source_file.name
+                target.write_bytes(source_file.read_bytes())
+                target.chmod(0o600)
+            print('Build recovery journal and pinned event database snapshot verified')
+            break
+    finally:
+        snapshot_source.rollback()
+        snapshot_source.close()
     if attempt == 4:
-        raise RuntimeError('Build recovery state changed during backup; no archive uploaded')
+        raise RuntimeError('Build recovery state changed while pinning snapshot; no archive uploaded')
     time.sleep(1)
+
 PY
 
 tar -C "$snapshot" -czf "$archive" .

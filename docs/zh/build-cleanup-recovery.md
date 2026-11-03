@@ -47,7 +47,7 @@ scheduler 保留 `available_accounts`（符合模型条件）、`ready_accounts`
 ## 按账号恢复与验收
 
 1. 核对各节点当前镜像、Compose mounts/volumes、journal、scheduler 状态、SQLite、在途生成、磁盘和备份。停止旧进程后取得一致手动快照，在线数据库用 SQLite backup 或在完全停止写入后复制，不能漏 WAL。
-2. 验证快照完整性与云端副本，手动快照独立保留。定时备份仍本地最多 1、云端最多 10。本仓库 US 备份脚本新增 journal/迁移快照/回退事件文件，并在 SQLite backup 前后核对 journal 与 scheduler 未变；变化重试五次后失败，不上传不一致备份。生产脚本尚未安装；JP 的实际任务需发布时核对。
+2. 验证快照完整性与云端副本，手动快照独立保留。定时备份仍本地最多 1、云端最多 10。本仓库 US 备份脚本新增 journal/迁移快照/回退事件文件，并在建立 SQLite 只读事务前后核对 journal 与 scheduler 未变；固定快照后允许线上继续写入，复制始终使用该事务。获取快照时变化重试五次后失败，不上传不一致备份。生产脚本尚未安装；JP 的实际任务需发布时核对。
 3. 先单节点设置 `BUILD_RECOVERY_ACCOUNT_INDICES=`，启动只迁移、重建阻挡并观察。确认无活跃生成后将列表设为一个目标账号并重启；观察具体方法、确认、退避、错误、context 总数及 PG 状态。
 4. 验证遗留 operation 的解决率与年龄、自然流量 active/queue timeout、冷账号派发、可派发统计和控制器语义。逐步扩大 allowlist；第二节点在第一节点稳定后再处理。新业务会产生新 journal，不能要求总数严格递减。
 5. verify_pending/quarantined 或 recovery_state_inconsistent 必须先核实真实资源与历史快照。不得通过清 journal、修改 complete、删除确认字段或强行清阻挡来恢复服务。没有可信核实方法的项目继续隔离；代码没有提供伪造确认的管理接口。
