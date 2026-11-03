@@ -1775,7 +1775,10 @@ const copyRequestId = async value => {
 
 const showErrorDetail = record => {
     if (!canShowErrorDetail(record)) return;
-    ElMessageBox.alert(record.errorMessage || t("errorUnknown"), t("errorDetailTitle"), {
+    const detail = record.error
+        ? `${record.errorMessage || record.error.message || t("errorUnknown")}\n\n${JSON.stringify({ error: record.error, request_id: record.requestId, response_http_status: record.responseHttpStatus }, null, 2)}`
+        : record.errorMessage || t("errorUnknown");
+    ElMessageBox.alert(detail, t("errorDetailTitle"), {
         closeOnClickModal: true,
         confirmButtonText: t("ok"),
         lockScroll: false,
@@ -1784,7 +1787,8 @@ const showErrorDetail = record => {
 };
 
 const canShowErrorDetail = record =>
-    !!record && (record.outcome === "error" || record.outcome === "aborted") && !!record.errorMessage;
+    !!record &&
+    (((record.outcome === "error" || record.outcome === "aborted") && !!record.errorMessage) || !!record.error);
 
 const showAttemptsDetail = record => {
     if (!record || !record.attempts || record.attempts.length === 0) return;

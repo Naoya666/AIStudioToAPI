@@ -1010,3 +1010,29 @@ for (const stream of [false, true])
             assert.equal(usage.at(-1).totalTokenCount, 15);
             assert.equal(f.calls.filter(call => call.url.endsWith("/GenerateContent")).length, 1);
         });
+
+test("Build bridge exposes only Retry-After metadata and distinguishes local synthetic status", async t => {
+    const f = fixture(t, 0, {
+        fetch: async () => ({
+            headers: new Headers({ Authorization: "private", "Retry-After": "12", "Set-Cookie": "private" }),
+            status: 200,
+            text: async () => '[8,"Quota exceeded. Please try again later."]',
+        }),
+    });
+    await f.init();
+    const result = await f.sandbox.__makerSuiteBridge.run({
+        body: [],
+        id: "build-error",
+        readyTimeoutMs: 100,
+        rpcMethod: "CreateApplet",
+        timeoutMs: 1000,
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.source, "google_http");
+    assert.equal(result.retryAfter, "12");
+    assert.doesNotMatch(JSON.stringify(result), /private|Set-Cookie|Authorization/i);
+    f.sandbox.__makerSuiteBridge.dispose();
+    const local = await f.sandbox.__makerSuiteBridge.run({ body: [], id: "disposed", rpcMethod: "CreateApplet" });
+    assert.equal(local.source, "local");
+    assert.equal(local.status, 499);
+});

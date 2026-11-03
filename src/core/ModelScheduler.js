@@ -86,6 +86,13 @@ function isValidDateKey(value) {
 }
 
 function classifyRateLimit(error, now) {
+    if (error.source?.startsWith("google_") && error.rateLimit?.type === "temporary")
+        return {
+            type: "temporary",
+            ...(error.rateLimit.retryAfterMs > 0 && error.rateLimit.retryAfterMs <= 86400000
+                ? { cooldownMs: error.rateLimit.retryAfterMs }
+                : {}),
+        };
     const messages = [error.message, error.upstreamError?.message, error.error?.message].filter(
         message => typeof message === "string"
     );
@@ -1149,7 +1156,10 @@ class ModelScheduler {
         }
         const upstreamAuthExpired =
             kind === "account" &&
-            ((Number(error.status) === 401 && error.upstreamError?.status === "UNAUTHENTICATED") ||
+            ((Number(error.status) === 401 &&
+                (error.upstreamError?.status === "UNAUTHENTICATED" ||
+                    (error.source?.startsWith("google_") &&
+                        (error.upstreamError?.httpStatus === 401 || error.upstreamError?.rpcCode === 16)))) ||
                 /Google API returned error:\s*401\s+UNAUTHENTICATED\b/i.test(String(error.message || "")));
         const currentSession = this.authSource.accountLoginService?.state?.accounts.find(
             account => account.authIndex === lease.account.index

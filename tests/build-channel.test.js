@@ -387,7 +387,7 @@ test("task read recovery resumes the same generation without submitting a second
     let reads = 0;
     r.rpc = async (m, b) => {
         if (m === "StreamCodeAssistantOfflineGeneration" && ++reads === 1)
-            throw Object.assign(new Error("read interrupted"), { status: 502 });
+            throw Object.assign(new Error("read interrupted"), { source: "transport", status: 502 });
         return original(m, b);
     };
     const p = prepare(base, config, {});
@@ -514,6 +514,7 @@ function handlerFixture(t, { output = "answer", mode = "auto_fallback", generati
         _finalizeTrackedRequest: (id, res, result) => finished.push(result),
         _getAccountNameForIndex: () => null,
         _getUsageStatsService: () => ({ recordAttempt() {} }),
+        _markTrackedResponseError: require("../src/core/RequestHandler").prototype._markTrackedResponseError,
         _setResponseApiFormat() {},
         _startTrackedRequest() {},
         _updateTrackedRequest() {},
@@ -889,3 +890,473 @@ for (const stream of [false, true])
                 assert.equal(f.res.body.choices[0].message.tool_calls, undefined);
             }
         });
+
+// Synthetic wire fixtures based on the supported task and RPC envelope shapes.
+const BuildErrors = require("../src/core/codeAssistant/BuildError");
+function failedWire(message, usage = null) {
+    const data = JSON.parse(wire("partial", { status: 4, usage }));
+    data[0][0][2][0][5] = [message];
+    return JSON.stringify(data);
+}
+test("Build errors separate HTTP, RPC and semantic status and preserve bounded diagnostics", () => {
+    for (const [rpcCode, status] of [
+        [1, 499],
+        [3, 400],
+        [4, 504],
+        [5, 404],
+        [7, 403],
+        [8, 429],
+        [16, 401],
+    ]) {
+        for (const body of [
+            [rpcCode, "specific reason"],
+            [[rpcCode, "specific reason"]],
+            [[[rpcCode, "specific reason"]]],
+            [null, [rpcCode, "specific reason"]],
+        ]) {
+            const e = BuildErrors.fromResponse({ status: 200, text: JSON.stringify(body) }, "poll");
+            assert.equal(e.status, status);
+            assert.equal(e.upstreamError.httpStatus, 200);
+            assert.equal(e.upstreamError.rpcCode, rpcCode);
+            assert.equal(e.upstreamError.status, null);
+            assert.match(e.message, /specific reason/);
+        }
+    }
+    const e = BuildErrors.fromResponse(
+        { retryAfter: "12", status: 429, text: "Quota exceeded. Please try again later." },
+        "submit"
+    );
+    assert.equal(e.upstreamError.httpStatus, 429);
+    assert.equal(e.rateLimit.retryAfterMs, 12000);
+    assert.equal(e.rateLimit.type, "temporary");
+    for (const value of ["-1", "99999999999", "invalid", "0"]) assert.equal(BuildErrors.retryAfter(value), null);
+    assert.equal(BuildErrors.retryAfter(new Date(12000).toUTCString(), 1000), 11000);
+    const big = BuildErrors.fromResponse(
+        {
+            status: 200,
+            text: JSON.stringify([
+                8,
+                "你".repeat(5000) + " Authorization: Bearer secret",
+                [{ authorization: "secret", metadata: { cookie: "secret" }, reason: "x".repeat(20000) }],
+            ]),
+        },
+        "poll"
+    );
+    assert.equal(big.truncated, true);
+    assert.ok(Buffer.byteLength(big.message) <= 4096);
+    assert.ok(Buffer.byteLength(JSON.stringify(big.upstreamError.details)) <= 16384);
+    assert.doesNotMatch(JSON.stringify(BuildErrors.errorInfo(big)), /secret|authorization|cookie/);
+    const sanitized = BuildErrors.buildError({
+        message:
+            "api_key=AIzaPrivate signature=private password=private\nCookie: a=private; b=private\nAuthorization: Bearer private",
+        source: "google_task",
+    });
+    assert.doesNotMatch(JSON.stringify(BuildErrors.errorInfo(sanitized)), /private|AIzaPrivate/);
+    assert.equal(
+        BuildErrors.fromResponse({ status: 502, text: "<html>private body</html>" }, "poll").message.includes(
+            "private body"
+        ),
+        false
+    );
+    for (const body of [
+        wire("normal"),
+        JSON.stringify([null, null, [8, "ordinary data"]]),
+        JSON.stringify(["10", "3", "2"]),
+    ])
+        assert.equal(BuildErrors.fromResponse({ status: 200, text: body }, "poll"), null);
+});
+test("Build task quota is temporary; internal failure retains cumulative usage once and cleanup failure stays secondary", async t => {
+    const p = prepare(base, config, {});
+    for (const [message, status, code, usage] of [
+        ["Quota exceeded. Please try again later.", 429, "BUILD_QUOTA_EXCEEDED", null],
+        ["An internal error occurred.", 502, "BUILD_TASK_FAILED", ["10", "3", "2"]],
+    ]) {
+        const { r, calls } = runtime(t),
+            original = r.rpc,
+            observations = [];
+        r.rpc = async (method, body) => {
+            if (method === "StreamCodeAssistantOfflineGeneration") {
+                calls.push({ method });
+                return failedWire(message, usage);
+            }
+            if (method === "CancelCodeAssistantOfflineGeneration") assert.fail("terminal task cannot be cancelled");
+            if (method === "DeleteApplet")
+                throw BuildErrors.buildError({
+                    message: "cleanup failed",
+                    phase: "cleanup",
+                    source: "local",
+                    status: 503,
+                });
+            return original(method, body);
+        };
+        await assert.rejects(r.generate(p.identity, p.context, { onUsage: u => observations.push(u) }), e => {
+            assert.equal(e.code, code);
+            assert.equal(e.status, status);
+            assert.equal(e.source, "google_task");
+            assert.equal(e.taskTerminal, true);
+            assert.equal(e.upstreamError.message, message);
+            assert.equal(e.upstreamError.httpStatus, 200);
+            assert.equal(e.upstreamError.rpcCode, null);
+            assert.equal(e.secondaryErrors[0].phase, "cleanup");
+            if (usage) {
+                assert.equal(e.usage.total_tokens, 15);
+                assert.equal(observations.length, 1);
+            } else {
+                assert.equal(e.usage, null);
+                assert.equal(e.rateLimit.type, "temporary");
+            }
+            return true;
+        });
+        assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
+        assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 1);
+        assert.equal(r.cleanupPending, true);
+        assert.ok(Object.values(r.read())[0].complete);
+    }
+});
+for (const stream of [false, true])
+    test(`Build ${stream ? "SSE" : "JSON"} error correlates request ID, semantic history and real HTTP even if scheduler fails`, async t => {
+        const error = BuildErrors.buildError({
+            httpStatus: 200,
+            message: "Quota exceeded. Please try again later.",
+            phase: "poll",
+            source: "google_task",
+            taskTerminal: true,
+        });
+        const f = handlerFixture(t, { generationError: error });
+        let headerId;
+        f.res.setHeader = (name, value) => {
+            if (name === "X-Request-ID") headerId = value;
+        };
+        const finalize = require("../src/core/RequestHandler").prototype._finalizeTrackedRequest;
+        const records = [];
+        f.h._getUsageStatsService = () => ({
+            finishRequest: (id, r) => records.push({ id, ...r }),
+            recordAttempt() {},
+        });
+        f.h._finalizeTrackedRequest = finalize;
+        f.h.serverSystem.scheduler.failure = () => {
+            throw new Error("scheduler unavailable");
+        };
+        await processBuild(f.h, { body: { ...base, stream }, method: "POST" }, f.res);
+        const payload = stream
+            ? JSON.parse(
+                  f.res.output
+                      .split("\n")
+                      .find(l => l.startsWith('data: {"error"'))
+                      .slice(6)
+              )
+            : f.res.body;
+        assert.equal(payload.error.request_id, headerId);
+        assert.equal(records[0].id, headerId);
+        assert.equal(records[0].outcome, "error");
+        assert.equal(records[0].statusCode, 429);
+        assert.equal(records[0].responseHttpStatus, stream ? 200 : 429);
+        assert.equal(records[0].error.code, "BUILD_QUOTA_EXCEEDED");
+        assert.equal(payload.error.message, records[0].errorMessage);
+        assert.deepEqual(f.releases, [false]);
+        if (stream) assert.doesNotMatch(f.res.output, /\[DONE\]|"finish_reason":"stop"/);
+    });
+test("Build real RPC auth affects only current sessions; local synthetic RPC status stays transport", async t => {
+    const { classifyError } = require("../src/core/ModelScheduler");
+    const { r } = runtime(t);
+    delete r.rpc;
+    let response;
+    r.page = { evaluate: async (_, source) => (source.includes(".cancel(") ? undefined : response) };
+    for (const local of [false, true]) {
+        response = { source: local ? "local" : "google_http", status: local ? 503 : 200, text: '[16,"auth rejected"]' };
+        await assert.rejects(r.rpc("CreateApplet", [], { phase: "create" }), e => {
+            assert.equal(classifyError(e), local ? "transport" : "account");
+            assert.equal(e.upstreamError.rpcCode, local ? null : 16);
+            assert.equal(e.upstreamError.httpStatus, local ? null : 200);
+            return true;
+        });
+    }
+});
+test("Build error schema survives old database migration, restart and export/import without inventing old fields", async t => {
+    const { DatabaseSync } = require("node:sqlite");
+    const UsageStatsStorage = require("../src/core/UsageStatsStorage");
+    const dbPath = path.join(temp(t), "errors.sqlite");
+    let storage = new UsageStatsStorage({ dbPath });
+    const now = new Date().toISOString();
+    const old = {
+        durationMs: 1,
+        finishedAt: now,
+        outcome: "success",
+        requestId: "old",
+        startedAt: now,
+        statusCode: 200,
+        usage: { total_tokens: 15 },
+    };
+    await storage.call("insert", old);
+    await storage.close();
+    const db = new DatabaseSync(dbPath);
+    db.exec("ALTER TABLE requests DROP COLUMN response_http_status");
+    db.exec("ALTER TABLE requests DROP COLUMN error_json");
+    db.close();
+    storage = new UsageStatsStorage({ dbPath });
+    const error = BuildErrors.errorInfo(
+        BuildErrors.buildError({
+            httpStatus: 200,
+            message: "Quota exceeded. Please try again later.",
+            phase: "poll",
+            source: "google_task",
+            taskTerminal: true,
+        })
+    );
+    await storage.call("insert", {
+        ...old,
+        error,
+        errorMessage: error.message,
+        outcome: "error",
+        requestId: "new",
+        responseHttpStatus: 200,
+        statusCode: 429,
+        usage: null,
+    });
+    let records = await storage.call("export", {});
+    assert.equal(records[0].error, null);
+    assert.equal(records[0].responseHttpStatus, null);
+    assert.equal(records[0].usage.total_tokens, 15);
+    assert.equal(records[1].error.rateLimit.type, "temporary");
+    assert.equal(records[1].responseHttpStatus, 200);
+    await storage.close();
+    storage = new UsageStatsStorage({ dbPath });
+    t.after(() => storage.close());
+    records = await storage.call("export", {});
+    assert.equal(records[1].error.upstreamError.httpStatus, 200);
+    const imported = new UsageStatsStorage({ dbPath: path.join(temp(t), "import.sqlite") });
+    t.after(() => imported.close());
+    const report = await imported.call("import", { content: JSON.stringify(records[1]) });
+    assert.equal(report.importedCount, 1);
+    assert.deepEqual((await imported.call("export", {}))[0].error, records[1].error);
+});
+
+test("Build quota classification shares aliases, isolates PG and preserves confirmed longer cooldowns through concurrent results", async t => {
+    const scheduler = new ModelScheduler(
+        {
+            ...loadConfig({ BUILD_MAX_CONCURRENCY: "3", GLOBAL_MAX_CONCURRENCY: "3" }),
+            statePath: path.join(temp(t), "quota.json"),
+        },
+        { accountNameMap: new Map(), getRotationIndices: () => [0] },
+        { error() {}, warn() {} }
+    );
+    t.after(() => scheduler.close());
+    const leases = [];
+    for (const model of ["build/gemini-3.8-flash", "build-st/gemini-3.8-flash", "anti-build/gemini-3.8-flash"])
+        leases.push(await scheduler.acquire(model));
+    for (const lease of leases) scheduler.startAttempt(lease);
+    const error = BuildErrors.buildError({
+        httpStatus: 200,
+        message: "Quota exceeded. Please try again later.",
+        phase: "poll",
+        source: "google_task",
+        taskTerminal: true,
+    });
+    await scheduler.failure(leases[0], error);
+    const slot = leases[0].slot;
+    assert.equal(slot.last_error_kind, "rate_limited");
+    assert.equal(slot.rate_limit_type, "temporary");
+    assert.equal(leases[1].slot, slot);
+    assert.equal(leases[2].slot, slot);
+    assert.equal(scheduler.slot(leases[0].account, "gemini-3.8-flash").cooldown_until, 0);
+    const confirmedDeadline = Date.now() + 3600000;
+    slot.rate_limit_type = "daily_quota";
+    slot.cooldown_until = confirmedDeadline;
+    await scheduler.failure(leases[1], error);
+    scheduler.release(leases[0], false);
+    scheduler.release(leases[1], false);
+    scheduler.release(leases[2], true);
+    assert.equal(slot.cooldown_until, confirmedDeadline);
+    assert.equal(slot.rate_limit_type, "daily_quota");
+    assert.equal(slot.failure_count, 2);
+});
+test("real Build RPC auth expiry retains sessionVersion protection", async t => {
+    for (const replace of [false, true]) {
+        const session = { authIndex: 0, sessionVersion: 7 },
+            expired = [];
+        const auth = {
+            accountLoginService: { state: { accounts: [session] } },
+            accountNameMap: new Map(),
+            getRotationIndices: () => [0],
+            markAsExpired: async (...args) => expired.push(args),
+        };
+        const scheduler = new ModelScheduler({ ...loadConfig({}), statePath: path.join(temp(t), "auth.json") }, auth, {
+            error() {},
+            warn() {},
+        });
+        t.after(() => scheduler.close());
+        const lease = await scheduler.acquire("build/gemini-3.8-flash");
+        scheduler.startAttempt(lease);
+        if (replace) session.sessionVersion++;
+        const error = BuildErrors.fromResponse(
+            { source: "google_http", status: 200, text: '[16,"Credentials expired"]' },
+            "poll"
+        );
+        await scheduler.failure(lease, error);
+        assert.deepEqual(expired, replace ? [] : [[0, 7]]);
+        assert.equal(lease.account.healthy, replace);
+        scheduler.release(lease, false);
+    }
+});
+test("SSE partial content failure remains error and disconnect writes nothing or penalizes no account", async t => {
+    for (const abort of [false, true]) {
+        const f = handlerFixture(t);
+        f.h.browserManager.contexts.get(0).page.codeAssistantRuntime.generate = async (_, __, options) => {
+            options.onText("partial text");
+            if (abort) {
+                f.res.destroyed = true;
+                f.res.emit("close");
+            }
+            throw BuildErrors.buildError({
+                httpStatus: 200,
+                message: "An internal error occurred.",
+                phase: "poll",
+                source: "google_task",
+                taskTerminal: true,
+            });
+        };
+        await processBuild(f.h, { body: { ...base, stream: true }, method: "POST" }, f.res);
+        assert.match(f.res.output, /partial text/);
+        assert.equal(f.finished.length, 1);
+        assert.equal(f.finished[0].outcome, abort ? "aborted" : "error");
+        assert.equal(f.finished[0].statusCode, abort ? 499 : 502);
+        assert.equal(f.failures.length, abort ? 0 : 1);
+        assert.equal(f.res.output.includes('"error"'), !abort);
+        assert.doesNotMatch(f.res.output, /\[DONE\]|"finish_reason":"stop"/);
+    }
+});
+test("overall deadline bounds known task read recovery without resubmission or quota inference", async t => {
+    const { r, calls } = runtime(t),
+        original = r.rpc;
+    r.rpc = async (method, body) => {
+        if (method === "StreamCodeAssistantOfflineGeneration") {
+            calls.push({ method });
+            throw BuildErrors.buildError({
+                message: "read interrupted",
+                phase: "poll",
+                source: "transport",
+                status: 504,
+            });
+        }
+        return original(method, body);
+    };
+    const p = prepare(base, config, {}),
+        started = Date.now();
+    await assert.rejects(r.generate(p.identity, p.context, { timeoutMs: 100 }), e => {
+        assert.equal(e.status, 504);
+        assert.equal(e.source, "local");
+        assert.equal(e.code, "BUILD_DEADLINE_EXCEEDED");
+        assert.equal(e.rateLimit, undefined);
+        assert.equal(e.usage, undefined);
+        return true;
+    });
+    assert.ok(Date.now() - started < 1500);
+    assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
+    assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 1);
+    assert.deepEqual(r.read(), {});
+});
+test("successful generation with pending cleanup records success and separate cleanup diagnostics", async t => {
+    const f = handlerFixture(t);
+    const runtime = f.h.browserManager.contexts.get(0).page.codeAssistantRuntime;
+    runtime.cleanupPending = true;
+    runtime.cleanupError = BuildErrors.errorInfo(
+        BuildErrors.buildError({ message: "Delete pending", phase: "cleanup", source: "local", status: 503 })
+    );
+    runtime.generate = async () => ({ cleanupError: runtime.cleanupError, text: "answer" });
+    runtime.recover = async () => {};
+    f.h.serverSystem.scheduler.saveSoon = () => {};
+    f.h.serverSystem.scheduler.drain = () => {};
+    await processBuild(f.h, { body: base, method: "POST" }, f.res);
+    assert.equal(f.finished[0].outcome, "success");
+    assert.equal(f.finished[0].error.phase, "cleanup");
+    assert.equal(f.res.statusCode, 200);
+    assert.equal(f.finished[0].errorMessage, undefined);
+    assert.deepEqual(f.releases, [true]);
+});
+
+test("synthetic end-to-end quota response, SQLite history and scheduler share one request ID and temporary classification", async t => {
+    const UsageStatsService = require("../src/core/UsageStatsService");
+    const RequestHandler = require("../src/core/RequestHandler");
+    const logger = { debug() {}, error() {}, info() {}, warn() {} };
+    const auth = { accountNameMap: new Map(), getRotationIndices: () => [0] };
+    const dir = temp(t),
+        stats = new UsageStatsService(auth, logger, dir);
+    await stats.ready;
+    t.after(() => stats.close());
+    const scheduler = new ModelScheduler(
+        { ...loadConfig({}), statePath: path.join(dir, "scheduler.json") },
+        auth,
+        logger
+    );
+    t.after(() => scheduler.close());
+    const { r, calls } = runtime(t),
+        original = r.rpc;
+    r.rpc = async (method, body) =>
+        method === "StreamCodeAssistantOfflineGeneration"
+            ? failedWire("Quota exceeded. Please try again later.")
+            : original(method, body);
+    const f = handlerFixture(t);
+    f.h.browserManager.contexts.get(0).page.codeAssistantRuntime = r;
+    f.h.serverSystem.scheduler = scheduler;
+    f.h._getUsageStatsService = () => stats;
+    f.h._getClientIp = () => "127.0.0.1";
+    for (const name of ["_startTrackedRequest", "_updateTrackedRequest", "_finalizeTrackedRequest"])
+        f.h[name] = RequestHandler.prototype[name];
+    let requestId;
+    f.res.setHeader = (name, value) => {
+        if (name === "X-Request-ID") requestId = value;
+    };
+    await processBuild(f.h, { body: { ...base, stream: true }, method: "POST", path: "/v1/chat/completions" }, f.res);
+    await stats.appendPromise;
+    const records = await stats.storage.call("export", {}),
+        record = records[0];
+    assert.equal(records.length, 1);
+    assert.equal(record.requestId, requestId);
+    assert.equal(record.outcome, "error");
+    assert.equal(record.statusCode, 429);
+    assert.equal(record.responseHttpStatus, 200);
+    assert.equal(record.error.upstreamError.httpStatus, 200);
+    assert.equal(record.error.upstreamError.rpcCode, null);
+    assert.equal(record.error.code, "BUILD_QUOTA_EXCEEDED");
+    assert.equal(record.usage.partial, true);
+    assert.equal(record.usage.total_tokens, undefined);
+    assert.match(f.res.output, new RegExp(requestId));
+    assert.ok(f.res.output.includes(record.errorMessage));
+    const slot = scheduler.slot(scheduler.account(0), "build/gemini-3.8-flash");
+    assert.equal(slot.last_error_kind, "rate_limited");
+    assert.equal(slot.rate_limit_type, "temporary");
+    t.diagnostic(
+        JSON.stringify({
+            error: record.error,
+            request_id: requestId,
+            response_http_status: record.responseHttpStatus,
+            scheduler: { kind: slot.last_error_kind, type: slot.rate_limit_type },
+            status_code: record.statusCode,
+            usage: record.usage,
+        })
+    );
+    assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
+    assert.equal(calls.filter(c => c.method === "CancelCodeAssistantOfflineGeneration").length, 0);
+});
+
+test("runtime returns cleanup diagnosis on its own successful result and keeps it across a later recovery", async t => {
+    const { r } = runtime(t),
+        original = r.rpc;
+    let failDelete = true;
+    r.rpc = async (method, body) => {
+        if (method === "DeleteApplet" && failDelete) {
+            failDelete = false;
+            throw BuildErrors.buildError({ message: "Delete pending", phase: "cleanup", source: "local", status: 503 });
+        }
+        return original(method, body);
+    };
+    const p = prepare(base, config, {});
+    const first = await r.generate(p.identity, p.context, {});
+    assert.equal(first.text, "hello");
+    assert.equal(first.cleanupError.phase, "cleanup");
+    assert.equal(r.cleanupPending, true);
+    const second = await r.generate(p.identity, p.context, {});
+    assert.equal(second.cleanupError, undefined);
+    assert.equal(first.cleanupError.message, "Delete pending");
+    assert.deepEqual(r.read(), {});
+});

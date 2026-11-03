@@ -4,9 +4,9 @@ const path = require("node:path");
 const { pageEval } = require("../MakerSuiteBridge");
 const { withHardTimeout } = require("../../utils/TimeoutUtils");
 const { atomicWrite } = require("../../config/ConfigurationService");
+const { buildError, errorInfo, fromResponse } = require("./BuildError");
 const { encode, decode } = require("./BuildCodec");
-const fail = (message, status = 503) =>
-    Object.assign(new Error(message), { kind: "capability", retryable: false, status });
+const fail = (message, status = 503) => buildError({ message, source: "local", status });
 // Only project/task identifiers are persisted. A crash cannot silently orphan a
 // known task and then send a second generation before attempting cleanup.
 class BuildRuntime {
@@ -34,8 +34,8 @@ class BuildRuntime {
         else delete state[op];
         atomicWrite(this.statePath, state);
     }
-    async rpc(method, body, { signal, ht = "", proofText, timeoutMs = this.timeoutMs } = {}) {
-        if (signal?.aborted) throw fail("Build 请求已取消", 499);
+    async rpc(method, body, { signal, ht = "", proofText, timeoutMs = this.timeoutMs, phase = "cleanup" } = {}) {
+        if (signal?.aborted) throw buildError({ message: "Build 请求已取消", phase, source: "local", status: 499 });
         const id = randomUUID();
         const cancel = () => {
             void this.page
@@ -47,24 +47,22 @@ class BuildRuntime {
             const args = { body, ht, id, proofText, readyTimeoutMs: 10000, rpcMethod: method, timeoutMs };
             const result = await withHardTimeout(
                 () => this.page.evaluate(pageEval, `window.__makerSuiteBridge.run(${JSON.stringify(args)})`),
-                timeoutMs + 2000,
+                timeoutMs,
                 { operation: "Build RPC", status: 504 }
             );
-            let rpcCode;
-            try {
-                const value = JSON.parse(result.text);
-                if (Array.isArray(value) && Number.isInteger(value[0]) && value[0] > 0 && typeof value[1] === "string")
-                    rpcCode = value[0];
-            } catch {
-                /* Decoder validates the body below. */
-            }
-            if (rpcCode) result.status = { 1: 499, 3: 400, 4: 504, 5: 404, 7: 403, 8: 429, 16: 401 }[rpcCode] || 502;
-            if (result.status !== 200)
-                throw Object.assign(fail(`Build ${method} 失败（HTTP ${result.status}）`, result.status), {
-                    kind: "upstream",
-                    upstreamError: result.status === 401 ? { status: "UNAUTHENTICATED" } : undefined,
-                });
+            const error = fromResponse(result, phase);
+            if (error) throw error;
             return result.text;
+        } catch (error) {
+            if (!error.source)
+                throw buildError({
+                    code: "BUILD_READ_INTERRUPTED",
+                    message: signal?.aborted ? "Build 请求已取消" : "Build 浏览器 RPC 读取中断",
+                    phase,
+                    source: "transport",
+                    status: signal?.aborted ? 499 : error.status || 502,
+                });
+            throw error;
         } finally {
             signal?.removeEventListener("abort", cancel);
             cancel();
@@ -100,15 +98,36 @@ class BuildRuntime {
             }
     }
     async generate(identity, context, { signal, onText, onUsage, timeoutMs = this.timeoutMs } = {}) {
-        await this.recover();
+        const deadline = Date.now() + timeoutMs;
+        try {
+            await this.recover();
+        } catch (error) {
+            error.phase = "recover";
+            throw error;
+        }
         this.cleanupPending = false;
+        this.cleanupError = null;
         const op = randomUUID(),
             entry = { account: this.accountKey, app: null, complete: false, task: null };
         this.active.set(op, entry);
-        let primaryError, lastUsage;
-        const deadline = Date.now() + timeoutMs;
-        const rpc = (method, body, ht = "", proofText) =>
-            this.rpc(method, body, { ht, proofText, signal, timeoutMs: Math.max(1, deadline - Date.now()) });
+        let primaryError, lastUsage, completedResult;
+        const rpc = (method, body, ht = "", proofText) => {
+            if (Date.now() >= deadline)
+                throw buildError({
+                    code: "BUILD_DEADLINE_EXCEEDED",
+                    message: "Build 已达整体等待期限；未重新生成",
+                    phase: method === "StreamCodeAssistantOfflineGeneration" ? "poll" : "create",
+                    source: "local",
+                    status: 504,
+                });
+            return this.rpc(method, body, {
+                ht,
+                phase: method === "CreateApplet" ? "create" : method === "CodeAssistantOffline" ? "submit" : "poll",
+                proofText,
+                signal,
+                timeoutMs: Math.max(1, deadline - Date.now()),
+            });
+        };
         try {
             const created = JSON.parse(
                 await rpc("CreateApplet", [
@@ -132,19 +151,28 @@ class BuildRuntime {
             this.save(op, entry);
             let emitted = "";
             while (Date.now() < deadline) {
-                if (signal?.aborted) throw fail("Build 请求已取消", 499);
+                if (signal?.aborted)
+                    throw buildError({ message: "Build 请求已取消", phase: "poll", source: "local", status: 499 });
                 let raw;
                 try {
                     raw = await rpc("StreamCodeAssistantOfflineGeneration", [entry.task, null, null, entry.app]);
                 } catch (e) {
                     // Resume only reads of an already known task, never submission. Bounded by deadline.
-                    if (signal?.aborted || ![502, 504].includes(e.status)) throw e;
-                    await new Promise(resolve => setTimeout(resolve, 500));
+                    if (
+                        signal?.aborted ||
+                        e.taskTerminal ||
+                        ![502, 504].includes(e.status) ||
+                        !["local", "transport", "google_http"].includes(e.source)
+                    )
+                        throw e;
+                    await new Promise(resolve =>
+                        setTimeout(resolve, Math.min(500, Math.max(0, deadline - Date.now())))
+                    );
                     continue;
                 }
                 let result;
                 try {
-                    result = decode(raw, entry.task);
+                    result = decode(raw, entry.task, { httpStatus: 200 });
                 } catch (e) {
                     if (e.taskTerminal) {
                         // Failed tasks are terminal too. Do not cancel an already ended generation.
@@ -152,7 +180,9 @@ class BuildRuntime {
                         this.save(op, entry);
                     }
                     if (e.code !== "BUILD_READ_INTERRUPTED") throw e;
-                    await new Promise(resolve => setTimeout(resolve, 500));
+                    await new Promise(resolve =>
+                        setTimeout(resolve, Math.min(500, Math.max(0, deadline - Date.now())))
+                    );
                     continue;
                 }
                 lastUsage = result.usage || lastUsage;
@@ -167,12 +197,28 @@ class BuildRuntime {
                     entry.complete = true;
                     this.save(op, entry);
                     if (!result.text) throw fail("Build 已完成但没有可返回内容", 502);
-                    return { ...result, usage: lastUsage };
+                    return (completedResult = { ...result, usage: lastUsage });
                 }
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise(resolve => setTimeout(resolve, Math.min(500, Math.max(0, deadline - Date.now()))));
             }
-            throw fail("Build 任务未完成（已达等待期限）；未重新生成", 504);
-        } catch (e) {
+            throw buildError({
+                code: "BUILD_DEADLINE_EXCEEDED",
+                message: "Build 任务未完成（已达等待期限）；未重新生成",
+                phase: "poll",
+                source: "local",
+                status: 504,
+            });
+        } catch (caught) {
+            const e =
+                caught instanceof SyntaxError
+                    ? buildError({
+                          message: "Build RPC 响应不可解码；未重新生成",
+                          phase: entry.app ? "submit" : "create",
+                          source: "local",
+                          status: 502,
+                      })
+                    : caught;
+            e.phase ||= "poll";
             primaryError = e;
             if (e.usage) onUsage?.(e.usage);
             if (lastUsage && !e.usage) e.usage = lastUsage;
@@ -180,7 +226,10 @@ class BuildRuntime {
         } finally {
             try {
                 await this.cleanup(op, entry);
-            } catch {
+            } catch (error) {
+                this.cleanupError = errorInfo(error);
+                if (completedResult) completedResult.cleanupError = this.cleanupError;
+                if (primaryError) (primaryError.secondaryErrors ||= []).push(error);
                 // Keep the journal. Next request must recover it before creating any task.
                 if (primaryError) primaryError.cleanupPending = true;
                 this.cleanupPending = true;

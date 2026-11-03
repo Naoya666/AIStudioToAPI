@@ -5,6 +5,7 @@ const { parseSillyTavern, sillyTavernMessages } = require("./SillyTavern");
 const { makeAttachmentContext } = require("./AttachmentContext");
 const Tools = require("./ToolContract");
 const AntiTransport = require("./AntiTransport");
+const { buildError, errorInfo, serializeError } = require("./BuildError");
 const { BuildRuntime } = require("./BuildRuntime");
 const { PresetStore } = require("./Presets");
 const fail = (message, status = 400) => Object.assign(new Error(message), { kind: "capability", status });
@@ -85,6 +86,7 @@ async function process(handler, req, res) {
     let lease,
         runtime,
         usage,
+        cleanupError,
         timer,
         success = false;
     const stream = req.body.stream === true,
@@ -179,14 +181,16 @@ async function process(handler, req, res) {
                               choices: [{ delta: { content: text }, finish_reason: null, index: 0 }],
                           })
                     : null,
-            onUsage: usage => {
-                scheduler.recordTokenUsage(lease, usage, requestId);
-                handler._getUsageStatsService()?.recordTokenUsage?.(requestId, requestId, usage);
+            onUsage: observedUsage => {
+                usage = observedUsage;
+                scheduler.recordTokenUsage(lease, observedUsage, requestId);
+                handler._getUsageStatsService()?.recordTokenUsage?.(requestId, requestId, observedUsage);
             },
             signal: controller.signal,
             timeoutMs: config.makerSuiteTimeoutMs,
         });
         usage = result.usage;
+        cleanupError = result.cleanupError;
         if (controller.signal.aborted) throw fail("客户端已断开", 499);
         const restored = prepared.anti
             ? AntiTransport.restore(result.text, prepared.anti)
@@ -229,19 +233,36 @@ async function process(handler, req, res) {
                 usage: usage ?? null,
             });
         success = true;
-    } catch (error) {
+    } catch (caught) {
+        const error = controller.signal.aborted
+            ? buildError({
+                  code: "BUILD_ABORTED",
+                  message: "客户端已断开",
+                  phase: caught.phase || "poll",
+                  source: "local",
+                  status: 499,
+                  usage: caught.usage || usage,
+              })
+            : caught;
         usage ||= error.usage;
-        res.__usageTrackingOutcome = controller.signal.aborted ? "aborted" : "error";
-        if (lease) await scheduler.failure(lease, error);
-        const payload = {
-            error: {
-                code: error.status || 502,
-                message: error.message,
-                type: error.code || "build_error",
-            },
-            ...(usage ? { usage } : {}),
-        };
-        if (!res.destroyed) {
+        error.usage ||= usage;
+        const info = errorInfo(error);
+        handler._markTrackedResponseError(
+            res,
+            info.message,
+            info.status,
+            controller.signal.aborted ? "aborted" : "error"
+        );
+        res.__usageTrackingError = info;
+        if (lease && !controller.signal.aborted) {
+            try {
+                await scheduler.failure(lease, error);
+            } catch {
+                system.logger?.warn?.("Build scheduler failure accounting failed");
+            }
+        }
+        const payload = serializeError(error, requestId);
+        if (!res.destroyed && !controller.signal.aborted) {
             if (res.headersSent) {
                 packet(payload);
                 res.end();
@@ -273,8 +294,12 @@ async function process(handler, req, res) {
             handler.lease = null;
         }
         handler._finalizeTrackedRequest(requestId, res, {
+            error: res.__usageTrackingError || cleanupError || null,
+            errorMessage: res.__usageTrackingError?.message,
             finalAuthIndex: lease?.account.index,
             outcome: success ? "success" : controller.signal.aborted ? "aborted" : "error",
+            responseHttpStatus: res.headersSent || res.writableFinished ? res.statusCode : null,
+            statusCode: res.__usageTrackingError?.status,
             usage,
         });
     }

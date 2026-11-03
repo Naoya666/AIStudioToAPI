@@ -301,10 +301,15 @@ function installPageBridge({ direct = false } = {}) {
             onChunk,
         }) {
             if (expectedDocumentId && window.__buildBenefit?.documentId !== expectedDocumentId)
-                return { status: 503, text: '[14,"MakerSuite document changed"]' };
+                return { source: "local", status: 503, text: '[14,"MakerSuite document changed"]' };
             if (service.proofBroken)
-                return { proofBroken: true, status: 503, text: '[14,"Playground proof runtime requires reload"]' };
-            if (service.closed) return { status: 499, text: '[1,"MakerSuite bridge disposed"]' };
+                return {
+                    proofBroken: true,
+                    source: "local",
+                    status: 503,
+                    text: '[14,"Playground proof runtime requires reload"]',
+                };
+            if (service.closed) return { source: "local", status: 499, text: '[1,"MakerSuite bridge disposed"]' };
             const record = records.get(id) || { controller: new AbortController() };
             records.set(id, record);
             let settled;
@@ -344,6 +349,7 @@ function installPageBridge({ direct = false } = {}) {
                     if (Date.now() >= readyDeadline)
                         return {
                             authState: hook !== "ready" ? hook : auth?.state || "token_pending",
+                            source: "local",
                             status: 503,
                             text: '[14,"MakerSuite page authentication not ready"]',
                         };
@@ -391,7 +397,11 @@ function installPageBridge({ direct = false } = {}) {
                             signal,
                         });
                         if (start.status !== 200)
-                            return { status: start.status, text: '[13,"Build attachment upload failed"]' };
+                            return {
+                                source: "local",
+                                status: start.status,
+                                text: '[13,"Build attachment upload failed"]',
+                            };
                         const address = new URL(start.headers.get("X-Goog-Upload-URL"));
                         // No arbitrary destination or user-provided upload URL. Extend only
                         // after recording evidence of another official upload origin.
@@ -414,7 +424,7 @@ function installPageBridge({ direct = false } = {}) {
                         });
                         const filePath = (await abortable(result.text())).trim();
                         if (result.status !== 200 || !filePath || filePath.length > 4096)
-                            return { status: 502, text: '[13,"Build attachment finalize failed"]' };
+                            return { source: "local", status: 502, text: '[13,"Build attachment finalize failed"]' };
                         const part = Array(18).fill(null);
                         part[17] = [mime, filePath, name, String(bytes.length)];
                         parts[index] = part;
@@ -459,6 +469,7 @@ function installPageBridge({ direct = false } = {}) {
                 if (auth.state !== "ready")
                     return {
                         authState: auth.state,
+                        source: "local",
                         status: 503,
                         text: '[14,"MakerSuite page authentication not ready"]',
                     };
@@ -491,6 +502,7 @@ function installPageBridge({ direct = false } = {}) {
                     if (!tokens.length)
                         return {
                             authState: "cookie_missing",
+                            source: "local",
                             status: 503,
                             text: '[14,"Playground signing cookies unavailable"]',
                         };
@@ -574,7 +586,13 @@ function installPageBridge({ direct = false } = {}) {
                     rejected.add(auth.key);
                     observed.delete(auth.key);
                 }
-                return { authSource: auth.source, status: response.status, text };
+                return {
+                    authSource: auth.source,
+                    retryAfter: response.headers?.get?.("retry-after") ?? null,
+                    source: "google_http",
+                    status: response.status,
+                    text,
+                };
             } catch (e) {
                 // A timed-out native proof may still own the prompt box. Retire
                 // this document instead of letting it overlap a replacement proof.
@@ -585,6 +603,7 @@ function installPageBridge({ direct = false } = {}) {
                 // Do not return raw evaluation/transport errors which can include credentials or URLs.
                 return {
                     proofBroken: service.proofBroken === true,
+                    source: "local",
                     status: timedOut ? 504 : signal.aborted ? 499 : 502,
                     text: JSON.stringify([
                         timedOut ? 4 : signal.aborted ? 1 : 14,

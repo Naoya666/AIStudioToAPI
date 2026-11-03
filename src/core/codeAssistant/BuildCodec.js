@@ -1,7 +1,8 @@
 // CodeAssistant wire fields cross-checked with yunx738/ais2api 38f2355
 // and Mag1cFall/AIStudio2API 0451f26; see docs/zh/build-dual-channel.md.
+const { buildError, rpcRecord } = require("./BuildError");
 const { randomUUID } = require("node:crypto");
-const fail = message => Object.assign(new Error(message), { kind: "capability", retryable: false, status: 502 });
+const fail = message => buildError({ message, phase: "decode", source: "local", status: 502 });
 function encode(identity, context, app) {
     const parts = context.files.map(f =>
         Buffer.byteLength(f.text) > 200 * 1024
@@ -25,7 +26,7 @@ function encode(identity, context, app) {
     // by the same page proofTail as Playground, fetch/read remains concurrent.
     return { body, ht: parts.map(p => p[1] ?? p[2]?.[1] ?? "").join(" ") };
 }
-function decode(raw, task) {
+function decode(raw, task, { httpStatus = null } = {}) {
     let data;
     try {
         data = JSON.parse(raw);
@@ -33,17 +34,20 @@ function decode(raw, task) {
         throw Object.assign(fail("Build 读取中断或 RPC 封装损坏；未重新生成"), { code: "BUILD_READ_INTERRUPTED" });
     }
     const turns = [];
-    let rpcError;
+    const record = rpcRecord(data);
+    const rpcError = record
+        ? buildError({
+              details: record.details,
+              httpStatus,
+              message: record.message,
+              phase: "poll",
+              rpcCode: record.rpcCode,
+              source: "google_rpc",
+              upstreamStatus: record.status,
+          })
+        : null;
     function walk(v, depth = 0) {
         if (depth > 10 || !Array.isArray(v)) return;
-        if (Number.isInteger(v[0]) && v[0] > 0 && typeof v[1] === "string") {
-            rpcError = Object.assign(fail("Build RPC 返回任务错误"), {
-                kind: "upstream",
-                status: { 1: 499, 3: 400, 4: 504, 5: 404, 7: 403, 8: 429, 16: 401 }[v[0]] || 502,
-            });
-            if (v[0] === 16) rpcError.upstreamError = { status: "UNAUTHENTICATED" };
-            return;
-        }
         if (
             ((Array.isArray(v[0]?.[0]?.[0]) && ["model", "user"].includes(v[0][0][1])) ||
                 (v[16] === task && v[12] === 4)) &&
@@ -81,15 +85,14 @@ function decode(raw, task) {
         throw rpcError;
     }
     if (model[12] === 4 || model[5])
-        throw Object.assign(
-            fail("Build 上游任务失败" + (typeof model[5]?.[0] === "string" ? `：${model[5][0].slice(0, 300)}` : "")),
-            {
-                code: "BUILD_TASK_FAILED",
-                kind: "upstream",
-                taskTerminal: model[12] === 4,
-                usage,
-            }
-        );
+        throw buildError({
+            httpStatus,
+            message: typeof model[5]?.[0] === "string" ? model[5][0] : "Build 上游任务失败",
+            phase: "poll",
+            source: "google_task",
+            taskTerminal: model[12] === 4,
+            usage,
+        });
     let text = "",
         thought = "";
     for (const p of model[0][0][0]) {

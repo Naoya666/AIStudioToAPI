@@ -215,10 +215,12 @@ class RequestHandler {
             (outcome === "error" ? "Request failed" : null);
 
         usageStatsService.finishRequest(requestId, {
+            error: overrides.error ?? res.__usageTrackingError ?? null,
             errorMessage,
             finalAccountName: overrides.finalAccountName,
             finalAuthIndex: overrides.finalAuthIndex,
             outcome,
+            responseHttpStatus: overrides.responseHttpStatus ?? (res.headersSent ? res.statusCode : null),
             statusCode,
             usage: overrides.usage ?? res.__actualUsage ?? null,
         });

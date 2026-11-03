@@ -76,6 +76,18 @@ function initialize() {
             .some(column => column.name === "token_attempts_json")
     )
         db.exec("ALTER TABLE requests ADD COLUMN token_attempts_json TEXT");
+    for (const [name, type] of [
+        ["response_http_status", "INTEGER"],
+        ["error_json", "TEXT"],
+    ]) {
+        if (
+            !db
+                .prepare("PRAGMA table_info(requests)")
+                .all()
+                .some(column => column.name === name)
+        )
+            db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${type}`);
+    }
     db.exec(`CREATE TABLE IF NOT EXISTS token_daily(
       day TEXT NOT NULL,account_key TEXT NOT NULL,model TEXT NOT NULL,tier TEXT NOT NULL,
       input INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL DEFAULT 0,cached INTEGER NOT NULL DEFAULT 0,reasoning INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,
@@ -209,6 +221,14 @@ function normalizeRecord(raw) {
         clientIp: nullable(raw.clientIp),
         durationMs: Math.max(0, Math.round(durationMs)),
         errorMessage: nullable(raw.errorMessage),
+        error:
+            raw.error && typeof raw.error === "object" && raw.error.version === 1
+                ? require("./codeAssistant/BuildError").errorInfo(raw.error)
+                : null,
+        responseHttpStatus:
+            Number.isInteger(raw.responseHttpStatus) && raw.responseHttpStatus >= 100 && raw.responseHttpStatus <= 599
+                ? raw.responseHttpStatus
+                : null,
         finalAccountName: nullable(raw.finalAccountName),
         finalAuthIndex: Number.isInteger(raw.finalAuthIndex) ? raw.finalAuthIndex : null,
         finishedAtMs: Math.round(finishedAtMs),
@@ -292,6 +312,11 @@ function insertRequest(record) {
             return { inserted: false, invalid: false };
         }
         const rowId = Number(result.lastInsertRowid);
+        db.prepare("UPDATE requests SET response_http_status=?,error_json=? WHERE id=?").run(
+            r.responseHttpStatus,
+            r.error ? JSON.stringify(r.error) : null,
+            rowId
+        );
         if (r.tokenAttempts.length)
             db.prepare("UPDATE requests SET token_attempts_json=? WHERE id=?").run(
                 JSON.stringify(r.tokenAttempts),
@@ -478,6 +503,8 @@ function rowToRecord(row) {
         finalAuthIndex: row.final_auth_index,
         startedAt: iso(row.started_at_ms),
         errorMessage: row.error_message,
+        error: row.error_json ? JSON.parse(row.error_json) : null,
+        responseHttpStatus: row.response_http_status,
         model: row.model,
         attemptCount: row.attempt_count,
         path: row.path,
