@@ -220,6 +220,70 @@ test("per-attempt service usage merges snapshots without moving charges to the f
     assert.equal(rows.find(r => r.tier === "free").total, 120);
     assert.equal(rows.find(r => r.tier === "pro").unknown_requests, 1);
 });
+test("token metadata excludes runtime services and invalid dimensions at the real Worker boundary", async t => {
+    const errors = [];
+    const service = new UsageStatsService(null, { ...logger, error: message => errors.push(message) }, temp(t));
+    await service.ready;
+    t.after(() => service.close());
+    service.startRequest("metadata", { model: "build/gemini-3.8-flash", requestCategory: "generation" });
+    service.recordAttempt("metadata", 0);
+    service.recordTokenUsage(
+        "metadata",
+        "valid",
+        { total_tokens: 12 },
+        {
+            accountKey: "fixture",
+            day: "2026-11-01",
+            model: "build/gemini-3.8-flash",
+            recoveryManager: { task: Promise.resolve(), wake() {} },
+            tier: "free",
+            usage: { total_tokens: 999 },
+        }
+    );
+    service.recordTokenUsage(
+        "metadata",
+        "invalid",
+        { total_tokens: 3 },
+        {
+            accountKey: {},
+            day: Promise.resolve(),
+            model: () => "invalid",
+            tier: [],
+        }
+    );
+    const record = service.finishRequest("metadata", { outcome: "success", statusCode: 200 });
+    assert.deepEqual(record.tokenAttempts[0], {
+        accountKey: "fixture",
+        day: "2026-11-01",
+        model: "build/gemini-3.8-flash",
+        tier: "free",
+        usage: { total_tokens: 12 },
+    });
+    assert.deepEqual(record.tokenAttempts[1], { usage: { total_tokens: 3 } });
+    await service.appendPromise;
+    const records = await service.storage.call("export", {});
+    assert.equal(records.length, 1);
+    assert.equal(records[0].requestId, "metadata");
+    assert.equal(records[0].outcome, "success");
+    assert.equal(records[0].usage.total_tokens, 15);
+    const tokens = (await service.getTokenStatistics({ day: "2026-11-01" })).models;
+    assert.equal(tokens.find(row => row.tier === "free").total, 12);
+    assert.deepEqual(errors, []);
+});
+test("Worker clone failure releases pending calls and permits subsequent database operations", async t => {
+    const storage = new UsageStatsStorage({ dbPath: path.join(temp(t), "clone.sqlite") });
+    await storage.ready;
+    t.after(() => storage.close());
+    const valid = storage.call("query", { limit: 10 });
+    for (const payload of [{ bad: Promise.resolve() }, { bad() {} }]) {
+        await assert.rejects(storage.call("insert", payload), { name: "DataCloneError" });
+    }
+    assert.equal((await valid).records.length, 0);
+    assert.equal(storage.pending.size, 0);
+    await storage.call("insert", rec("after-clone", { outcome: "success", statusCode: 200 }));
+    assert.equal((await storage.call("export", {}))[0].requestId, "after-clone");
+    assert.equal(storage.pending.size, 0);
+});
 test("cluster token quota merging keeps missing nodes and old agents partial; pool totals never duplicate cached tokens", async t => {
     const s = scheduler(t),
         l = await s.acquire("gemini-3.8-flash");

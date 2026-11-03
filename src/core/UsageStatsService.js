@@ -225,7 +225,14 @@ class UsageStatsService {
         const tracker = this.activeRequests.get(requestId);
         if (!tracker) return;
         tracker.tokenAttempts ||= new Map();
-        const entry = tracker.tokenAttempts.get(attemptId) || { usage: {}, ...metadata };
+        let entry = tracker.tokenAttempts.get(attemptId);
+        if (!entry) {
+            // Only metering dimensions cross the database Worker boundary.
+            // Runtime services may contain promises, functions and private state.
+            entry = { usage: {} };
+            for (const key of ["accountKey", "day", "model", "tier"])
+                if (typeof metadata?.[key] === "string" && metadata[key].length) entry[key] = metadata[key];
+        }
         for (const key of require("./TokenUsage").FIELDS)
             if (usage?.[key] !== undefined) entry.usage[key] = Math.max(entry.usage[key] || 0, usage[key]);
         tracker.tokenAttempts.set(attemptId, entry);

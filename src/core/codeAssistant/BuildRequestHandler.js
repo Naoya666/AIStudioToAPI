@@ -190,7 +190,6 @@ async function process(handler, req, res) {
             accountKey: account.key,
             day: require("../../public/DashboardProtocol").usageDate(Date.now()),
             model: prepared.identity.canonical,
-            recoveryManager: system.buildRecoveryManager,
             tier,
         });
         const result = await runtime.generate(prepared.identity, prepared.context, {

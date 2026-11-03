@@ -42,7 +42,13 @@ class UsageStatsStorage {
         return new Promise((resolve, reject) => {
             this.worker.ref();
             this.pending.set(id, { reject, resolve });
-            this.worker.postMessage({ command, id, payload });
+            try {
+                this.worker.postMessage({ command, id, payload });
+            } catch (error) {
+                this.pending.delete(id);
+                if (!this.pending.size) this.worker.unref();
+                reject(error);
+            }
         });
     }
 

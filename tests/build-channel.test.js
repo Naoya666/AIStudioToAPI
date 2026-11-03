@@ -1339,6 +1339,67 @@ test("synthetic end-to-end quota response, SQLite history and scheduler share on
     assert.equal(calls.filter(c => c.method === "CancelCodeAssistantOfflineGeneration").length, 0);
 });
 
+for (const outcome of ["success", "error", "aborted"])
+    test(`Build ${outcome} persists history and tokens with a live recovery service`, async t => {
+        const UsageStatsService = require("../src/core/UsageStatsService");
+        const RequestHandler = require("../src/core/RequestHandler");
+        const errors = [];
+        const stats = new UsageStatsService(null, { error: message => errors.push(message), warn() {} }, temp(t));
+        await stats.ready;
+        t.after(() => stats.close());
+        const f = handlerFixture(t);
+        f.h.serverSystem.scheduler.recordTokenUsage = () => {};
+        // This mirrors the non-cloneable runtime service missing from earlier fixtures.
+        f.h.serverSystem.buildRecoveryManager = { isSessionCurrent: () => true, task: Promise.resolve() };
+        f.h._getUsageStatsService = () => stats;
+        f.h._getClientIp = () => "127.0.0.1";
+        for (const method of ["_startTrackedRequest", "_updateTrackedRequest", "_finalizeTrackedRequest"])
+            f.h[method] = RequestHandler.prototype[method];
+        const recordUsage = stats.recordTokenUsage.bind(stats);
+        stats.recordTokenUsage = (id, attempt, usage, metadata) => {
+            assert.equal(Object.hasOwn(metadata || {}, "recoveryManager"), false);
+            recordUsage(id, attempt, usage, metadata);
+        };
+        const runtime = f.h.browserManager.contexts.get(0).page.codeAssistantRuntime;
+        const generate = runtime.generate;
+        runtime.generate = async (...args) => {
+            const usage = { completion_tokens: 2, prompt_tokens: 10, total_tokens: 12 };
+            args[2].onUsage(usage);
+            if (outcome === "aborted") {
+                f.res.destroyed = true;
+                f.res.emit("close");
+            }
+            if (outcome !== "success")
+                throw BuildErrors.buildError({
+                    message: "Fixture generation failure",
+                    phase: "poll",
+                    status: 503,
+                    usage,
+                });
+            return generate(...args);
+        };
+        let requestId;
+        f.res.setHeader = (name, value) => {
+            if (name === "X-Request-ID") requestId = value;
+        };
+        await processBuild(f.h, { body: { ...base, stream: true }, method: "POST" }, f.res);
+        await stats.appendPromise;
+        const records = await stats.storage.call("export", {});
+        assert.equal(records.length, 1);
+        assert.equal(records[0].requestId, requestId);
+        assert.equal(records[0].outcome, outcome);
+        assert.equal(records[0].statusCode, outcome === "success" ? 200 : outcome === "error" ? 503 : 499);
+        assert.equal(records[0].usage.total_tokens, 12);
+        const day = require("../src/public/DashboardProtocol").usageDate(Date.now());
+        const tokens = (await stats.getTokenStatistics({ day })).models;
+        assert.equal(tokens.length, 1);
+        assert.equal(tokens[0].model, "build/gemini-3.8-flash");
+        assert.equal(tokens[0].total, 12);
+        assert.equal(tokens[0].known_requests, 1);
+        assert.equal(stats.storage.pending.size, 0);
+        assert.deepEqual(errors, []);
+    });
+
 test("runtime returns cleanup diagnosis on its own successful result and keeps it across a later recovery", async t => {
     const { r } = runtime(t),
         original = r.rpc;
