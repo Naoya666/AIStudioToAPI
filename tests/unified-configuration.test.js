@@ -479,3 +479,37 @@ test("recovery preserves explicit auto-relogin opt-out over an older last-good s
     assert.equal(recovered.saved.login.autoRecovery, false);
     assert.equal(recovered.snapshot().pending.length, 0);
 });
+
+test("tail repair defaults, environment, hot persistence, snapshots, resets and conflicts", t => {
+    assert.equal(setup(t).service.running.tailRepairEnabled, false);
+    for (const value of ["TRUE", "true", "False", "false"])
+        assert.equal(
+            setup(t, { TAIL_REPAIR_ENABLED: value }).service.running.tailRepairEnabled,
+            value.toLowerCase() === "true"
+        );
+    for (const value of ["", "yes", "1", 1, null, {}])
+        assert.throws(() => setup(t, { TAIL_REPAIR_ENABLED: value }), /Invalid TAIL_REPAIR_ENABLED/);
+    const { service, save, system } = setup(t, { TAIL_REPAIR_ENABLED: "true" });
+    const handler = new RequestHandler(system, {}, logger, {}, system.config, {});
+    const version = service.document.version;
+    handler.withConfigurationSnapshot(() => {
+        const result = save({ TAIL_REPAIR_ENABLED: false });
+        assert.ok(result.applied.includes("TAIL_REPAIR_ENABLED"));
+        assert.equal(handler.config.tailRepairEnabled, true);
+        assert.equal(system.config.tailRepairEnabled, false);
+    });
+    assert.equal(handler.config.tailRepairEnabled, false);
+    assert.equal(
+        new ConfigurationService({ logger }, { env: { TAIL_REPAIR_ENABLED: "true" }, file: service.file }).running
+            .tailRepairEnabled,
+        false
+    );
+    assert.throws(() => service.save({ changes: { TAIL_REPAIR_ENABLED: true }, version }), { status: 409 });
+    for (const value of ["false", "true", 0, null, {}])
+        assert.throws(() => save({ TAIL_REPAIR_ENABLED: value }), { status: 400 });
+    const before = structuredClone(service.document.overrides);
+    service.save({ reset: ["TAIL_REPAIR_ENABLED"], version: service.document.version });
+    delete before.TAIL_REPAIR_ENABLED;
+    assert.deepEqual(service.document.overrides, before);
+    assert.equal(service.running.tailRepairEnabled, true);
+});

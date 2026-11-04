@@ -107,6 +107,22 @@ test(
         );
         assert.equal(service.running.forceThinking, true);
         assert.deepEqual(Object.keys(writes.at(-1).changes), ["FORCE_THINKING"]);
+        const tailSwitch = panel.locator("#config-TAIL_REPAIR_ENABLED");
+        assert.equal(await tailSwitch.getAttribute("aria-checked"), "false");
+        await panel.getByRole("button", { exact: true, name: "尾部修复说明" }).click();
+        await page.getByText(/向 Google 发起生成前/).waitFor();
+        await panel.getByRole("button", { exact: true, name: "尾部修复说明" }).click();
+        await tailSwitch.locator("..").click();
+        assert.equal(service.running.tailRepairEnabled, false);
+        await panel.getByRole("button", { exact: true, name: "保存" }).click();
+        await page.waitForFunction(() =>
+            document.querySelector(".configuration-panel")?.textContent.includes("立即生效：尾部修复")
+        );
+        assert.equal(service.running.tailRepairEnabled, true);
+        assert.deepEqual(Object.keys(writes.at(-1).changes), ["TAIL_REPAIR_ENABLED"]);
+        await page.reload();
+        await page.getByRole("navigation").getByRole("button", { exact: true, name: "设置" }).click();
+        assert.equal(await tailSwitch.getAttribute("aria-checked"), "true");
         const permissions = panel.locator(".allowlist-editor");
         const collapse = panel.locator(".model-settings-collapse");
         assert.equal(await collapse.getAttribute("open"), null);
@@ -286,6 +302,8 @@ test(
         await panel.getByText("新实例启动成功，已确认保存配置实际生效。").waitFor();
         assert.equal(writes.length, writesBeforeRestart);
         assert.equal(service.running.publicDashboard.enabled, true);
+        assert.equal(service.running.tailRepairEnabled, true);
+        assert.equal(await tailSwitch.getAttribute("aria-checked"), "true");
         assert.equal(service.saved.forceUrlContext, false);
         assert.equal(await panel.locator("#config-FORCE_URL_CONTEXT").getAttribute("aria-checked"), "true");
         await panel.getByRole("button", { exact: true, name: "放弃草稿" }).click();

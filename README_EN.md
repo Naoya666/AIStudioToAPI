@@ -289,3 +289,9 @@ See the [incremental streaming implementation and live validation record](docs/z
 See the [mode preservation correction and validation record](docs/zh/playground-stream-modes-20261029.md).
 
 See [Playground capabilities](docs/zh/playground-capabilities.md) for tools, structured output, account-bound Drive files, local cachedContents, and proof recovery. Embeddings remain unsupported.
+
+### Tail repair
+
+Settings → Request processing and model features → 尾部修复 (`TAIL_REPAIR_ENABLED`, default `false`). Panel changes apply immediately to new requests and persist in `data/managed-config.json`, overriding the environment baseline; resetting restores the environment or built-in default.
+For Google generation through Chat Completions, Responses, Claude Messages, and native Gemini `/proxy`, a final model turn receives a nonempty user continuation instruction. This covers non-streaming, real, fake, and early modes. An existing user tail (including anti-truncation injection) is preserved, and retries reuse the constructed body.
+The instruction may affect continuation and adds input tokens. Counting, embeddings, uploads, and Build/SillyTavern Build attachment channels are excluded. Independent token estimates may therefore differ from generation usage; actual upstream usage is retained.

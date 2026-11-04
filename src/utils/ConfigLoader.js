@@ -52,6 +52,7 @@ class ConfigLoader {
             streamingMode: "real",
             streamTimeoutMs: 60000,
             switchOnUses: 40,
+            tailRepairEnabled: false,
             usageStorage: {
                 cleanupBatchSize: 1000,
                 cleanupIntervalMinutes: 60,
@@ -109,6 +110,11 @@ class ConfigLoader {
             if (!["true", "false"].includes(String(env.ANTI_TRUNCATION_ENABLED).toLowerCase()))
                 throw new Error("Invalid ANTI_TRUNCATION_ENABLED: expected true or false");
             config.antiTruncationEnabled = String(env.ANTI_TRUNCATION_ENABLED).toLowerCase() === "true";
+        }
+        if (env.TAIL_REPAIR_ENABLED !== undefined) {
+            if (!["true", "false"].includes(String(env.TAIL_REPAIR_ENABLED).toLowerCase()))
+                throw new Error("Invalid TAIL_REPAIR_ENABLED: expected true or false");
+            config.tailRepairEnabled = String(env.TAIL_REPAIR_ENABLED).toLowerCase() === "true";
         }
         if (env.ANTI_TRUNCATION_DEFAULT !== undefined) {
             if (!["off", "prefer"].includes(env.ANTI_TRUNCATION_DEFAULT))

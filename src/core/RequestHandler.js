@@ -14,6 +14,7 @@ const { isArgon, benefitError } = require("./BuildBenefitContext");
  * Main request handler that coordinates between other modules
  */
 const AntiTruncation = require("./AntiTruncation");
+const { repairGoogleTail } = require("./TailRepair");
 const { geminiStatus, normalizeError } = require("../utils/UpstreamError");
 const { isPromptBlocked } = require("../utils/UpstreamBlock");
 const GenerationResponseGuard = require("../utils/GenerationResponseGuard");
@@ -1442,7 +1443,7 @@ class RequestHandler {
                 const result = await this.formatConverter.translateOpenAIToGoogle(injected.body, {
                     privateTransport: policy.enabled,
                 });
-                googleBody = result.googleRequest;
+                googleBody = this._repairGoogleTail(result.googleRequest, requestId, "openai");
                 model = result.cleanModelName;
                 modelStreamingMode = result.modelStreamingMode || null;
             } catch (error) {
@@ -1964,7 +1965,7 @@ class RequestHandler {
             let googleBody, model, modelStreamingMode;
             try {
                 const result = await this.formatConverter.translateOpenAIResponseToGoogle(req.body);
-                googleBody = result.googleRequest;
+                googleBody = this._repairGoogleTail(result.googleRequest, requestId, "responses");
                 model = result.cleanModelName;
                 modelStreamingMode = result.modelStreamingMode || null;
             } catch (error) {
@@ -2385,7 +2386,7 @@ class RequestHandler {
             let googleBody, model, modelStreamingMode;
             try {
                 const result = await this.formatConverter.translateClaudeToGoogle(req.body);
-                googleBody = result.googleRequest;
+                googleBody = this._repairGoogleTail(result.googleRequest, requestId, "claude");
                 model = result.cleanModelName;
                 modelStreamingMode = result.modelStreamingMode || null;
             } catch (error) {
@@ -4756,17 +4757,26 @@ class RequestHandler {
         }
     }
 
+    _repairGoogleTail(body, requestId, protocol) {
+        const result = repairGoogleTail(body, this.config.tailRepairEnabled === true);
+        if (result.repaired)
+            this.logger.info(
+                `[TailRepair] request=${requestId} protocol=${protocol} previous_role=model appended=true`
+            );
+        return result.body;
+    }
+
     _buildProxyRequest(req, requestId) {
         const fullPath = req.__antiNormalizedPath || req.path;
         let cleanPath = fullPath.replace(/^\/proxy/, "");
-        const bodyObj = req.body;
+        const bodyObj = structuredClone(req.body);
         let requestBodyObj = bodyObj;
         let responseTransform = null;
 
         // Parse model suffixes from model name in native Gemini generation requests
         // Only handle generation requests: /v1beta/models/{modelName}:generateContent or :streamGenerateContent
         const modelPathMatch = cleanPath.match(
-            /^(\/v1beta\/models\/)([^:]+)(:(generateContent|streamGenerateContent).*)$/
+            /^(\/v1beta\/models\/)([^:]+)(:(generateContent|streamGenerateContent))$/
         );
         let modelThinkingLevel = null;
         let modelStreamingMode = null;
@@ -4940,6 +4950,10 @@ class RequestHandler {
         // Apply safety settings for native Google requests (only if not already provided)
         if (req.method === "POST" && bodyObj && bodyObj.contents && !bodyObj.safetySettings) {
             bodyObj.safetySettings = this.formatConverter.getDefaultSafetySettings();
+        }
+
+        if (req.method === "POST" && modelPathMatch) {
+            requestBodyObj = this._repairGoogleTail(requestBodyObj, requestId, "gemini");
         }
 
         const outputMode = (modelStreamingMode || this.config.streamingMode) === "real" ? "real" : "fake";

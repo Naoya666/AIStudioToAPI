@@ -253,6 +253,18 @@ module.exports = [
 
     {
         application: "hot",
+        description:
+            "向 Google 发起生成前，若最后一条有效对话消息不是 user，则追加 user 继续响应指令。可能影响续写效果并增加少量输入 Token；保存后对新请求生效。",
+        group: "请求处理与模型功能",
+        label: "尾部修复",
+        mode: "all",
+        name: "TAIL_REPAIR_ENABLED",
+        path: "tailRepairEnabled",
+        type: "boolean",
+        unit: "",
+    },
+    {
+        application: "hot",
         description: "抗截断能力总开关；关闭时显式 anti 请求返回 HTTP 400。更新只影响新请求。",
         group: "请求处理与模型功能",
         label: "启用抗截断能力",
