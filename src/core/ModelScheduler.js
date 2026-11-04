@@ -85,6 +85,16 @@ function isValidDateKey(value) {
     return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
+function isBuildQuotaRotation(error, model) {
+    return (
+        model?.startsWith("build/") &&
+        error.source === "google_task" &&
+        error.phase === "poll" &&
+        typeof error.upstreamError?.message === "string" &&
+        error.upstreamError.message.trim() === "Quota exceeded. Please try again later."
+    );
+}
+
 function classifyRateLimit(error, now) {
     if (error.source?.startsWith("google_") && error.rateLimit?.type === "temporary")
         return {
@@ -1059,6 +1069,7 @@ class ModelScheduler {
     }
 
     tokenQuotaSnapshot(model, indices = this.authSource.getRotationIndices(), now = this.now()) {
+        model = normalizeModelName(model);
         const date = this.getPacificDateKey(now),
             build = model.startsWith("build/");
         const { dailyBudgets } = require("../accounts/QuotaPolicy");
@@ -1078,7 +1089,7 @@ class ModelScheduler {
                 { freeBuildEstimate: this.config.buildFreeDailyTokenEstimate || 0 }
             );
             const slots = Object.entries(account?.models || {})
-                .filter(([name]) => (build ? name.startsWith("build/") : name === model))
+                .filter(([name]) => name === model)
                 .map(([, slot]) => slot);
             let used = 0;
             for (const slot of slots) {
@@ -1106,9 +1117,9 @@ class ModelScheduler {
             known_usage_requests: knownRequests,
             limit: unknownLimits ? null : limit,
             observed_tokens: knownRequests ? totals : null,
-            pool: build ? "build" : model,
-            scope: build ? "build/account" : "pg/model",
-            source: "operator_observation_2026-11-02",
+            pool: model,
+            scope: build ? "build/model" : "pg/model",
+            source: build ? "operator_observation_2026-11-04" : "operator_observation_2026-11-02",
             token_metric: "total_tokens",
             unknown_limit_accounts: unknownLimits,
             unknown_usage_requests: unknownUsage,
@@ -1145,7 +1156,8 @@ class ModelScheduler {
             lease.recorded = true;
             return;
         }
-        const kind = classifyError(error);
+        const buildRotation = isBuildQuotaRotation(error, lease.model);
+        const kind = buildRotation ? "rate_limited" : classifyError(error);
         if (["BUILD_BENEFIT_NOT_READY", "MODEL_TIER_DENIED", "MODEL_DISABLED", "UNKNOWN_MODEL"].includes(error.code))
             return;
         if (kind === "aborted" || kind === "bridge_auth" || kind === "capability") return;
@@ -1191,26 +1203,33 @@ class ModelScheduler {
         if (kind === "unsupported") slot.unsupported = true;
         if (kind === "rate_limited") {
             const now = this.now();
-            const policy = classifyRateLimit(error, now);
+            const policy = buildRotation ? { type: "build_quota_rotation" } : classifyRateLimit(error, now);
             const deadline =
-                policy.type === "daily_quota"
-                    ? calculateNextPacificResetAt(now, this.config.dailyResetTime, null, true)
-                    : now + (policy.cooldownMs ?? this.config.rateLimitCooldownMs);
+                policy.type === "build_quota_rotation"
+                    ? calculateNextPacificResetAt(now, "00:00", null, true)
+                    : policy.type === "daily_quota"
+                      ? calculateNextPacificResetAt(now, this.config.dailyResetTime, null, true)
+                      : now + (policy.cooldownMs ?? this.config.rateLimitCooldownMs);
             const existingQuota =
                 slot.rate_limited &&
-                ["daily_quota", "usage_limit"].includes(slot.rate_limit_type) &&
+                ["daily_quota", "usage_limit", "build_quota_rotation"].includes(slot.rate_limit_type) &&
                 slot.cooldown_until > now;
             slot.rate_limited = true;
-            // Concurrent short limits and successes must not shorten confirmed quota blocks.
+            // Concurrent short limits and successes must not shorten quota or local rotation blocks.
             if (!existingQuota || (policy.type !== "temporary" && deadline > slot.cooldown_until)) {
-                slot.rate_limit_type = policy.type;
-                slot.cooldown_until = deadline;
+                slot.rate_limit_type =
+                    existingQuota && slot.rate_limit_type === "build_quota_rotation"
+                        ? slot.rate_limit_type
+                        : policy.type;
+                slot.cooldown_until = Math.max(slot.cooldown_until || 0, deadline);
             }
         }
 
         if (kind === "temporary")
-            slot.cooldown_until =
-                Date.now() + this.config.tempErrorCooldownMs * Math.min(4, 2 ** (slot.consecutive_failures - 1));
+            slot.cooldown_until = Math.max(
+                slot.cooldown_until || 0,
+                this.now() + this.config.tempErrorCooldownMs * Math.min(4, 2 ** (slot.consecutive_failures - 1))
+            );
         if (kind === "risk_controlled") {
             const multipliers = [1, 3, 6, 18];
             const multiplier = multipliers[Math.min(slot.risk_control_failures - 1, multipliers.length - 1)];
@@ -1219,7 +1238,7 @@ class ModelScheduler {
                 this.config.riskControlMaxCooldownMs,
                 Math.round(this.config.riskControlCooldownMs * multiplier * jitter)
             );
-            slot.cooldown_until = this.now() + cooldown;
+            slot.cooldown_until = Math.max(slot.cooldown_until || 0, this.now() + cooldown);
             this.logger.warn?.(
                 `[Scheduler] Risk control account #${account.index}, model ${lease.model}, consecutive=${slot.risk_control_failures}, cooldown_until=${slot.cooldown_until}`
             );
@@ -1380,8 +1399,13 @@ class ModelScheduler {
             const account = this.account(index);
             let accountChanged = false;
             for (const slot of Object.values(account.models)) {
-                // An explicit upstream reset may fall after the local daily reset.
-                if (slot.rate_limited && slot.rate_limit_type === "usage_limit" && slot.cooldown_until > this.now())
+                // Build rotation expires lazily at midnight, independently of bulk resets.
+                // An explicit upstream reset may also fall after the local daily reset.
+                if (
+                    slot.rate_limited &&
+                    (slot.rate_limit_type === "build_quota_rotation" ||
+                        (slot.rate_limit_type === "usage_limit" && slot.cooldown_until > this.now()))
+                )
                     continue;
 
                 const changed = Boolean(

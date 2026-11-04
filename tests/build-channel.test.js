@@ -1153,11 +1153,11 @@ test("Build quota classification shares aliases, isolates PG and preserves confi
     await scheduler.failure(leases[0], error);
     const slot = leases[0].slot;
     assert.equal(slot.last_error_kind, "rate_limited");
-    assert.equal(slot.rate_limit_type, "temporary");
+    assert.equal(slot.rate_limit_type, "build_quota_rotation");
     assert.equal(leases[1].slot, slot);
     assert.equal(leases[2].slot, slot);
     assert.equal(scheduler.slot(leases[0].account, "gemini-3.8-flash").cooldown_until, 0);
-    const confirmedDeadline = Date.now() + 3600000;
+    const confirmedDeadline = slot.cooldown_until + 3600000;
     slot.rate_limit_type = "daily_quota";
     slot.cooldown_until = confirmedDeadline;
     await scheduler.failure(leases[1], error);
@@ -1322,7 +1322,7 @@ test("synthetic end-to-end quota response, SQLite history and scheduler share on
     assert.ok(f.res.output.includes(record.errorMessage));
     const slot = scheduler.slot(scheduler.account(0), "build/gemini-3.8-flash");
     assert.equal(slot.last_error_kind, "rate_limited");
-    assert.equal(slot.rate_limit_type, "temporary");
+    assert.equal(slot.rate_limit_type, "build_quota_rotation");
     t.diagnostic(
         JSON.stringify({
             error: record.error,

@@ -1,6 +1,11 @@
 const { count } = require("../core/TokenUsage");
 function validateTokenQuota(q) {
-    if (!q || !["pg/model", "build/account"].includes(q.scope) || typeof q.pool !== "string" || q.pool.length > 256)
+    if (
+        !q ||
+        !["pg/model", "build/account", "build/model"].includes(q.scope) ||
+        typeof q.pool !== "string" ||
+        q.pool.length > 256
+    )
         return false;
     if (
         !q.window ||
@@ -52,7 +57,7 @@ function mergeTokenQuotas(rows) {
         observed_tokens: Object.keys(observed).length ? observed : null,
         pool: first.pool,
         scope: first.scope,
-        source: "operator_observation_2026-11-02",
+        source: first.source,
         token_metric: "total_tokens",
         unknown_limit_accounts: sum("unknown_limit_accounts"),
         unknown_usage_requests: sum("unknown_usage_requests"),

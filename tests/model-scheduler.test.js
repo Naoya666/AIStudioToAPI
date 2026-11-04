@@ -1777,3 +1777,123 @@ test("shorter usage countdown cannot shorten a daily block and later confirmed u
     assert.equal(leases[0].slot.rate_limit_type, "usage_limit");
     leases.forEach(lease => scheduler.release(lease));
 });
+
+test("Build task quota rotates only its canonical model until Pacific midnight across restart and renumbering", async t => {
+    const { buildError } = require("../src/core/codeAssistant/BuildError");
+    for (const [start, end] of [
+        ["2026-03-08T08:00:00Z", "2026-03-09T07:00:00Z"],
+        ["2026-11-01T07:00:00Z", "2026-11-02T08:00:00Z"],
+    ]) {
+        let now = Date.parse(start);
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "build-rotation-"));
+        t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+        const config = {
+            buildConcurrency: 4,
+            dailyResetEnabled: false,
+            dailyResetTime: "02:30",
+            now: () => now,
+            statePath: path.join(directory, "state.json"),
+        };
+        const s = setup(config, 2);
+        t.after(() => s.close());
+        s.authSource.accountNameMap = new Map([
+            [0, "stable-a"],
+            [1, "stable-b"],
+        ]);
+        const leases = [];
+        for (const model of [
+            "build/gemini-3.8-flash",
+            "build-st/gemini-3.8-flash",
+            "anti-build-st/gemini-3.8-flash-high",
+        ])
+            leases.push(await s.acquire(model, new Set(["stable-b"])));
+        leases.forEach(l => s.startAttempt(l));
+        const error = buildError({
+            httpStatus: 200,
+            message: "  Quota exceeded. Please try again later.  ",
+            phase: "poll",
+            source: "google_task",
+        });
+        s.failure(leases[0], error);
+        const slot = leases[0].slot;
+        assert.equal(slot.cooldown_until, Date.parse(end));
+        assert.equal(slot.rate_limit_type, "build_quota_rotation");
+        assert.equal(slot.daily_failure_count, 1);
+        assert.equal(slot, leases[1].slot);
+        s.release(leases[2], true);
+        assert.equal(slot.cooldown_until, Date.parse(end));
+        // A bulk reset running later than midnight cannot erase a fresh rotation.
+        s.resetDailyCooldowns();
+        assert.equal(slot.cooldown_until, Date.parse(end));
+        now += 60000;
+        s.failure(leases[1], error);
+        assert.equal(slot.cooldown_until, Date.parse(end));
+        const other = await s.acquire("build/gemini-3.8-flash");
+        assert.equal(other.account.key, "stable-b");
+        s.release(other);
+        const pg = await s.acquire("gemini-3.8-flash", new Set(["stable-b"]));
+        assert.equal(pg.account.key, "stable-a");
+        s.release(pg);
+        assert.equal(s.slot(leases[0].account, "build/gemini-4-argon", now).cooldown_until, 0);
+        leases.forEach(l => s.release(l));
+        s.close();
+        const restored = setup(config, 2);
+        t.after(() => restored.close());
+        restored.authSource.accountNameMap = new Map([
+            [1, "stable-a"],
+            [0, "stable-b"],
+        ]);
+        const account = restored.account(1);
+        assert.equal(restored.slot(account, "build/gemini-3.8-flash", now).cooldown_until, Date.parse(end));
+        account.disabled = true;
+        account.healthy = false;
+        const restoredSlot = account.models["build/gemini-3.8-flash"];
+        restoredSlot.unsupported = true;
+        now = Date.parse(end);
+        assert.equal(restored.slot(account, "build/gemini-3.8-flash", now).rate_limited, false);
+        assert.equal(account.disabled, true);
+        assert.equal(account.healthy, false);
+        assert.equal(restoredSlot.unsupported, true);
+        // A late old-day request error is processed against the current day.
+        account.disabled = false;
+        account.healthy = true;
+        restoredSlot.unsupported = false;
+        const late = await restored.acquire("build/gemini-3.8-flash", new Set(["stable-b"]));
+        restored.failure(late, error);
+        assert.ok(late.slot.cooldown_until > now);
+        restored.release(late);
+    }
+});
+
+test("Build rotation excludes other quota sources, phases, text, PG and secondary cleanup errors", async t => {
+    const { buildError } = require("../src/core/codeAssistant/BuildError");
+    const base = {
+        httpStatus: 200,
+        message: "Quota exceeded. Please try again later.",
+        phase: "poll",
+        source: "google_task",
+    };
+    for (const [model, override] of [
+        ["build/gemini-3.8-flash", { rpcCode: 8, source: "google_rpc" }],
+        ["build/gemini-3.8-flash", { httpStatus: 429, source: "google_http" }],
+        ["build/gemini-3.8-flash", { phase: "cleanup" }],
+        ["build/gemini-3.8-flash", { message: "Quota exceeded. Please try again later. Other quota." }],
+        ["gemini-3.8-flash", {}],
+    ]) {
+        const now = Date.parse("2026-11-04T10:00:00Z");
+        const s = setup({ dailyResetEnabled: false, now: () => now }, 1);
+        t.after(() => s.close());
+        const lease = await s.acquire(model);
+        s.failure(lease, buildError({ ...base, ...override }));
+        assert.equal(lease.slot.rate_limit_type, "temporary");
+        s.release(lease);
+    }
+    const s = setup({ dailyResetEnabled: false }, 1);
+    t.after(() => s.close());
+    const lease = await s.acquire("build/gemini-3.8-flash");
+    s.recordTokenUsage(lease, { total_tokens: 30000000 });
+    assert.equal(lease.slot.cooldown_until, 0);
+    s.failure(lease, Object.assign(new Error("Network timeout"), { secondaryErrors: [buildError(base)], status: 504 }));
+    assert.notEqual(lease.slot.rate_limit_type, "build_quota_rotation");
+    s.release(lease);
+});

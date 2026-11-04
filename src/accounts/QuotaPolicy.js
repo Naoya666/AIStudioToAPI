@@ -1,4 +1,4 @@
-// Operator-provided observations, 2026-11-02. Estimates, not Google guarantees.
+// Operator-provided observations, PG 2026-11-02 / Build 2026-11-04. Estimates, not Google guarantees.
 const FLASH = new Set([
     "gemini-3.8-flash",
     "gemini-3.6-flash",
@@ -11,15 +11,22 @@ function dailyBudgets(model, tier = "free", { freeBuildEstimate = 0 } = {}) {
     const base = {
         requests: null,
         reset_verified: false,
-        scope: build ? "build/account" : "pg/model",
-        source: "operator_observation_2026-11-02",
+        scope: build ? "build/model" : "pg/model",
+        source: build ? "operator_observation_2026-11-04" : "operator_observation_2026-11-02",
         token_metric: "total_tokens",
         tokens: null,
     };
     if (build)
         return {
             ...base,
-            tokens: tier === "pro" ? 20000000 : tier === "free" && freeBuildEstimate > 0 ? freeBuildEstimate : null,
+            tokens:
+                model === "build/gemini-4-argon" && tier === "pro"
+                    ? 20000000
+                    : model === "build/gemini-3.8-flash" && tier === "free"
+                      ? freeBuildEstimate > 0
+                          ? freeBuildEstimate
+                          : 8000000
+                      : null,
         };
     if (["ultra", "ultra20"].includes(tier)) return base;
     if (model === "gemini-4-argon")

@@ -27,7 +27,7 @@ function scheduler(t, { tier = "pro", statePath = null } = {}) {
     t.after(() => s.close());
     return s;
 }
-test("operator PG requests and token budgets are exact; Ultra and Free Build stay unknown", () => {
+test("operator model budgets preserve unknown Ultra and Pro Build Flash", () => {
     const flash = [
         "gemini-3.8-flash",
         "gemini-3.6-flash",
@@ -54,7 +54,8 @@ test("operator PG requests and token budgets are exact; Ultra and Free Build sta
             assert.equal(dailyBudgets(m, tier).tokens, null);
         }
     assert.equal(dailyBudgets("build/gemini-4-argon", "pro").tokens, 20000000);
-    assert.equal(dailyBudgets("build/gemini-3.8-flash", "free").tokens, null);
+    assert.equal(dailyBudgets("build/gemini-3.8-flash", "pro").tokens, null);
+    assert.equal(dailyBudgets("build/gemini-3.8-flash", "free").tokens, 8000000);
 });
 test("Gemini totals remain authoritative; cached and reasoning are subsets, missing metrics remain absent", () => {
     const u = Usage.normalize(
@@ -91,16 +92,16 @@ test("cumulative snapshots, alias sharing and separate PG quota survive schedule
     s.recordTokenUsage(b, { total_tokens: 30 }, "other");
     s.release(b);
     const q = s.tokenQuotaSnapshot("build/gemini-3.8-flash");
-    assert.equal(q.observed_tokens.total_tokens, 150);
-    assert.equal(q.known_usage_requests, 2);
-    assert.equal(q.limit, 20000000);
-    assert.equal(q.estimated_remaining, 19999850);
-    assert.equal(q.scope, "build/account");
+    assert.equal(q.observed_tokens.total_tokens, 120);
+    assert.equal(q.known_usage_requests, 1);
+    assert.equal(q.limit, null);
+    assert.equal(q.estimated_remaining, null);
+    assert.equal(q.scope, "build/model");
     assert.equal(q.window.reset_verified, false);
     assert.equal(s.tokenQuotaSnapshot("gemini-3.8-flash").observed_tokens, null);
     s.flush();
     const restored = scheduler(t, { statePath: file });
-    assert.equal(restored.tokenQuotaSnapshot("build/gemini-4-argon").observed_tokens.total_tokens, 150);
+    assert.equal(restored.tokenQuotaSnapshot("build/gemini-4-argon").observed_tokens.total_tokens, 30);
 });
 test("missing usage creates an upper bound, never an exact remaining balance or local enforcement", async t => {
     const s = scheduler(t);
@@ -114,7 +115,7 @@ test("missing usage creates an upper bound, never an exact remaining balance or 
     assert.equal(q.observed_tokens, null);
     assert.equal(s.canLease(lease.account, lease.model), true);
     const free = scheduler(t, { tier: "free" });
-    assert.equal(free.tokenQuotaSnapshot("build/gemini-3.8-flash").limit, null);
+    assert.equal(free.tokenQuotaSnapshot("build/gemini-3.8-flash").limit, 8000000);
 });
 test("day windows preserve late usage and separate new-day requests", async t => {
     const s = scheduler(t),
@@ -315,7 +316,7 @@ test("unknown upstream attempts stay unknown even when another attempt on the sa
     assert.equal(q.unknown_usage_requests, 1);
     assert.equal(q.estimated_remaining, null);
 });
-test("Free Build manual estimate is opt-in, shared and display-only", async t => {
+test("Free Build manual estimate overrides Flash only and remains display-only", async t => {
     const { ConfigurationService } = require("../src/config/ConfigurationService");
     const service = new ConfigurationService({ logger }, { env: {}, file: path.join(temp(t), "config.json") });
     assert.equal(service.running.scheduler.buildFreeDailyTokenEstimate, 0);
@@ -328,7 +329,7 @@ test("Free Build manual estimate is opt-in, shared and display-only", async t =>
     const s = scheduler(t, { tier: "free" });
     s.config.buildFreeDailyTokenEstimate = 1000000;
     assert.equal(s.tokenQuotaSnapshot("build/gemini-3.8-flash").limit, 1000000);
-    assert.equal(s.tokenQuotaSnapshot("build/gemini-4-argon").pool, "build");
+    assert.equal(s.tokenQuotaSnapshot("build/gemini-4-argon").pool, "build/gemini-4-argon");
     assert.equal(s.canLease(s.account(0), "build/gemini-3.8-flash"), true);
 });
 
@@ -418,4 +419,15 @@ test("account model details expose today's token coverage and discard yesterday'
     assert.equal(tokens.date, "2026-11-02");
     assert.equal(tokens.usage, null);
     assert.equal(tokens.unknown_requests, 0);
+});
+
+test("Build model budget protocol isolates new model scopes and rejects mixed legacy pools", t => {
+    const s = scheduler(t, { tier: "free" });
+    const q = s.tokenQuotaSnapshot("anti-build-st/gemini-3.8-flash-high");
+    assert.equal(q.pool, "build/gemini-3.8-flash");
+    assert.equal(q.limit, 8000000);
+    assert.equal(validateTokenQuota(q), true);
+    assert.equal(mergeTokenQuotas([q, q]).limit, 16000000);
+    assert.equal(mergeTokenQuotas([q, { ...q, pool: "build", scope: "build/account" }]), null);
+    assert.equal(mergeTokenQuotas([q, { ...q, pool: "build/gemini-4-argon" }]), null);
 });

@@ -1,6 +1,6 @@
 # PG / Build Token 统计与双重预算
 
-更新时间：2026-11-02。本次只改代码、测试、文档；没有部署、重启或修改生产账号及额度。
+更新时间：2026-11-04。本次只改代码、测试、文档；没有部署、重启或修改生产账号及额度。
 
 ## 预算口径
 
@@ -15,11 +15,12 @@
 | PG `gemini-3.5-flash-lite`  | 100 / 11,000,000         | 150 / 25,000,000        |
 | PG `gemini-3.1-flash-lite`  | 100 / 11,000,000         | 150 / 25,000,000        |
 | PG `gemini-4-argon`         | 不开放                   | 50 / 15,000,000         |
-| Build 全部模型共享          | 未知                     | 次数未知 / 20,000,000   |
+| Build `gemini-4-argon`      | 不开放                   | 次数未知 / 20,000,000   |
+| Build `gemini-3.8-flash`    | 次数未知 / 8,000,000     | 未测试 / 未知           |
 
 Ultra / Ultra20 的次数和 token 额度保持未知，移除旧的 500 / 100 / 200 次推算。未列入上表的旧 PG 模型只保留原有次数估算，token 不外推。未知账号仍沿用项目既有 Free 权限默认值；历史 token 统计中的账号层级缺失则标为 `unknown`，不据此认定其真实订阅层级。
 
-PG 按“账号 × 规范模型”分别统计次数与 token。`build/X`、`build-st/X`、思考、流式、anti 等别名不产生重复额度；**同账号所有 Build 模型共用 2000 万池**，不可将每个 Build 模型卡片的池余额相加。PG 与 Build 分开。
+PG 按“账号 × 规范模型”分别统计次数与 token。`build/X`、`build-st/X`、思考、流式、anti 等别名不产生重复额度；Build 同样按“账号 × 规范模型”独立计量；Pro Argon 的 2000 万不套用到 Pro Flash。PG 与 Build 分开。
 
 模型白名单与账号权限不自动改变，只有已经授权的账号进入面板预算汇总；上表列出预算不表示自动开放该模型。
 
@@ -46,7 +47,7 @@ SQLite 保留原请求 `usage_json`，兼容新增 `token_attempts_json` 和独�
 
 实时额度面板使用 scheduler 的按账号、模型、日期持久化计数，兼容旧 scheduler state；保留最近三个 token 日窗口，避免零点后的迟到快照清空当前日。升级前的 scheduler 只有请求次数、没有 token 观测，不能自动宣称覆盖完整；SQLite 能恢复的历史统计与实时余额完整性分别展示，不把缺失的旧用量默认为 0。
 
-日期沿用项目 `America/Los_Angeles` 本地统计窗口，处理夏令时。PG / Build 均使用太平洋时间每日 00:00 的本地统计日界线，日额度冷却恢复统一沿用 `SCHEDULER_DAILY_RESET_TIME`（默认 `00:00`）；本地统计窗口不等同于新增的上游验证。没有复制参考项目的北京时间 Build 重置规则。
+日期沿用项目 `America/Los_Angeles` 本地统计窗口，处理夏令时。PG / Build 均使用太平洋时间每日 00:00 的本地统计日界线，已识别上游日额度冷却恢复沿用 `SCHEDULER_DAILY_RESET_TIME`（默认 `00:00`），Build 本地 quota 轮换固定到下一次 PT 零点；本地统计窗口不等同于新增的上游验证。没有复制参考项目的北京时间 Build 重置规则。
 
 ## 两个面板与 Free Build 后续估算
 
@@ -55,21 +56,23 @@ SQLite 保留原请求 `usage_json`，兼容新增 `token_attempts_json` 和独�
 - “账号 × 模型”展开行展示当前模型的今日已知 Token、输入、输出及用量未知的请求数，沿用调度器持久化的 PT 日窗口；没有观测数据时显示未知，不将缺失数据当作零。
 - 公示面板：仅展示次数额度，移除 PG / Build 的 Token 预算、已知消耗与明细。Build 日额度确认后可在“预估剩余额度”展示剩余 Token。后台仍保留 Token 数据。多节点合并时，旧 agent 缺少 token 字段、节点过期或不可用均降低覆盖，不能把已知部分当完整总额。沿用 v1 协议的可选字段，旧 agent 可继续接入。
 - 已知预算减去已知消耗只能作为上界；有未知用量或未知层级额度时，完整剩余值为 `null`，不显示“剩余 100%”或“无限”。没有任何已知预算时，上界也显示未知。
-- Build 卡片明确标注账号共享池。不会按 Build 模型数量重复计算 2000 万预算。
+- Build 卡片按模型独立展示预算和消耗，普通 / ST / anti 别名共享规范模型。新协议 scope 为 `build/model`、pool 为规范模型；旧节点的 `build/account` 可接入，但不可与新口径合并成完整总额。
 
-Free Build 当前缺少日上限依据，**不会从 Pro 的 2000 万乘比例推算**。保留配置文件设置，不在前端配置面板展示：
+Free Build Flash 采用用户 2026-11-04 提供的 800 万观测值；Pro Flash 尚未测试，保持未知。保留 Free Flash 的配置覆盖，不在前端配置面板展示：
 
 ```dotenv
-# 默认 0：未知。仅用于展示，不据此阻止请求。
+# 默认 0：使用 Free Flash 800 万观测值。仅用于展示，不据此阻止请求。
 BUILD_FREE_DAILY_TOKEN_ESTIMATE=0
 ```
 
-确认额度后修改 `.env` 中的配置并重启即可；兼容此前 managed-config 中已保存的值（其优先级高于环境变量，需同步修改或删除旧覆盖）。以后可在真实 Free 账号观测、完整日窗口、明确的 token 限额错误及缓存 / 思考扣减口径均有证据后，手动填写估算；设置非零只改变 Free Build 共享池的面板预算。历史 Free 统计与 unknown 统计分开，便于收集依据，当前不自动生成一个“已验证”的 Free 上限。
+非零配置仅覆盖 Free Build `gemini-3.8-flash` 的展示预算，其他模型不套用。兼容此前 managed-config 中已保存的值（优先级高于环境变量）；旧的人工覆盖值若不再适用，应删除或改为 0。历史 Free 与 unknown 统计继续分开。
+
+生成路径只有 `source=google_task`、`phase=poll` 且原始 message 去除首尾空白后精确等于 `Quota exceeded. Please try again later.` 时，采用 `build_quota_rotation` 本地策略，将真实执行账号的规范 Build 模型冷却至处理时所在 Pacific 日期的下一次零点。无需达到预估用量；流式外层 HTTP 200 不影响判定。其他 429、quota 文本、网络与 cleanup 次级错误继续原分类。原因及到期复用 scheduler state，重启及稳定账号身份重编号后保留。在途成功不清除，次日错误重新按当前日计算；到期不改变管理员禁用、认证失效或模型权限限制。
 
 ## 验证与边界
 
-专项测试覆盖：预算表与未知 Ultra、PG 缓存 / 思考去重、流式累计去重、多模型 Build 共享池、重试账号归属、缺失 usage、失败工具响应仍计消耗、迟到响应绑定、跨日 / 夏令时、状态重载、SQLite 一次性回填 / 清理后保留 / 导入去重、Free 人工估算开关，以及多节点新旧字段和未知覆盖。
+专项测试覆盖：预算表与未知 Ultra、PG 缓存 / 思考去重、流式累计去重、多模型 Build 独立预算、重试账号归属、缺失 usage、失败工具响应仍计消耗、迟到响应绑定、跨日 / 夏令时、状态重载、SQLite 一次性回填 / 清理后保留 / 导入去重、Free 人工估算开关，以及多节点新旧字段和未知覆盖。
 
 测试全部使用本地 fixture 与模拟上游；没有进行真实 Google token 扣减、跨日重置或账号配额验收。实际执行结果在交付回复中说明。
 
-本次实际执行：`npm test` 全量回归 809 通过、47 个可选账号浏览器用例跳过、0 失败；随后新增逐账号 Free 观测检查，对 Token / SQLite / 多节点汇总 / 浏览器桥相关专项执行 71 项，全部通过。管理端及公示端均构建成功；变更 JavaScript / Vue 定向 ESLint 与 `git diff --check` 通过。未运行真实 Google 账号扣减验收，47 个跳过项因未设置 `ACCOUNT_LOGIN_BROWSER_TEST_EXECUTABLE`。
+2026-11-02 历史执行记录（本轮验证另见轮换实施记录）：`npm test` 全量回归 809 通过、47 个可选账号浏览器用例跳过、0 失败；随后新增逐账号 Free 观测检查，对 Token / SQLite / 多节点汇总 / 浏览器桥相关专项执行 71 项，全部通过。管理端及公示端均构建成功；变更 JavaScript / Vue 定向 ESLint 与 `git diff --check` 通过。未运行真实 Google 账号扣减验收，47 个跳过项因未设置 `ACCOUNT_LOGIN_BROWSER_TEST_EXECUTABLE`。

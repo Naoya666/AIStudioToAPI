@@ -122,7 +122,7 @@ function validateEnvelope(body, expectedId, now = Date.now()) {
             model.token_quota !== undefined &&
             (!require("./TokenQuotaProjection").validateTokenQuota(model.token_quota) ||
                 model.token_quota.window.date !== snapshot.usage_window.date ||
-                model.token_quota.pool !== (model.model.startsWith("build/") ? "build" : model.model))
+                model.token_quota.pool !== (model.token_quota.scope === "build/account" ? "build" : model.model))
         )
             invalid();
         seen.add(model.model);

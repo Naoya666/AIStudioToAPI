@@ -103,7 +103,7 @@
                         <strong class="quota-model-name">{{ q.model }}</strong>
                         <span class="quota-hint">{{ q.window.date }} PT</span>
                     </div>
-                    <p v-if="q.scope === 'build/account'" class="quota-hint">账号全部 Build 模型共享，勿相加</p>
+                    <p v-if="q.scope === 'build/model'" class="quota-hint">同账号按 Build 模型独立计量，别名共享</p>
                     <div class="token-budget-heading">
                         <span
                             >已知消耗
@@ -1158,6 +1158,8 @@ function getSlotStatusClass(slot) {
 }
 
 function getSlotStatusLabel(slot) {
+    if (slot.status === "RATE_LIMITED" && slot.rate_limit_type === "build_quota_rotation")
+        return "Build 配额错误轮换（本地策略）";
     if (slot.status === "RISK_CONTROLLED" || slot.last_error_kind === "risk_controlled")
         return props.t("schedulerStatusRiskControlled");
     if (slot.status === "RATE_LIMITED")

@@ -744,4 +744,10 @@ test("optional token budgets preserve old agents, reject malformed scopes and av
     const bad = clone(a);
     bad.snapshot.models[0].token_quota.pool = "other";
     assert.throws(() => validateEnvelope(bad, "a", now));
+    // New agents report independent model pools; old account pools must not be summed with them.
+    const modern = clone(a);
+    modern.snapshot.models[0].token_quota = { ...q, pool: "build/gemini-3.8-flash", scope: "build/model" };
+    assert.equal(validateEnvelope(modern, "a", now), modern);
+    result = aggregate(entries(modern, b), now);
+    assert.equal(result.models[0].token_quota, null);
 });

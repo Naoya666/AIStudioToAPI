@@ -4,7 +4,7 @@ module.exports = [
     {
         application: "hot",
         description:
-            "Free Build 账号共享日 Token 预算的人工估算；0 表示未知，不能从 Pro 额度按比例推算。仅用于面板展示，不据此封禁或宣称 Google 上限。",
+            "Free Build gemini-3.8-flash 每模型日 Token 预算的人工覆盖值；0 使用已知观测值 800 万，其他 Build 模型不套用。仅用于面板展示，不据此封禁或宣称 Google 上限。",
         group: "Playground / Build 双通道",
         hidden: true,
         label: "Free Build 日 Token 预算估算",
