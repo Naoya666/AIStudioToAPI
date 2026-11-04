@@ -137,13 +137,6 @@ class ProxyServerSystem extends EventEmitter {
         await this.proxyPoolService.initialize();
         await this.accountLoginService.initialize();
         await this.usageStatsService.ready;
-        if (this.scheduler && this.config.buildEnabled) {
-            this.buildRecoveryManager = new (require("./codeAssistant/BuildRecoveryManager").BuildRecoveryManager)(
-                this
-            );
-            this.scheduler.buildRecoveryManager = this.buildRecoveryManager;
-            this.browserManager.buildRecoveryManager = this.buildRecoveryManager;
-        }
         await this._startHttpServer();
         try {
             // Playground requests use the in-process Playwright transport.
@@ -662,7 +655,6 @@ class ProxyServerSystem extends EventEmitter {
             this.logger.info("[System] Stopped stale queue cleanup interval");
         }
 
-        await this.buildRecoveryManager?.close();
         this.scheduler?.close();
         await this.accountLoginService?.close();
 

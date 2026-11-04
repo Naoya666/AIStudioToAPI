@@ -26,54 +26,23 @@ class ConfigurationRoutes {
                 throw Object.assign(new Error("enabled 必须为布尔值"), { status: 400 });
             res.json(presets().setEnabled(req.params.id, req.body.enabled));
         });
-        route("post", "/api/build/recover/:index", async (req, res) => {
-            const index = Number(req.params.index);
-            if (!Number.isSafeInteger(index) || index < 0)
-                throw Object.assign(new Error("无效账号编号"), { status: 400 });
-            const manager = this.system.buildRecoveryManager;
-            if (!manager || manager.fault) throw Object.assign(new Error("清理恢复管理器不可用"), { status: 503 });
-            manager.retryAccount(index);
-            res.json({ ok: true, recovery: manager.snapshot(), scheduled: true });
-        });
-        route("get", "/api/build/status", (req, res) => {
-            const manager = this.system.buildRecoveryManager;
-            const journal = manager?.store && !manager.fault ? manager.store.read() : {};
+        const cleanupMode = { message: "历史自动恢复已停用；历史项目删除状态未重新核实", mode: "best_effort" };
+        route("post", "/api/build/recover/:index", (req, res) =>
+            res.status(410).json({ ...cleanupMode, scheduled: false })
+        );
+        route("get", "/api/build/status", (req, res) =>
             res.json({
                 accounts: [...(this.system.browserManager?.contexts || [])].map(([index, c]) => ({
-                    active: manager
-                        ? Object.entries(journal).filter(
-                              ([id, entry]) =>
-                                  entry.account === this.system.scheduler.account(index).key &&
-                                  manager.store.active.has(id)
-                          ).length
-                        : c.page?.codeAssistantRuntime?.active.size || 0,
-                    cleanupPending: manager
-                        ? !!manager.fault ||
-                          Object.entries(journal).some(
-                              ([id, entry]) =>
-                                  entry.account === this.system.scheduler.account(index).key &&
-                                  !entry.deleteConfirmedAt &&
-                                  !manager.store.active.has(id)
-                          )
-                        : !!c.page?.codeAssistantRuntime?.cleanupPending,
                     index,
                     pageReady: !!c.page?.playgroundTransport?.ready,
-                    projectsReady: manager
-                        ? Object.entries(journal).filter(
-                              ([id, entry]) =>
-                                  entry.account === this.system.scheduler.account(index).key &&
-                                  entry.app &&
-                                  manager.store.active.has(id)
-                          ).length
-                        : c.page?.codeAssistantRuntime?.readyProjects || 0,
                 })),
                 anti: { status: "pending_verification", verified: [] },
                 channels: this.system.scheduler?.snapshot().channels || [],
+                cleanup: cleanupMode,
                 enabled: this.system.config.buildEnabled,
                 quota: { remaining: null, reset: null },
-                recovery: this.system.buildRecoveryManager?.snapshot() || null,
-            });
-        });
+            })
+        );
         route("get", "/api/configuration", (req, res) => res.json(service.snapshot()));
         route("post", "/api/configuration/secrets", (req, res) =>
             res.json({

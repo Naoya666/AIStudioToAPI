@@ -23,6 +23,7 @@ function withHardTimeout(task, timeoutMs, details = {}) {
                 })
             );
         }, timeoutMs);
+        if (details.unref) timer.unref?.();
     });
     return Promise.race([operation, timeout]).finally(() => clearTimeout(timer));
 }

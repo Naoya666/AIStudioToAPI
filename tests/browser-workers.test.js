@@ -1794,55 +1794,9 @@ test("full warm pool drains busy shared accounts and repairs coverage under mixe
     for (const index of manager.contexts.keys()) manager._cancelObsoletePoolReplacement(index);
 });
 
-test("recovery enters a full single-context pool without Build acquire and preserves the capacity limit", async () => {
+test("Build cleanup has no context acquisition or recovery lifecycle", () => {
     const manager = browserFixture(1);
-    manager.scheduler.account = index => ({ healthy: true, index, inflight: 0, key: `auth-${index}`, models: {} });
-    manager.scheduler.coordinateContextPool = () => manager._pumpContextPool();
-    manager.contexts.set(0, { page: { isClosed: () => false }, state: "READY" });
-    manager.requestRecoveryContext(1);
-    const deadline = Date.now() + 2000;
-    while (!manager.isContextReady(1) && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve));
-    assert.ok(manager.isContextReady(1));
-    assert.equal(manager.contexts.size, 1);
-    assert.ok(manager.peak <= 1);
-    manager.finishRecoveryContext(1);
-});
-
-test("context replacement cannot evict a recovery RPC or active generation", async () => {
-    const manager = browserFixture(1);
-    manager.scheduler.account = index => ({ healthy: true, inflight: 0, key: `auth-${index}`, models: {} });
-    manager.contexts.set(0, { page: { isClosed: () => false }, state: "READY" });
-    manager.buildRecoveryManager = { activeAccounts: new Set(["auth-0"]) };
-    manager.requestRecoveryContext(1);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.ok(manager.contexts.has(0));
-    assert.equal(manager.contexts.size, 1);
-    manager.buildRecoveryManager.activeAccounts.clear();
-    manager.scheduler.account = index => ({
-        healthy: true,
-        inflight: index === 0 ? 1 : 0,
-        key: `auth-${index}`,
-        models: {},
-    });
-    manager._pumpContextPool();
-    await new Promise(resolve => setImmediate(resolve));
-    assert.ok(manager.contexts.has(0));
-});
-
-test("recovery can drain continuous normal traffic and take one shared context after generation finishes", async t => {
-    const { manager, scheduler } = quotaPoolFixture({ contextPoolMinReady: 0, maxWorkers: 1 });
-    t.after(() => scheduler.close());
-    manager.contexts.set(0, { page: { isClosed: () => false }, state: "READY" });
-    scheduler.account(0).inflight = 1;
-    manager.requestRecoveryContext(1);
-    assert.equal(manager.contexts.get(0).draining, true);
-    assert.ok(manager.contexts.has(0));
-    assert.equal(manager._poolReplacementNeeded(manager.contexts.get(0)), true);
-    scheduler.account(0).inflight = 0;
-    await manager._closePendingContextIfIdle(0);
-    const deadline = Date.now() + 2000;
-    while (!manager.isContextReady(1) && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve));
-    assert.equal(manager.isContextReady(1), true);
-    assert.equal(manager.contexts.size, 1);
-    assert.deepEqual(manager.closedIndices, [0]);
+    assert.equal(manager.requestRecoveryContext, undefined);
+    assert.equal(manager.finishRecoveryContext, undefined);
+    assert.equal(manager.recoveryContextDemand, undefined);
 });

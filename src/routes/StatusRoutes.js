@@ -83,39 +83,10 @@ class StatusRoutes {
             next();
         });
 
-        app.get("/api/build-recovery", isAuthenticated, async (req, res) => {
-            try {
-                const manager = this.serverSystem.buildRecoveryManager;
-                const events = this.serverSystem.usageStatsService?.storage
-                    ? await this.serverSystem.usageStatsService.storage.call("build_recovery_query", req.query)
-                    : [];
-                const metrics = this.serverSystem.usageStatsService?.storage
-                    ? await this.serverSystem.usageStatsService.storage.call("build_recovery_metrics", {})
-                    : [];
-                res.json({ ...manager?.snapshot(), events, metrics });
-            } catch {
-                res.status(503).json({ error: "recovery_storage_unavailable" });
-            }
-        });
-        app.post("/api/build-recovery/:operationId/bind", isAuthenticated, async (req, res) => {
-            try {
-                const manager = this.serverSystem.buildRecoveryManager;
-                if (!manager) return res.status(503).json({ error: "recovery_unavailable" });
-                await manager.bindResource(
-                    req.params.operationId,
-                    req.body?.accountIndex,
-                    req.body?.appId,
-                    req.body?.revision
-                );
-                res.json({ identityVerificationPending: true, scheduled: true });
-            } catch (error) {
-                res.status(error.status || 503).json({ error: error.message });
-            }
-        });
-        app.post("/api/build-recovery/wake", isAuthenticated, (req, res) => {
-            this.serverSystem.buildRecoveryManager?.wake();
-            res.json({ scheduled: true });
-        });
+        const cleanupMode = { message: "历史自动恢复已停用；历史项目删除状态未重新核实", mode: "best_effort" };
+        app.get("/api/build-recovery", isAuthenticated, (req, res) => res.json(cleanupMode));
+        for (const url of ["/api/build-recovery/:operationId/bind", "/api/build-recovery/wake"])
+            app.post(url, isAuthenticated, (req, res) => res.status(410).json({ ...cleanupMode, scheduled: false }));
         app.get("/api/scheduler", isAuthenticated, (req, res) => {
             res.json(this.serverSystem.scheduler?.snapshot() || { enabled: false });
         });

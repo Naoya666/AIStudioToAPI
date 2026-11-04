@@ -207,7 +207,6 @@ class ModelScheduler {
         this.authSource = authSource;
         this.logger = logger;
         this.accounts = new Map();
-        this.buildReservationVersion = 0;
         this.fileAffinities = new Map();
         this.hiddenModels = new Set();
         this.pending = [];
@@ -626,8 +625,7 @@ class ModelScheduler {
             account &&
             (item.excluded.has(account.key) ||
                 !this.authSource.getRotationIndices().includes(account.index) ||
-                !this.isResourceEligible(account, item.model) ||
-                (item.model.startsWith("build/") && this.buildCleanupBlocked(account)))
+                !this.isResourceEligible(account, item.model))
         )
             return false;
         return !this.readyCandidates(item.model, item.excluded).some(
@@ -654,8 +652,7 @@ class ModelScheduler {
             return (
                 !item.excluded.has(account.key) &&
                 this.authSource.getRotationIndices().includes(index) &&
-                this.isResourceEligible(account, item.model) &&
-                !(item.model.startsWith("build/") && this.buildCleanupBlocked(account))
+                this.isResourceEligible(account, item.model)
             );
         });
     }
@@ -667,19 +664,7 @@ class ModelScheduler {
         );
     }
 
-    buildCleanupBlocked(account) {
-        return this.buildRecoveryManager
-            ? !this.buildRecoveryManager.admission(account).allowed
-            : Boolean(account.buildRecoveryBlocked);
-    }
-
     canLease(account, model) {
-        const recoveryDemand = this.browserManager?.recoveryContextDemand;
-        if (
-            this.buildRecoveryManager?.activeAccounts.has(account.key) ||
-            (recoveryDemand?.index === account.index && recoveryDemand.until > Date.now())
-        )
-            return false;
         if (this.browserManager?.benefitCheckingIndices?.has(account.index)) return false;
         if (this.browserManager?.contexts?.get(account.index)?.draining) return false;
         if (isArgon(model)) {
@@ -690,11 +675,7 @@ class ModelScheduler {
         if (account.key === this.drainingAccount) return false;
         if (model !== "__files__" && this.isAccountQuotaExhausted(account)) return false;
         const channel = model.startsWith("build/") ? "build" : "pg";
-        const admission = channel === "build" ? this.buildRecoveryManager?.admission(account) : null;
-        if (channel === "build" && (admission ? !admission.allowed : this.buildCleanupBlocked(account))) return false;
-        const degraded = admission?.degraded;
-        const channelLimit =
-            channel === "build" ? (degraded ? 1 : (this.config.buildConcurrency ?? 1)) : this.config.pgConcurrency || 0;
+        const channelLimit = channel === "build" ? (this.config.buildConcurrency ?? 1) : this.config.pgConcurrency || 0;
         if (channelLimit && this.channelInflight(account, channel) >= channelLimit) return false;
         const accountLimit = this.config.accountConcurrency || 0;
         const modelLimit = this.config.accountModelConcurrency?.[model] ?? accountLimit;
@@ -913,7 +894,6 @@ class ModelScheduler {
             if (!account.inflight) this._roundActiveAccountCount++;
             account.inflight++;
             slot.inflight++;
-            if (item.model.startsWith("build/")) this.buildReservationVersion++;
             slot.last_used_at = Date.now();
             slot.last_selected = ++this.sequence;
             const lease = {
@@ -997,10 +977,7 @@ class ModelScheduler {
             )
                 continue;
             const coldAccounts = this.eligibleAccounts(item.model, item.excluded).filter(
-                account =>
-                    !demanded.has(account.index) &&
-                    !this.browserManager.isContextReady(account.index) &&
-                    !(item.model.startsWith("build/") && this.buildCleanupBlocked(account))
+                account => !demanded.has(account.index) && !this.browserManager.isContextReady(account.index)
             );
             const coldIndex =
                 this.browserManager.orderPoolInitializationCandidates ||
@@ -1278,7 +1255,6 @@ class ModelScheduler {
         }
         lease.account.inflight--;
         lease.slot.inflight--;
-        if (lease.model.startsWith("build/")) this.buildReservationVersion++;
         lease.worker.lease = null;
         this.saveSoon();
         this.drain();
@@ -1737,7 +1713,6 @@ class ModelScheduler {
             ...(egress ? { egress } : {}),
             active_browser_workers: contexts.filter(context => context.inflight > 0).length,
             active_workers: this.workers.filter(worker => worker.lease).length,
-            build_recovery: this.buildRecoveryManager?.snapshot() || null,
             busy_browser_workers: busyContexts,
             contexts_summary: {
                 all_visible_models_rate_limited:
@@ -1782,9 +1757,6 @@ class ModelScheduler {
                     return {
                         active_workers: this.active(model),
                         available_accounts: this.eligibleAccounts(model, new Set()).length,
-                        cleanup_blocked_accounts: model.startsWith("build/")
-                            ? this.eligibleAccounts(model).filter(a => this.buildCleanupBlocked(a)).length
-                            : 0,
                         configured_workers: this.config.allocation[model] || { min: 0, preferred: 1 },
                         context_ready_accounts: this.eligibleAccounts(model).filter(a =>
                             this.browserManager?.isContextReady(a.index)
@@ -1796,13 +1768,6 @@ class ModelScheduler {
                         eligible_accounts: this.eligibleAccounts(model, new Set()).length,
                         model,
                         queue_length: this.pending.filter(item => item.model === model).length,
-                        queue_wait_reason:
-                            model.startsWith("build/") &&
-                            this.pending.some(i => i.model === model) &&
-                            this.eligibleAccounts(model).some(a => this.buildCleanupBlocked(a)) &&
-                            !this.readyCandidates(model).some(a => this.canLease(a, model))
-                                ? "waiting_build_cleanup"
-                                : null,
                         rate_limited_accounts: slots.filter(slot => slot.rate_limited).length,
                         ready_accounts: this.readyCandidates(model, new Set()).length,
                         warm_contexts: this.browserManager?.getModelWarmCoverage?.(model) || {
@@ -1878,11 +1843,7 @@ class ModelScheduler {
                     availableAccounts: accountSlots.filter(
                         item =>
                             isAvailable(item.account, item.slot) &&
-                            !(
-                                model.startsWith("build/") &&
-                                ((item.account && !this.canLease(item.account, model)) ||
-                                    this.buildRecoveryManager?.fault)
-                            ) &&
+                            !(model.startsWith("build/") && item.account && !this.canLease(item.account, model)) &&
                             !this.authSource.isExpired?.(item.index) &&
                             this.isTierAllowed(item.index, model)
                     ).length,
@@ -2072,7 +2033,6 @@ class ModelScheduler {
     }
 
     load() {
-        this.buildReservationVersion++;
         if (!this.config.statePath) return;
         try {
             const data = JSON.parse(fs.readFileSync(this.config.statePath, "utf8"));

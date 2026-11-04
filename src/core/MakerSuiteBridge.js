@@ -88,7 +88,6 @@ function installPageBridge({ direct = false } = {}) {
             if (!authorization) return { state: "authorization_missing" };
             return { authorization, authuser: metadata.get("x-goog-authuser") ?? "0", key, source, state: "ready" };
         },
-
         cancel(id) {
             const record = records.get(id);
             record?.controller.abort();
@@ -238,6 +237,8 @@ function installPageBridge({ direct = false } = {}) {
             return service.tb ? "ready" : "token_pending";
         },
 
+        instanceId: prefix,
+
         async next(id) {
             const state = streams.get(id);
             if (!state || state.closed) return { result: { status: 499, text: '[1,"Stream retired"]' } };
@@ -299,7 +300,19 @@ function installPageBridge({ direct = false } = {}) {
             excludedKeys = [],
             rpcMethod = "GenerateContent",
             onChunk,
+            bestEffort = false,
+            expiresAt,
+            expectedBridgeId,
         }) {
+            if (
+                bestEffort &&
+                (Date.now() >= expiresAt ||
+                    service.instanceId !== expectedBridgeId ||
+                    records.size ||
+                    service.hook() !== "ready" ||
+                    service.auth(excludedKeys).state !== "ready")
+            )
+                return { cleanupSkipped: true, source: "local", status: 503, text: "[]" };
             if (expectedDocumentId && window.__buildBenefit?.documentId !== expectedDocumentId)
                 return { source: "local", status: 503, text: '[14,"MakerSuite document changed"]' };
             if (service.proofBroken)
@@ -511,7 +524,7 @@ function installPageBridge({ direct = false } = {}) {
                 }
                 record.authKey = auth.key;
                 if (streams.has(id)) streams.get(id).authKey = auth.key;
-                const response = await upstreamFetch(
+                const upstream = upstreamFetch(
                     endpoint + "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/" + rpcMethod,
                     {
                         body: JSON.stringify(body),
@@ -533,6 +546,7 @@ function installPageBridge({ direct = false } = {}) {
                         signal,
                     }
                 );
+                const response = await (bestEffort ? abortable(upstream) : upstream);
                 let text = "";
                 if (onChunk && rpcMethod === "GenerateContent" && response.status === 200) {
                     const reader = response.body.getReader();
@@ -569,7 +583,7 @@ function installPageBridge({ direct = false } = {}) {
                         await reader.cancel().catch(() => {});
                         reader.releaseLock();
                     }
-                } else text = await response.text();
+                } else text = await (bestEffort ? abortable(response.text()) : response.text());
                 check();
                 // Do not learn from this nativeFetch: it deliberately bypasses observe().
                 let rpcCode;
@@ -582,7 +596,7 @@ function installPageBridge({ direct = false } = {}) {
                 } catch {
                     /* codec validates */
                 }
-                if (response.status === 401 || rpcCode === 16) {
+                if (!bestEffort && (response.status === 401 || rpcCode === 16)) {
                     rejected.add(auth.key);
                     observed.delete(auth.key);
                 }

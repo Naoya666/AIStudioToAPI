@@ -86,7 +86,7 @@ async function process(handler, req, res) {
     let lease,
         runtime,
         usage,
-        cleanupError,
+        startCleanup,
         timer,
         success = false;
     const stream = req.body.stream === true,
@@ -149,23 +149,37 @@ async function process(handler, req, res) {
         runtime =
             page.codeAssistantRuntime ||
             new BuildRuntime({
+                accountIndex: account.index,
                 accountKey: account.key,
+                logger: system.logger,
                 page,
-                recoveryManager: system.buildRecoveryManager,
                 timeoutMs: config.makerSuiteTimeoutMs,
             });
-        if (system.buildRecoveryManager) {
+        {
             const data = handler.browserManager.contexts.get(account.index);
             const version = page.accountSessionVersion ?? data.sessionVersion;
+            const accountKey = account.key;
+            const transport = page.playgroundTransport;
+            const epoch = transport.epoch;
+            const authSource = handler.authSource || system.authSource;
+            const login = authSource?.accountLoginService;
             runtime.assertCurrent = () => {
                 if (
-                    scheduler.account(account.index).key !== account.key ||
-                    !system.buildRecoveryManager.isSessionCurrent(account.index, version) ||
+                    scheduler.account(account.index).key !== accountKey ||
+                    authSource?.isExpired?.(account.index) ||
+                    (login?.state &&
+                        (login.invalidated.has(account.index) ||
+                            !login.state.accounts.some(
+                                a => a.authIndex === account.index && a.sessionVersion === version
+                            ))) ||
                     handler.browserManager.isContextReady?.(account.index) === false ||
                     handler.browserManager.contexts.get(account.index) !== data ||
                     data.page !== page ||
                     page.isClosed?.() ||
                     (page.accountSessionVersion ?? data.sessionVersion) !== version ||
+                    page.playgroundTransport !== transport ||
+                    transport.epoch !== epoch ||
+                    transport.closed ||
                     !page.playgroundTransport?.ready
                 )
                     throw buildError({ message: "Build cleanup context changed", source: "local", status: 503 });
@@ -193,6 +207,9 @@ async function process(handler, req, res) {
             tier,
         });
         const result = await runtime.generate(prepared.identity, prepared.context, {
+            onCleanup: start => {
+                startCleanup = start;
+            },
             onText:
                 stream && !buffered
                     ? text =>
@@ -211,7 +228,6 @@ async function process(handler, req, res) {
             timeoutMs: config.makerSuiteTimeoutMs,
         });
         usage = result.usage;
-        cleanupError = result.cleanupError;
         if (controller.signal.aborted) throw fail("客户端已断开", 499);
         const restored = prepared.anti
             ? AntiTransport.restore(result.text, prepared.anti)
@@ -266,8 +282,6 @@ async function process(handler, req, res) {
               })
             : caught;
         if (error !== caught && caught.secondaryErrors) error.secondaryErrors = caught.secondaryErrors;
-        if (controller.signal.aborted && runtime?.cleanupError && !error.secondaryErrors)
-            error.secondaryErrors = [runtime.cleanupError];
         usage ||= error.usage;
         error.usage ||= usage;
         const info = errorInfo(error);
@@ -295,16 +309,12 @@ async function process(handler, req, res) {
     } finally {
         clearInterval(timer);
         res.removeListener("close", close);
-        if (lease && runtime?.cleanupPending) {
-            system.buildRecoveryManager?.reconcile();
-            system.buildRecoveryManager?.wake();
-        }
         if (lease) {
             scheduler.release(lease, success);
             handler.lease = null;
         }
         handler._finalizeTrackedRequest(requestId, res, {
-            error: res.__usageTrackingError || cleanupError || null,
+            error: res.__usageTrackingError || null,
             errorMessage: res.__usageTrackingError?.message,
             finalAuthIndex: lease?.account.index,
             outcome: success ? "success" : controller.signal.aborted ? "aborted" : "error",
@@ -312,6 +322,7 @@ async function process(handler, req, res) {
             statusCode: res.__usageTrackingError?.status,
             usage,
         });
+        startCleanup?.();
     }
 }
 module.exports = { prepare, presetStore, process };

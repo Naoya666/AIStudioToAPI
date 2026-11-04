@@ -377,8 +377,9 @@ for (const tier of ["free", "pro"])
         const p = prepare(base, config, {});
         await assert.rejects(r.generate(p.identity, p.context, {}), /Invalid argument/);
         assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 1);
+        await new Promise(resolve => setImmediate(resolve));
         assert.equal(calls.filter(c => c.method === "DeleteApplet").length, 1);
-        assert.deepEqual(r.read(), {});
+        assert.equal(r.active.size, 0);
         assert.equal(r.active.size, 0);
     });
 test("task read recovery resumes the same generation without submitting a second task", async t => {
@@ -394,7 +395,7 @@ test("task read recovery resumes the same generation without submitting a second
     const out = await r.generate(p.identity, p.context, {});
     assert.equal(out.text, "hello");
     assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
-    assert.deepEqual(r.read(), {});
+    assert.equal(r.active.size, 0);
     assert.equal(r.active.size, 0);
 });
 test("cancelled tasks preserve primary 499 and still delete after Cancel failure", async t => {
@@ -411,12 +412,9 @@ test("cancelled tasks preserve primary 499 and still delete after Cancel failure
     };
     const p = prepare(base, config, {});
     await assert.rejects(r.generate(p.identity, p.context, { signal: controller.signal }), { status: 499 });
-    assert.equal(r.cleanupPending, false);
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(calls.filter(c => c.method === "DeleteApplet").length, 1);
-    const archive = JSON.parse(fs.readFileSync(`${r.statePath}.archive.json`, "utf8"));
-    assert.equal(Object.values(archive)[0].cancelConfirmedAt, null);
-    assert.ok(Object.values(archive)[0].deleteConfirmedAt);
-    assert.deepEqual(r.read(), {});
+    assert.equal(r.active.size, 0);
 });
 test("atomic channel admission permits PG10 + Build1, shares prefixes/models, and releases on abort", async t => {
     const cfg = {
@@ -450,7 +448,7 @@ test("atomic channel admission permits PG10 + Build1, shares prefixes/models, an
     scheduler.release(build, true);
     assert.equal(scheduler.channelInflight(build.account, "build"), 0);
     build.account.buildRecoveryBlocked = true;
-    assert.equal(scheduler.canLease(build.account, "build/gemini-3.8-flash"), false);
+    assert.equal(scheduler.canLease(build.account, "build/gemini-3.8-flash"), true);
     scheduler.release(pg.pop());
     assert.equal(scheduler.canLease(build.account, "gemini-3.8-flash"), true);
     pg.forEach(l => scheduler.release(l));
@@ -503,6 +501,7 @@ function handlerFixture(t, { output = "answer", mode = "auto_fallback", generati
         readyProjects: 0,
     };
     const scheduler = {
+        account: () => account,
         acquire: async () => lease,
         assertModelAccessible() {},
         failure: async (l, e) => failures.push(e),
@@ -964,7 +963,7 @@ test("Build errors separate HTTP, RPC and semantic status and preserve bounded d
     ])
         assert.equal(BuildErrors.fromResponse({ status: 200, text: body }, "poll"), null);
 });
-test("Build task quota is temporary; internal failure retains cumulative usage once and cleanup failure stays secondary", async t => {
+test("Build task quota is temporary; internal failure retains cumulative usage once and async cleanup does not mutate the primary error", async t => {
     const p = prepare(base, config, {});
     for (const [message, status, code, usage] of [
         ["Quota exceeded. Please try again later.", 429, "BUILD_QUOTA_EXCEEDED", null],
@@ -996,7 +995,7 @@ test("Build task quota is temporary; internal failure retains cumulative usage o
             assert.equal(e.upstreamError.message, message);
             assert.equal(e.upstreamError.httpStatus, 200);
             assert.equal(e.upstreamError.rpcCode, null);
-            assert.equal(e.secondaryErrors[0].phase, "cleanup");
+            assert.equal(e.secondaryErrors, undefined);
             if (usage) {
                 assert.equal(e.usage.total_tokens, 15);
                 assert.equal(observations.length, 1);
@@ -1008,8 +1007,8 @@ test("Build task quota is temporary; internal failure retains cumulative usage o
         });
         assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
         assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 1);
-        assert.equal(r.cleanupPending, true);
-        assert.ok(Object.values(r.read())[0].complete);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(r.active.size, 0);
     }
 });
 for (const stream of [false, true])
@@ -1251,10 +1250,10 @@ test("overall deadline bounds known task read recovery without resubmission or q
     });
     assert.ok(Date.now() - started < 1500);
     assert.equal(calls.filter(c => c.method === "CodeAssistantOffline").length, 1);
-    assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 2);
-    assert.deepEqual(r.read(), {});
+    assert.equal(calls.filter(c => c.method === "StreamCodeAssistantOfflineGeneration").length, 1);
+    assert.equal(r.active.size, 0);
 });
-test("successful generation with pending cleanup records success and separate cleanup diagnostics", async t => {
+test("successful generation ignores legacy cleanup diagnostics in request statistics", async t => {
     const f = handlerFixture(t);
     const runtime = f.h.browserManager.contexts.get(0).page.codeAssistantRuntime;
     runtime.cleanupPending = true;
@@ -1267,7 +1266,7 @@ test("successful generation with pending cleanup records success and separate cl
     f.h.serverSystem.scheduler.drain = () => {};
     await processBuild(f.h, { body: base, method: "POST" }, f.res);
     assert.equal(f.finished[0].outcome, "success");
-    assert.equal(f.finished[0].error.phase, "cleanup");
+    assert.equal(f.finished[0].error, null);
     assert.equal(f.res.statusCode, 200);
     assert.equal(f.finished[0].errorMessage, undefined);
     assert.deepEqual(f.releases, [true]);
@@ -1339,7 +1338,7 @@ test("synthetic end-to-end quota response, SQLite history and scheduler share on
 });
 
 for (const outcome of ["success", "error", "aborted"])
-    test(`Build ${outcome} persists history and tokens with a live recovery service`, async t => {
+    test(`Build ${outcome} persists history and tokens without a recovery service`, async t => {
         const UsageStatsService = require("../src/core/UsageStatsService");
         const RequestHandler = require("../src/core/RequestHandler");
         const errors = [];
@@ -1349,7 +1348,6 @@ for (const outcome of ["success", "error", "aborted"])
         const f = handlerFixture(t);
         f.h.serverSystem.scheduler.recordTokenUsage = () => {};
         // This mirrors the non-cloneable runtime service missing from earlier fixtures.
-        f.h.serverSystem.buildRecoveryManager = { isSessionCurrent: () => true, task: Promise.resolve() };
         f.h._getUsageStatsService = () => stats;
         f.h._getClientIp = () => "127.0.0.1";
         for (const method of ["_startTrackedRequest", "_updateTrackedRequest", "_finalizeTrackedRequest"])
@@ -1399,26 +1397,23 @@ for (const outcome of ["success", "error", "aborted"])
         assert.deepEqual(errors, []);
     });
 
-test("runtime returns cleanup diagnosis on its own successful result and keeps it across a later recovery", async t => {
-    const { r } = runtime(t),
+test("runtime cleanup failure leaves completed results unchanged and does not block later generation", async t => {
+    const { r, calls } = runtime(t),
         original = r.rpc;
-    let failDelete = true;
     r.rpc = async (method, body) => {
-        if (method === "DeleteApplet" && failDelete) {
-            failDelete = false;
-            throw BuildErrors.buildError({ message: "Delete pending", phase: "cleanup", source: "local", status: 503 });
-        }
+        if (method === "DeleteApplet") throw new Error("Delete failed");
         return original(method, body);
     };
     const p = prepare(base, config, {});
     const first = await r.generate(p.identity, p.context, {});
-    assert.equal(first.text, "hello");
-    assert.equal(first.cleanupError.phase, "cleanup");
-    assert.equal(r.cleanupPending, true);
+    await new Promise(resolve => setImmediate(resolve));
     const second = await r.generate(p.identity, p.context, {});
-    assert.equal(second.cleanupError, undefined);
-    assert.equal(first.cleanupError.message, "Delete pending");
-    assert.deepEqual(r.read(), {});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(first.text, "hello");
+    assert.equal(first.cleanupError, undefined);
+    assert.equal(second.text, "hello");
+    assert.equal(calls.filter(c => c.method === "CreateApplet").length, 2);
+    assert.equal(r.active.size, 0);
 });
 
 test("client disconnect retains cleanup secondary diagnostics and primary 499", async t => {
@@ -1443,4 +1438,71 @@ test("client disconnect retains cleanup secondary diagnostics and primary 499", 
     assert.equal(f.finished[0].error.secondaryErrors[0].upstreamError.httpStatus, 503);
     assert.equal(f.finished[0].error.secondaryErrors[0].upstreamError.rpcCode, 14);
     assert.equal(f.failures.length, 0);
+});
+
+test("request cleanup handoff runs after lease release and statistics finalization", async t => {
+    const f = handlerFixture(t);
+    const runtime = f.h.browserManager.contexts.get(0).page.codeAssistantRuntime;
+    let started = 0;
+    runtime.generate = async (_, __, options) => {
+        options.onCleanup(() => {
+            assert.deepEqual(f.releases, [true]);
+            assert.equal(f.finished[0].outcome, "success");
+            started++;
+        });
+        return { text: "answer" };
+    };
+    await processBuild(f.h, { body: base, method: "POST" }, f.res);
+    assert.equal(started, 1);
+});
+for (const change of ["key", "page", "session", "epoch", "expired", "login"])
+    test(`cleanup independently rejects original account/session change: ${change}`, async t => {
+        const f = handlerFixture(t);
+        const runtime = f.h.browserManager.contexts.get(0).page.codeAssistantRuntime;
+        const data = f.h.browserManager.contexts.get(0);
+        const account = f.h.serverSystem.scheduler.account(0);
+        const invalidated = new Set();
+        f.h.authSource ||= {};
+        f.h.authSource.accountLoginService = {
+            invalidated,
+            state: { accounts: [{ authIndex: 0, sessionVersion: undefined }] },
+        };
+        await processBuild(f.h, { body: base, method: "POST" }, f.res);
+        assert.doesNotThrow(runtime.assertCurrent);
+        if (change === "key") account.key = "other";
+        if (change === "page") data.page = {};
+        if (change === "session") data.page.accountSessionVersion = 1;
+        if (change === "epoch") data.page.playgroundTransport.epoch = 1;
+        if (change === "expired") f.h.authSource.isExpired = () => true;
+        if (change === "login") invalidated.add(0);
+        assert.throws(runtime.assertCurrent, /context changed/);
+    });
+
+test("repeated completion callbacks clean each operation's own new project only once", async t => {
+    const { r, calls } = runtime(t),
+        original = r.rpc;
+    let project = 0;
+    const cleanups = [];
+    r.rpc = async (method, body) => {
+        if (method === "CreateApplet") {
+            project++;
+            return JSON.stringify([`00000000-0000-4000-8000-${String(project).padStart(12, "0")}`]);
+        }
+        return original(method, body);
+    };
+    const p = prepare(base, config, {});
+    for (let i = 0; i < 2; i++) await r.generate(p.identity, p.context, { onCleanup: start => cleanups.push(start) });
+    assert.equal(calls.filter(c => c.method === "DeleteApplet").length, 0);
+    cleanups[1]();
+    cleanups[0]();
+    cleanups[0]();
+    cleanups[1]();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(
+        calls
+            .filter(c => c.method === "DeleteApplet")
+            .map(c => c.body[0])
+            .sort(),
+        ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"]
+    );
 });

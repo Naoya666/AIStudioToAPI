@@ -1036,3 +1036,65 @@ test("Build bridge exposes only Retry-After metadata and distinguishes local syn
     assert.equal(local.source, "local");
     assert.equal(local.status, 499);
 });
+
+test("best-effort cleanup immediately skips occupied transport and cannot run on a replaced bridge or expired invocation", async t => {
+    const pending = deferred();
+    const f = fixture(t, 0, { fetch: async () => pending.promise });
+    await f.init();
+    const service = f.sandbox.__makerSuiteBridge;
+    const cleanup = {
+        bestEffort: true,
+        body: ["app"],
+        expectedBridgeId: service.instanceId,
+        expiresAt: Date.now() + 10000,
+        id: "cleanup",
+        readyTimeoutMs: 10000,
+        rpcMethod: "DeleteApplet",
+        timeoutMs: 10000,
+    };
+    const generation = service.run({ body: [], id: "foreground", readyTimeoutMs: 100, timeoutMs: 1000 });
+    await tick();
+    const occupied = await service.run(cleanup);
+    assert.equal(occupied.cleanupSkipped, true);
+    assert.equal(f.calls.length, 1);
+    pending.resolve({ status: 200, text: async () => "[]" });
+    await generation;
+    const retired = await service.run({ ...cleanup, expectedBridgeId: "retired" });
+    const expired = await service.run({ ...cleanup, expiresAt: Date.now() - 1 });
+    assert.equal(retired.cleanupSkipped, true);
+    assert.equal(expired.cleanupSkipped, true);
+    assert.equal(f.calls.length, 1);
+    const deletion = await service.run(cleanup);
+    assert.equal(deletion.status, 200);
+    assert.equal(f.calls.length, 2);
+    assert.ok(f.calls[1].url.endsWith("/DeleteApplet"));
+});
+
+for (const stage of ["fetch", "body"])
+    test(`cleanup abort releases browser record even if ${stage} ignores cancellation`, async t => {
+        const never = new Promise(() => {});
+        const f = fixture(t, 0, {
+            fetch: () => (stage === "fetch" ? never : Promise.resolve({ status: 200, text: () => never })),
+        });
+        await f.init();
+        const service = f.sandbox.__makerSuiteBridge;
+        const args = {
+            bestEffort: true,
+            body: ["task", "app"],
+            expectedBridgeId: service.instanceId,
+            expiresAt: Date.now() + 10000,
+            id: "cancel",
+            readyTimeoutMs: 100,
+            rpcMethod: "CancelCodeAssistantOfflineGeneration",
+            timeoutMs: 10000,
+        };
+        const cancel = service.run(args);
+        await tick();
+        await service.cancel("cancel");
+        assert.equal((await cancel).status, 499);
+        const deletion = service.run({ ...args, body: ["app"], id: "delete", rpcMethod: "DeleteApplet" });
+        await tick();
+        assert.equal(f.calls.length, 2, "Cancel must release capacity for Delete");
+        await service.cancel("delete");
+        assert.equal((await deletion).status, 499);
+    });
