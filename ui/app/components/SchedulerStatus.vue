@@ -584,11 +584,6 @@
                         <!-- 可用账号: 纯数字，过低时黄色预警 -->
                         <td class="font-mono font-bold" :class="{ 'text-warning': model.available_accounts <= 1 }">
                             {{ model.tier_allowed_accounts ?? "—" }} / {{ model.available_accounts }}
-                            <div :title="'符合模型条件 / 页面就绪 / 符合实际准入条件'">
-                                可派发 {{ model.dispatchable_accounts ?? "—" }} · 页面就绪
-                                {{ model.context_ready_accounts ?? model.ready_accounts }} · 清理阻挡
-                                {{ model.cleanup_blocked_accounts || 0 }}
-                            </div>
                         </td>
                         <!-- 429: 表头已有明确定义，单元格仅保留纯数字徽章，绝不重复文字 -->
                         <td class="text-center">

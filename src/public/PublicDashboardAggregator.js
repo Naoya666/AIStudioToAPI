@@ -122,6 +122,9 @@ function aggregate(entries, now = Date.now(), staleAfterMs = 20000) {
             },
             realtime: {
                 ...modelRealtime.values,
+                dispatchable_accounts: sum(
+                    modelSources.filter(usable).map(source => source.model.realtime.dispatchable_accounts)
+                ),
                 tier_allowed_accounts: sum(
                     modelSources.filter(usable).map(source => source.model.realtime.tier_allowed_accounts)
                 ),

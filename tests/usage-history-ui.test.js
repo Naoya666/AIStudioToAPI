@@ -161,17 +161,25 @@ test(
                 data = {
                     available_models: ["gemini-3.8-flash", "gemini-3.1-pro-preview"],
                     models: total
-                        ? Array.from({ length: Math.min(20, total - (number - 1) * 20) }, (_, i) => ({
-                              account_key: `fixture-${(number - 1) * 20 + i}@example.com`,
-                              day: "2026-11-02",
-                              input: 100,
-                              input_observations: 1,
-                              known_requests: 1,
-                              model: "gemini-3.8-flash",
-                              tier: "free",
-                              total: 120,
-                              unknown_requests: 1,
-                          }))
+                        ? Array.from(
+                              {
+                                  length: Math.min(
+                                      Number(url.searchParams.get("pageSize")),
+                                      total - (number - 1) * Number(url.searchParams.get("pageSize"))
+                                  ),
+                              },
+                              (_, i) => ({
+                                  account_key: `fixture-${(number - 1) * Number(url.searchParams.get("pageSize")) + i}@example.com`,
+                                  day: "2026-11-02",
+                                  input: 100,
+                                  input_observations: 1,
+                                  known_requests: 1,
+                                  model: "gemini-3.8-flash",
+                                  tier: "free",
+                                  total: 120,
+                                  unknown_requests: 1,
+                              })
+                          )
                         : [],
                     page: number,
                     total,
@@ -182,10 +190,19 @@ test(
         await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/usage`);
         const panel = page.locator(".token-usage-panel");
         await panel.getByText("fixture-0@example.com", { exact: true }).waitFor();
-        assert.equal(await panel.locator("tbody tr").count(), 20);
+        assert.equal(queries.at(-1).pageSize, "10");
+        assert.equal(await panel.locator("tbody tr").count(), 10);
+        assert.ok(
+            await panel.evaluate(element => {
+                const modelCard = [...document.querySelectorAll(".wide-card")].find(card =>
+                    card.textContent.includes("模型使用分布")
+                );
+                return Boolean(modelCard.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING);
+            })
+        );
         assert.ok((await panel.innerText()).includes("未知"));
         await panel.locator(".btn-next").click();
-        await panel.getByText("fixture-20@example.com", { exact: true }).waitFor();
+        await panel.getByText("fixture-10@example.com", { exact: true }).waitFor();
         assert.equal(queries.at(-1).page, "2");
         await panel.getByRole("textbox", { name: "筛选邮箱" }).fill("fixture");
         await panel.getByText("共 1 条记录").waitFor();

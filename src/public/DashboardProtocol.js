@@ -128,6 +128,7 @@ function validateEnvelope(body, expectedId, now = Date.now()) {
         seen.add(model.model);
         checkCounts(model.today, ["requests"]);
         checkCounts(model.realtime, ["active", "available_accounts", "queued", "rate_limited_accounts"]);
+        if (model.realtime.dispatchable_accounts != null && !isCount(model.realtime.dispatchable_accounts)) invalid();
         if (model.realtime.tier_allowed_accounts != null && !isCount(model.realtime.tier_allowed_accounts)) invalid();
         if (
             !model.quota ||

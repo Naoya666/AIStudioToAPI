@@ -155,6 +155,34 @@ const getEstimatedRemaining = model => {
     return model.quota.estimated_remaining;
 };
 
+const isBuildModel = model => model.model.startsWith("build/");
+const quotaRemaining = model =>
+    isBuildModel(model) ? (model.token_quota?.estimated_remaining ?? null) : getEstimatedRemaining(model);
+const quotaKnownRemaining = model =>
+    isBuildModel(model)
+        ? model.token_quota?.known_limit > 0
+            ? model.token_quota.known_remaining_upper_bound
+            : null
+        : model.quota.known_estimated_remaining;
+const quotaBadge = model =>
+    quotaRemaining(model) != null
+        ? "预估"
+        : quotaKnownRemaining(model) != null
+          ? isBuildModel(model)
+              ? "剩余上界"
+              : "部分可估算"
+          : "未知";
+const formatQuota = (model, value) =>
+    isBuildModel(model)
+        ? `${(value / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} w token`
+        : `${number(value)} 次`;
+const quotaText = model =>
+    quotaRemaining(model) != null
+        ? formatQuota(model, quotaRemaining(model))
+        : quotaKnownRemaining(model) != null
+          ? `${isBuildModel(model) ? "已知剩余上界" : "已知部分约"} ${formatQuota(model, quotaKnownRemaining(model))}`
+          : "暂无法估算";
+
 async function refresh() {
     currentTime.value = Date.now();
     if (import.meta.env.DEV && useMock.value) {
@@ -406,33 +434,18 @@ function onMockChange() {
                         <div
                             class="quota"
                             :class="{
-                                'quota-empty': model.quota.estimable && getEstimatedRemaining(model) === 0,
-                                'quota-low':
-                                    model.quota.estimable &&
-                                    getEstimatedRemaining(model) > 0 &&
-                                    getEstimatedRemaining(model) <= 100,
-                                'quota-inestimable': !model.quota.estimable,
+                                'quota-empty': quotaRemaining(model) === 0,
+                                'quota-low': quotaRemaining(model) > 0 && quotaRemaining(model) <= 100,
+                                'quota-inestimable': quotaRemaining(model) == null,
                             }"
                         >
                             <div class="quota-meta">
-                                <span class="quota-label">预估剩余额度</span>
-                                <em class="quota-badge">{{
-                                    model.quota.estimable
-                                        ? "预估"
-                                        : model.quota.known_estimated_remaining != null
-                                          ? "部分可估算"
-                                          : "未知"
-                                }}</em>
+                                <span class="quota-label">{{
+                                    isBuildModel(model) ? "预估剩余 Token" : "预估剩余额度"
+                                }}</span>
+                                <em class="quota-badge">{{ quotaBadge(model) }}</em>
                             </div>
-                            <b class="quota-value">
-                                {{
-                                    model.quota.estimable
-                                        ? `${number(getEstimatedRemaining(model))} 次`
-                                        : model.quota.known_estimated_remaining != null
-                                          ? `已知部分约 ${number(model.quota.known_estimated_remaining)} 次`
-                                          : "暂无法估算"
-                                }}
-                            </b>
+                            <b class="quota-value">{{ quotaText(model) }}</b>
                         </div>
 
                         <!-- 账号池健康环形条 -->
@@ -451,26 +464,37 @@ function onMockChange() {
                                     />
                                 </svg>
                                 <span class="ring-center-value">
-                                    {{ number(model.realtime.available_accounts) }}
+                                    {{ number(model.realtime.dispatchable_accounts) }}
                                 </span>
                             </div>
                             <div class="account-ring-meta">
                                 <div class="account-ring-title">账号池健康度</div>
                                 <div class="account-ring-detail">
                                     <span class="account-ok"
-                                        >{{ number(model.realtime.available_accounts) }} 可用 /
-                                        {{ number(model.realtime.tier_allowed_accounts) }} 层级允许</span
+                                        >{{ number(model.realtime.dispatchable_accounts) }} 就绪 /
+                                        {{ number(model.realtime.available_accounts) }} 可用</span
                                     >
                                     <span v-if="model.realtime.rate_limited_accounts > 0" class="account-warn">
                                         · {{ number(model.realtime.rate_limited_accounts) }} 耗尽
                                     </span>
-                                    <span v-else-if="model.realtime.available_accounts == null" class="account-warn"
+                                    <span
+                                        v-else-if="
+                                            model.realtime.dispatchable_accounts == null ||
+                                            model.realtime.available_accounts == null
+                                        "
+                                        class="account-warn"
                                         >· 状态未知</span
                                     >
                                     <span v-else-if="incomplete(model.coverage?.realtime)" class="account-warn"
                                         >· 仅已知部分</span
                                     >
-                                    <span v-else class="account-all-ok">· 全部就绪</span>
+                                    <span
+                                        v-else-if="
+                                            model.realtime.dispatchable_accounts === model.realtime.available_accounts
+                                        "
+                                        class="account-all-ok"
+                                        >· 全部就绪</span
+                                    >
                                 </div>
                             </div>
                         </div>

@@ -73,6 +73,50 @@ test("public scheduler snapshot is side-effect-free and distinguishes unknown qu
     scheduler.close();
 });
 
+test("public capacity adds ready Build and PG channels without counting cold accounts or consuming state", t => {
+    const auth = {
+        accountNameMap: new Map(),
+        getRotationIndices: () => [0, 1, 2],
+    };
+    const config = loadSchedulerConfig({
+        BUILD_MAX_CONCURRENCY: "1",
+        CONTEXT_MAX_CONCURRENCY: "11",
+        GLOBAL_MAX_CONCURRENCY: "300",
+        MAX_BROWSER_WORKERS: "3",
+        MODEL_WORKER_ALLOCATION: JSON.stringify({ "build/gemini-3.8-flash": 1, "gemini-3.8-flash": 1 }),
+        PG_MAX_CONCURRENCY: "10",
+    });
+    const scheduler = new ModelScheduler({ ...config, statePath: null }, auth, logger);
+    t.after(() => scheduler.close());
+    scheduler.browserManager = {
+        contexts: new Map(),
+        isContextReady: index => index < 2,
+    };
+    let snapshot = scheduler.publicSummarySnapshot();
+    assert.equal(snapshot.limit, 22);
+    assert.equal(scheduler.accounts.size, 0);
+    assert.ok(snapshot.models.every(model => model.dispatchableAccounts === 2 && model.availableAccounts === 3));
+    scheduler.browserManager.benefitCheckingIndices = new Set([1]);
+    snapshot = scheduler.publicSummarySnapshot();
+    assert.equal(snapshot.limit, 11);
+    assert.ok(snapshot.models.every(model => model.dispatchableAccounts === 1 && model.availableAccounts === 3));
+    const account = scheduler.account(0);
+    account.inflight = 1;
+    account.models["build/gemini-3.8-flash"] = { inflight: 1 };
+    scheduler.workers[0].lease = { model: "build/gemini-3.8-flash" };
+    snapshot = scheduler.publicSummarySnapshot();
+    assert.equal(snapshot.limit, 11);
+    assert.equal(snapshot.models.find(model => model.model.startsWith("build/")).dispatchableAccounts, 0);
+    assert.equal(snapshot.models.find(model => model.model.startsWith("build/")).availableAccounts, 3);
+    assert.equal(account.inflight, 1);
+    scheduler.workers[0].lease = null;
+    account.inflight = 0;
+    account.models["build/gemini-3.8-flash"].inflight = 0;
+    account.models["gemini-3.8-flash"] = { cooldown_until: Date.now() + 60000, inflight: 0 };
+    scheduler.config.modelConcurrency["build/gemini-3.8-flash"] = 1;
+    assert.equal(scheduler.publicSummarySnapshot().limit, 1);
+});
+
 test("public history projection whitelists visible models and merges failures", () => {
     const service = new UsageStatsService(null, logger, null, false);
     service.enabled = true;

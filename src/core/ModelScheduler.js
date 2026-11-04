@@ -613,20 +613,20 @@ class ModelScheduler {
         let ready = this._readyRound?.get(model);
         if (!ready) {
             const eligible = this.eligibleAccounts(model);
-            ready =
-                (!this.config.readyContextOnly && !isArgon(model)) || !this.browserManager
-                    ? eligible
-                    : eligible.filter(account => {
-                          if (!this.browserManager.isContextReady(account.index)) return false;
-                          if (isArgon(model)) {
-                              const benefit = this.browserManager.contexts?.get(account.index)?.page?.buildBenefit;
-                              if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
-                          }
-                          return true;
-                      });
+            ready = eligible.filter(account => this.isReadyCandidate(account, model));
             this._readyRound?.set(model, ready);
         }
         return excluded.size ? ready.filter(account => !excluded.has(account.key)) : ready;
+    }
+
+    isReadyCandidate(account, model) {
+        if ((!this.config.readyContextOnly && !isArgon(model)) || !this.browserManager) return true;
+        if (!this.browserManager.isContextReady(account.index)) return false;
+        if (isArgon(model)) {
+            const benefit = this.browserManager.contexts?.get(account.index)?.page?.buildBenefit;
+            if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
+        }
+        return true;
     }
 
     needsContextForRequest(item, account = null, ignoreReadyAccount = null) {
@@ -1847,15 +1847,112 @@ class ModelScheduler {
         const dailyRequests = slot => (slot?.daily_request_date === date ? slot.daily_request_count || 0 : 0);
         const isRateLimited = slot =>
             Boolean(slot?.rate_limited && (!slot.cooldown_until || slot.cooldown_until > now));
-        const isAvailable = (account, slot) =>
-            (account?.healthy ?? true) &&
-            !account?.disabled &&
-            !slot?.unsupported &&
-            (!slot?.cooldown_until || slot.cooldown_until <= now);
+        // Detached defaults keep anonymous reads from creating account/slot state.
+        const accounts = indices.map(index => ({
+            healthy: true,
+            ...accountFor(index),
+            index,
+            inflight: accountFor(index)?.inflight || 0,
+            key: this.authSource.accountNameMap.get(index) || `auth-${index}`,
+            models: accountFor(index)?.models || {},
+        }));
+        const readyByModel = new Map(
+            models.map(model => [
+                model,
+                accounts.filter(
+                    account => this.isResourceEligible(account, model, now) && this.isReadyCandidate(account, model)
+                ),
+            ])
+        );
+        const dispatchableByModel = new Map(
+            models.map(model => [model, readyByModel.get(model).filter(account => this.canLease(account, model))])
+        );
+        const active = this.workers.filter(worker => worker.lease).length;
+        const ceiling = this.workers.length;
+        // Capacity flow shares account/context limits across channels and model
+        // limits across accounts, so overlapping pools are never counted twice.
+        const graph = new Map();
+        const edge = (from, to, capacity) => {
+            if (!graph.has(from)) graph.set(from, []);
+            if (!graph.has(to)) graph.set(to, []);
+            const forward = { capacity: Math.max(0, capacity), to };
+            const reverse = { capacity: 0, to: from };
+            forward.reverse = reverse;
+            reverse.reverse = forward;
+            graph.get(from).push(forward);
+            graph.get(to).push(reverse);
+        };
+        for (const model of models) {
+            const allocation = this.config.allocation[model];
+            const staticLimit =
+                allocation?.preferred ??
+                Math.max(
+                    1,
+                    ceiling - Object.values(this.config.allocation).reduce((sum, entry) => sum + entry.preferred, 0)
+                );
+            const limit = Math.min(
+                this.config.modelConcurrency[model] ?? ceiling,
+                this.config.dynamic ? ceiling : staticLimit
+            );
+            edge(`model:${model}`, "sink", limit - this.active(model));
+        }
+        for (const account of accounts) {
+            const node = `account:${account.index}`;
+            edge(
+                "source",
+                node,
+                Math.min(this.config.accountConcurrency || ceiling, this.config.contextMaxConcurrency || ceiling) -
+                    account.inflight
+            );
+            for (const channel of ["build", "pg"]) {
+                const channelNode = `${node}:${channel}`;
+                const limit = channel === "build" ? (this.config.buildConcurrency ?? 1) : this.config.pgConcurrency;
+                edge(node, channelNode, (limit || ceiling) - this.channelInflight(account, channel));
+                for (const model of models) {
+                    if (
+                        (model.startsWith("build/") ? "build" : "pg") !== channel ||
+                        !dispatchableByModel.get(model).includes(account)
+                    )
+                        continue;
+                    const modelLimit = this.config.accountModelConcurrency?.[model] ?? this.config.accountConcurrency;
+                    edge(
+                        channelNode,
+                        `model:${model}`,
+                        (modelLimit || ceiling) - (account.models[model]?.inflight || 0)
+                    );
+                }
+            }
+        }
+        let spare = 0;
+        while (spare < ceiling - active) {
+            const previous = new Map([["source", null]]);
+            const queue = ["source"];
+            for (let cursor = 0; cursor < queue.length && !previous.has("sink"); cursor++) {
+                for (const link of graph.get(queue[cursor]) || []) {
+                    if (link.capacity <= 0 || previous.has(link.to)) continue;
+                    previous.set(link.to, link);
+                    queue.push(link.to);
+                }
+            }
+            if (!previous.has("sink")) break;
+            let amount = ceiling - active - spare;
+            for (let node = "sink"; node !== "source";) {
+                const link = previous.get(node);
+                amount = Math.min(amount, link.capacity);
+                node = link.reverse.to;
+            }
+            for (let node = "sink"; node !== "source";) {
+                const link = previous.get(node);
+                link.capacity -= amount;
+                link.reverse.capacity += amount;
+                node = link.reverse.to;
+            }
+            spare += amount;
+        }
 
         return {
-            active: this.workers.filter(worker => worker.lease).length,
-            limit: this.workers.length,
+            active,
+            limit: active + spare,
             models: models.map(model => {
                 const accountSlots = indices.map(index => {
                     const account = accountFor(index);
@@ -1864,13 +1961,8 @@ class ModelScheduler {
                 const today = accountSlots.reduce((sum, item) => sum + dailyRequests(item.slot), 0);
                 return {
                     active: this.active(model),
-                    availableAccounts: accountSlots.filter(
-                        item =>
-                            isAvailable(item.account, item.slot) &&
-                            !(model.startsWith("build/") && item.account && !this.canLease(item.account, model)) &&
-                            !this.authSource.isExpired?.(item.index) &&
-                            this.isTierAllowed(item.index, model)
-                    ).length,
+                    availableAccounts: accounts.filter(account => this.isResourceEligible(account, model, now)).length,
+                    dispatchableAccounts: dispatchableByModel.get(model).length,
                     estimatedRemaining: accountSlots.some(
                         item =>
                             this.isTierAllowed(item.index, model) &&

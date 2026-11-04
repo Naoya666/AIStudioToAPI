@@ -42,7 +42,13 @@ test(
                     history: metrics(100),
                     model: "flash",
                     quota: { estimable: true, estimated_remaining: 100 },
-                    realtime: { active: 0, available_accounts: 1, queued: 0, rate_limited_accounts: 0 },
+                    realtime: {
+                        active: 0,
+                        available_accounts: 2,
+                        dispatchable_accounts: 1,
+                        queued: 0,
+                        rate_limited_accounts: 0,
+                    },
                     recent_stats: { "1h": metrics(3), "24h": metrics(20) },
                     today: { requests: 4 },
                 },
@@ -95,14 +101,27 @@ test(
         await page.getByRole("button", { name: "立即刷新数据" }).click();
         await waitText("0");
         assert.equal(await page.locator("tbody tr td").nth(1).textContent(), "—");
+        assert.match(await page.locator(".account-ring-detail").textContent(), /1 就绪 \/ 2 可用/);
+        snapshot.models.push({
+            ...snapshot.models[0],
+            model: "build/gemini-3.8-flash",
+            token_quota: { estimated_remaining: 1234500, known_limit: 2000000, known_remaining_upper_bound: 1500000 },
+        });
+        await page.getByRole("button", { name: "立即刷新数据" }).click();
+        await page.getByText("123.45 w token", { exact: true }).waitFor();
+        snapshot.models[1].token_quota.estimated_remaining = null;
+        await page.getByRole("button", { name: "立即刷新数据" }).click();
+        await page.getByText("已知剩余上界 150 w token", { exact: true }).waitFor();
+        snapshot.models.pop();
         snapshot.service_status = "unavailable";
         snapshot.quota_status = "exhausted";
         snapshot.models[0].realtime.available_accounts = 0;
+        snapshot.models[0].realtime.dispatchable_accounts = 0;
         snapshot.models[0].realtime.rate_limited_accounts = 1;
         snapshot.models[0].quota.estimated_remaining = 0;
         await page.getByRole("button", { name: "立即刷新数据" }).click();
         await page.getByText("额度已耗尽，等待恢复", { exact: true }).waitFor();
-        assert.match(await page.locator(".account-ring-detail").textContent(), /0 可用/);
+        assert.match(await page.locator(".account-ring-detail").textContent(), /0 就绪/);
         assert.ok(await page.getByText("0 次", { exact: true }).isVisible());
         snapshot.quota_status = "cooldown";
         await page.getByRole("button", { name: "立即刷新数据" }).click();

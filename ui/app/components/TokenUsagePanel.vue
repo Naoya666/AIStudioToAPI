@@ -93,7 +93,7 @@ const model = ref(""),
     models = ref([]),
     error = ref("");
 const page = ref(1),
-    pageSize = ref(20),
+    pageSize = ref(10),
     total = ref(0),
     loading = ref(false);
 const number = value => Number(value || 0).toLocaleString();

@@ -116,7 +116,6 @@
         />
         <PageState v-else-if="!usageLoaded" :message="t('loading')" :loading="true" />
         <template v-if="usageLoaded">
-            <TokenUsagePanel />
             <section
                 class="status-card stats-filters-card"
                 :class="{ 'is-collapsed-mobile': isStatsFiltersMobile && statsFiltersCollapsed }"
@@ -755,6 +754,8 @@
                     </div>
                 </section>
             </div>
+
+            <TokenUsagePanel />
 
             <div class="full-width-section">
                 <section class="status-card storage-retention-card">

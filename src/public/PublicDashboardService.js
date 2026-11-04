@@ -111,6 +111,7 @@ class PublicDashboardService {
                     realtime: {
                         active: count(item.active),
                         available_accounts: count(item.availableAccounts),
+                        dispatchable_accounts: nullableCount(item.dispatchableAccounts ?? null),
                         queued: count(item.queued),
                         rate_limited_accounts: count(item.rateLimitedAccounts),
                         tier_allowed_accounts: nullableCount(item.tierAllowedAccounts ?? null),
