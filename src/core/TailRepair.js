@@ -1,5 +1,5 @@
 // Generation-only compatibility repair. Existing protocol validation remains authoritative.
-const TAIL_REPAIR_TEXT = "请根据以上对话和指令继续回应；若最后一条是助手未完成的内容，请接续完成，避免重复已有内容。";
+const TAIL_REPAIR_TEXT = "请根据以上对话和指令继续回应。";
 
 function repairGoogleTail(body, enabled) {
     if (enabled !== true || !Array.isArray(body?.contents) || body.contents.length === 0)
