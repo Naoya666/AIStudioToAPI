@@ -1,6 +1,15 @@
 # 浏览器推广卡片动画高 CPU 修复方案
 
-日期：2026-11-05（Asia/Shanghai）。状态：**根因已确认，永久修复尚未实现或部署**。本文提供实施与验收方案；本轮仅编写文档，不修改业务代码或生产配置。
+日期：2026-11-05（Asia/Shanghai）。状态：**代码修复已实现，离线 Firefox 验证通过；尚未部署或完成 bero 真实验收**。本文保留根因证据、实施边界和生产验收方案，不能把离线通过视为线上 CPU 问题已经解决。
+
+## 实施记录
+
+- `src/core/PromoAnimationPause.js` 使用下文的定向 CSS 暂停卡片及其伪元素动画。只处理 `aistudio.google.com` 顶层文档，按专属 style ID 去重；兼容文档已就绪和初始无根节点的情况，仅在必要时注册一次性 `DOMContentLoaded` 监听，无轮询或持续 DOM 观察。
+- `BrowserManager._initializeContext()` 在业务 context 创建后、`newPage()` 前单独注册该脚本，沿用初始化超时与取消管理。普通装饰脚本注册或插入失败只输出简短诊断；现有 RPC 超时、取消和过期初始化保护仍生效。隐私脚本、登录浏览器和 local 后端未增加该处理。
+- `npm run test:browser:promo` 使用实际 Playwright Firefox 和完全拦截的合成页面，不访问 Google 或读取账号。已验证卡片与两个伪元素动画处于 `paused` 且时间不再前进、无关动画继续、计时器继续、布局稳定且可点击，以及延迟插入、重复安装、reload、完整导航、不同域、同域及跨域子 frame、新 context 的行为。
+- `tests/browser-recovery.test.js` 增加注册先于页面创建、注册失败仍可 READY 的回归检查。浏览器恢复、重连生命周期、运行时监督和 local 后端相关测试一并回归。
+
+离线测试需要先安装 Playwright Firefox（`npx playwright install firefox`）。本次环境没有 Camoufox 可执行文件，因此没有验证 Camoufox 或真实推广卡片，也没有进行生产切换、真实 CPU 采样、生成链路和权益路径验收。以下 bero 验收与发布步骤仍待执行；修改后需要重建业务 context 才会生效。
 
 ## 问题与证据
 
@@ -19,11 +28,11 @@ bero 从 `8689bce` 升级至 `feat/local-browserless-backend` 的 `d4585bc` 后�
 
 对同一实例仅执行该动画的 `pause()` / `play()`，每阶段采样约 10 秒：
 
-| 状态 | 容器 CPU（100% 为一核） | 折算整机 CPU（4 核） |
-| --- | ---: | ---: |
-| 原动画运行 | 105.52% | 26.38% |
-| 动画暂停 | 9.38% | 2.34% |
-| 动画恢复 | 106.00% | 26.50% |
+| 状态       | 容器 CPU（100% 为一核） | 折算整机 CPU（4 核） |
+| ---------- | ----------------------: | -------------------: |
+| 原动画运行 |                 105.52% |               26.38% |
+| 动画暂停   |                   9.38% |                2.34% |
+| 动画恢复   |                 106.00% |               26.50% |
 
 期间 requests 表新增记录为 0。该可逆对照确认了当前高负荷的直接原因：推广卡片装饰动画触发持续渲染。测试后已恢复动画并关闭临时 Node inspector。
 
@@ -45,7 +54,7 @@ local 后端不创建此业务页面，无需安装该处理。不要把规则�
 .promo-card-wrapper,
 .promo-card-wrapper::before,
 .promo-card-wrapper::after {
-    animation-play-state: paused !important;
+  animation-play-state: paused !important;
 }
 ```
 

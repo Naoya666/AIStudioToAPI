@@ -265,6 +265,31 @@ for (const isBackgroundTask of [false, true]) {
     });
 }
 
+for (const registrationFails of [false, true]) {
+    test(`promo style registration ${registrationFails ? "failure preserves READY" : "precedes page creation"}`, async t => {
+        const { installPromoAnimationPause } = require("../src/core/PromoAnimationPause");
+        const { pool } = playgroundInitFixture(t);
+        const create = pool._createBrowserContext;
+        let registered = false;
+        pool._createBrowserContext = async (...args) => {
+            const context = await create(...args);
+            context.addInitScript = async script => {
+                if (script !== installPromoAnimationPause) return;
+                registered = true;
+                if (registrationFails) throw new Error("decorative script registration failed");
+            };
+            const newPage = context.newPage;
+            context.newPage = async () => {
+                assert.equal(registered, true);
+                return newPage();
+            };
+            return context;
+        };
+        await pool._getOrStartContextInit(0, { isBackgroundTask: true });
+        assert.equal(pool.isContextReady(0), true);
+    });
+}
+
 for (const failure of [
     "bootstrap",
     "page_closed",

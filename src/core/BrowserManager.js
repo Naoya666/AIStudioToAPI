@@ -9,6 +9,7 @@ const { accountForIndex, canUseModel, resolveTier } = require("../accounts/Accou
 
 const { BuildBenefitContext } = require("./BuildBenefitContext");
 const { PlaygroundTransport } = require("./PlaygroundTransport");
+const { installPromoAnimationPause } = require("./PromoAnimationPause");
 const fs = require("fs");
 const path = require("path");
 const { firefox } = require("playwright");
@@ -3960,6 +3961,17 @@ class BrowserManager {
             this._setInitPhase(attempt, "page_creation");
             const privacyScript = this._getPrivacyProtectionScript(authIndex);
             await this._runInitOperation(attempt, "context.addInitScript", () => context.addInitScript(privacyScript));
+
+            try {
+                await this._runInitOperation(attempt, "context.addInitScript.promoAnimationPause", () =>
+                    context.addInitScript(installPromoAnimationPause)
+                );
+            } catch (error) {
+                if (error?.code === "PLAYWRIGHT_RPC_TIMEOUT") throw error;
+                this._assertCurrentInitAttempt(attempt);
+                this._throwIfContextInitAborted(authIndex, isBackgroundTask);
+                this.logger.warn(`${logPrefix} Promo animation pause script could not be registered`);
+            }
 
             page = await this._runInitOperation(attempt, "context.newPage", () => context.newPage());
             page.accountSessionVersion = storageStateObject._accountSessionVersion || 0;
