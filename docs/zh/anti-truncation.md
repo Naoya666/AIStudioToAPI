@@ -4,7 +4,7 @@
 
 ## 使用
 
-仅支持 OpenAI Chat Completions (`POST /v1/chat/completions`) 的文本请求。可用模型名前加一个大小写不敏感的 `anti-`；支持 `models/`、原有思考、流式和工具后缀的解析顺序，真实模型大小写保持不变。
+仅支持 OpenAI Chat Completions (`POST /v1/chat/completions`) 的文本输出请求。输入不再要求纯文本，非文本内容块沿用普通请求的转换与校验。可用模型名前加一个大小写不敏感的 `anti-`；支持 `models/`、原有思考、流式和工具后缀的解析顺序，真实模型大小写保持不变。
 
 ```json
 {
@@ -40,22 +40,25 @@
 
 模型采用静态准入名单 `src/core/AntiTruncation.js` 的 `TEXT_MODELS`，不根据名称自动放行未来型号。此前 Argon 未加入是因为尚未验证，并非已确认上游不支持。新模型需要验证文本与函数传输后加入名单；只加入 `/v1/models` 不会自动启用抗截断。
 
-| 模型/入口/组合                                                                   | 行为                                                                    |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| gemini-2.5-flash / pro / flash-lite                                              | 文本、函数工具隔离验证通过                                              |
-| gemini-3-flash-preview、gemini-3.1-pro-preview                                   | 文本注入、转换及修饰符隔离验证通过                                      |
-| gemini-3.1-flash-lite-preview / gemini-3.1-flash-lite                            | 同上                                                                    |
-| gemini-3.5-flash / flash-lite、gemini-3.6/3.7/3.8-flash                          | 同上；依赖部署模型目录与账号实际可用性                                  |
-| gemini-4-argon                                                               | 已加入默认名单；真实 AUTO 合成函数、非流式及缓冲 SSE 正文还原通过。MakerSuite 将强制／指定函数选择降级为 AUTO，不保证调用 |
-| 普通回答、函数 auto / required、并行真实函数                                     | 保留真实工具、参数和已有调用 ID；synthetic 只还原成正文                 |
-| tool_choice none（含旧 function_call none）                                      | 本次声明只包含 synthetic，真实工具不可调用；旧通道 Gemini ANY 指定该函数，桥接按 AUTO 自主决定是否调用 |
-| 强制指定真实函数                                                                 | 跳过 anti，记录 forced_real_tool；旧通道保留指定语义，桥接降级为 AUTO                    |
-| 搜索、代码执行、URL context、其他托管工具及全局强制工具                          | 未实测组合；显式 anti 拒绝，prefer 跳过                                 |
-| 图片/音频输入、非 text 输出、response_format、旧 functions schema                | 第一阶段显式拒绝，prefer 跳过                                           |
-| Gemma、latest 动态别名、未知模型、图片/音频/embedding/robotics/computer-use 模型 | 不在准入名单                                                            |
-| Claude、Responses、Gemini 原生、Embeddings 入口                                  | 显式 anti 在首包前拒绝；prefer 不启用                                   |
+| 模型/入口/组合                                                                   | 行为                                                                                                                      |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| gemini-2.5-flash / pro / flash-lite                                              | 文本、函数工具隔离验证通过                                                                                                |
+| gemini-3-flash-preview、gemini-3.1-pro-preview                                   | 文本注入、转换及修饰符隔离验证通过                                                                                        |
+| gemini-3.1-flash-lite-preview / gemini-3.1-flash-lite                            | 同上                                                                                                                      |
+| gemini-3.5-flash / flash-lite、gemini-3.6/3.7/3.8-flash                          | 同上；依赖部署模型目录与账号实际可用性                                                                                    |
+| gemini-4-argon                                                                   | 已加入默认名单；真实 AUTO 合成函数、非流式及缓冲 SSE 正文还原通过。MakerSuite 将强制／指定函数选择降级为 AUTO，不保证调用 |
+| 普通回答、函数 auto / required、并行真实函数                                     | 保留真实工具、参数和已有调用 ID；synthetic 只还原成正文                                                                   |
+| tool_choice none（含旧 function_call none）                                      | 本次声明只包含 synthetic，真实工具不可调用；旧通道 Gemini ANY 指定该函数，桥接按 AUTO 自主决定是否调用                    |
+| 强制指定真实函数                                                                 | 跳过 anti，记录 forced_real_tool；旧通道保留指定语义，桥接降级为 AUTO                                                     |
+| 搜索、代码执行、URL context、其他托管工具及全局强制工具                          | 未实测组合；显式 anti 拒绝，prefer 跳过                                                                                   |
+| 图片、文件等非文本输入                                                           | 不再由 anti 门禁拒绝或跳过；实际支持范围取决于现有转换器、模型及后端                                                      |
+| 非 text 输出、response_format、旧 functions schema                               | 显式拒绝，prefer 跳过                                                                                                     |
+| Gemma、latest 动态别名、未知模型、图片/音频/embedding/robotics/computer-use 模型 | 不在准入名单                                                                                                              |
+| Claude、Responses、Gemini 原生、Embeddings 入口                                  | 显式 anti 在首包前拒绝；prefer 不启用                                                                                     |
 
 准入还要求模型存在于部署的 modelList（目录可用时），并通过隐藏模型检查。名单在 `src/core/AntiTruncation.js` 的 `TEXT_MODELS` 中维护；扩展名单前须补充协议测试，并在独立环境实测模型支持函数调用。
+
+2026-11-05 的 `bero-anti-image-validation-20261105.md` 记录了独立容器中的真实验证：local 后端、`anti-gemini-3.8-flash`、单张 data URL PNG、无客户端真实工具时，非流式与 SSE 均正确识图并命中 synthetic 解码。本次据此移除 anti 对非文本输入的额外门禁；这不代表转换器新增了输入类型支持，也不代表远程图片、多图、多轮、音频、图片与真实工具混用、其他模型和后端或长输出截断恢复已经完成真实验收。
 
 ## 实现与状态约定
 

@@ -39,13 +39,13 @@ test("policy precedence, canonical identity, disabled switch and protocol admiss
     assert.equal(identity("anti-Gemini-2.5-Flash-real").realModel, "Gemini-2.5-Flash");
 });
 
-test("capability matrix excludes multimodal, hosted tools and unknown models", () => {
+test("capability matrix excludes non-text output, hosted tools and unknown models", () => {
     for (const body of [
         { model: "anti-gemini-2.5-flash-preview-tts" },
         { model: `anti-${model}-search` },
         { model: `anti-${model}`, tools: [{ type: "google_search" }] },
         { modalities: ["audio"], model: `anti-${model}` },
-        { messages: [{ content: [{ type: "image_url" }] }], model: `anti-${model}` },
+        { audio: { format: "wav", voice: "alloy" }, model: `anti-${model}` },
         { model: `anti-${model}`, response_format: { type: "json_object" } },
     ])
         assert.throws(() => resolve(body, { pgToolCallingMode: "strict" }), { status: 400 });
@@ -56,6 +56,45 @@ test("capability matrix excludes multimodal, hosted tools and unknown models", (
         ).reason,
         "forced_real_tool"
     );
+});
+
+test("non-text input does not disable explicit anti or default prefer", () => {
+    for (const type of ["image_url", "file", "input_audio"]) {
+        const body = { messages: [{ content: [{ type }], role: "user" }], model };
+        for (const config of [{ pgToolCallingMode: "strict" }, { pgToolCallingMode: "auto_fallback" }]) {
+            assert.equal(resolve({ ...body, model: `anti-${model}` }, config).enabled, true);
+            assert.equal(resolve({ ...body, anti_truncation: true }, config).enabled, true);
+            assert.equal(resolve(body, { ...config, antiTruncationDefault: "prefer" }).enabled, true);
+        }
+    }
+});
+
+test("image input survives synthetic injection and normal Google conversion", async () => {
+    const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+    const baseline = {
+        messages: [
+            {
+                content: [
+                    { text: "Describe the image", type: "text" },
+                    { image_url: { url: `data:image/png;base64,${data}` }, type: "image_url" },
+                ],
+                role: "user",
+            },
+        ],
+        model: "anti-gemini-3.8-flash",
+    };
+    const before = structuredClone(baseline);
+    const policy = resolve(baseline, {});
+    assert.equal(policy.enabled, true);
+    const injected = inject({ ...baseline, model: policy.model });
+    const translated = await converter.translateOpenAIToGoogle(injected.body, { privateTransport: true });
+    assert.deepEqual(baseline, before);
+    assert.deepEqual(injected.body.messages[0], baseline.messages[0]);
+    assert.deepEqual(translated.googleRequest.contents[0].parts, [
+        { text: "Describe the image" },
+        { inlineData: { data, mimeType: "image/png" } },
+    ]);
+    assert.equal(translated.googleRequest.tools[0].functionDeclarations[0].name, injected.name);
 });
 
 test("injection is immutable, unique per attempt, closes assistant turn and respects none/required", async () => {

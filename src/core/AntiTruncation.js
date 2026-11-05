@@ -62,8 +62,8 @@ function resolve(body, config, protocol = "openai", modelName = body.model || "g
     const choice = autoTools ? undefined : (body.tool_choice ?? body.function_call);
     if (choice && typeof choice === "object" && (choice.function?.name || choice.name))
         return { ...id, enabled: false, reason: "forced_real_tool", source };
-    // Only allow the text/function protocol verified by isolated tests. New models
-    // and hosted-tool combinations need a separate capability verification.
+    // Input content uses the normal converter, including non-text parts. New
+    // models and hosted-tool combinations still need capability verification.
     if (!TEXT_MODELS.includes(id.realModel)) return skip("anti_truncation_unsupported_model");
     if (
         id.forceCodeExecution ||
@@ -74,9 +74,6 @@ function resolve(body, config, protocol = "openai", modelName = body.model || "g
         body.response_format ||
         body.audio ||
         body.modalities?.some(mode => mode !== "text") ||
-        body.messages?.some(
-            message => Array.isArray(message.content) && message.content.some(part => part.type !== "text")
-        ) ||
         (!autoTools && Array.isArray(body.tools) && body.tools.some(tool => tool?.type !== "function")) ||
         (!autoTools && body.functions) ||
         (choice !== undefined && !["auto", "none", "required"].includes(choice))
