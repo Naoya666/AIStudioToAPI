@@ -1,6 +1,8 @@
-# 双后端本地验证记录（2026-11-05 UTC）
+# 双后端本地验证与 bero 真实验收记录（2026-11-05）
 
-实现分支：`feat/local-browserless-backend`。环境：Linux amd64、Node 22.23.2、Go 1.27.0、Docker 29.8.1。测试只使用合成数据、临时目录和隔离容器，没有生产部署、生产实例切换或真实账号 Google 生成。
+实现分支：`feat/local-browserless-backend`。最初本地验证环境为 Linux amd64、Node 22.23.2、Go 1.27.0、Docker 29.8.1，仅使用合成数据、临时目录和隔离容器。下述 Mock / 单元及本地集成检查保留这一验证边界。
+
+后续按用户授权，于 2026-11-05 20:44（Asia/Shanghai）将 bero 生产实例升级至 `d4585bc0b2b5eff152b504b1dc01b399eab672af` 并启用 `CALL_BACKEND=local`，完成真实 Google 调用验收。结论：本次验证范围内的 PG、Build、流式、Build anti 和合成酒馆分段调用可在无浏览器进程下成功；长期 Cookie 续期及其他未测组合仍待验证。部署镜像使用该提交原始 Dockerfile 构建，其 Node 24 运行环境与最初本地验证环境不同。
 
 ## 来源核对
 
@@ -50,12 +52,52 @@
 | 最终构建与离线 smoke | 均成功；smoke 输出 `Offline image startup, browser, assets and API checks passed.` |
 | 镜像 ID              | `sha256:b5ffd93b56b27d00856adf1b2909c3c79f3d709851ef25dcdcd6ef5facb6b08e`          |
 
+## bero 真实 Google 验收
+
+### 版本、部署与数据保留
+
+- 从 `8689bce` 升级至上述 `d4585bc`；验收结束前再次查询远端，目标分支 HEAD 未变。无源码补丁，完整构建内 Go 测试及无网络镜像 smoke 均通过。
+- 镜像 `aistudio-to-api:bero-local-d4585bc`，ID `sha256:49bd5bbb387e23adce351f46666587fc76ee18528219965a356549f6920ea2c2`。这是部署镜像，与上方最初离线验证镜像分别记录。
+- 生产目录 `/opt/aistudio-bero`，容器 `aistudio-bero`。Compose 仅更换镜像；持久化配置仅增加 `CALL_BACKEND=local`，版本 16→17。
+- 切换前核对 data/auth/models 三个 bind mounts、无命名卷、两份 SQLite 和既有本地/云端备份；确认无在途请求及账号任务后停机快照。快照为 `/srv/backups/aistudio-bero/manual-pre-local-d4585bc-20261105T124438Z`，旧镜像及手动快照保留供回退。
+- 7 份认证及身份元数据、模型权限、代理与挂载保留；2 contexts / 2 workers、总并发 10、每 context 5、Build 并发 5 保留。83 条既有 Token 日聚合及其计数未减少，两个 SQLite 均 `quick_check=ok`，111 个运行源码文件匹配固定提交。
+
+先在 bero 的独立 loopback `17860` 实例验收：复制现有 Pro slot 0 的认证和账号元数据至独立目录，使用独立数据、密钥和单账号并发 1；不挂载生产 auth/data，关闭测试实例自动重登及 Cookie 写回。通过后停止测试实例，再升级并切换生产后端。
+
+### 真实调用结果
+
+以下每条通过的请求均使用自建随机标记，返回 HTTP 200、完整预期标记及 `finish_reason=stop`。
+
+| 环境 | 调用 | 数量 | 耗时 |
+| --- | --- | --- | --- |
+| 隔离实例 | PG `gemini-3.8-flash` 非流式 | 1 | 2.81 秒 |
+| 隔离实例 | PG `gemini-3.8-flash` real / fake / early SSE | 3 | 4.97 / 6.27 / 2.31 秒 |
+| 隔离实例 | PG `gemini-4-argon` 非流式 | 1 | 3.05 秒 |
+| 隔离实例 | `build/gemini-3.8-flash` 非流式 | 1 | 26.40 秒 |
+| 隔离实例 | `build/gemini-4-argon-real` SSE | 1 | 31.18 秒 |
+| 生产原 HTTPS 入口 | PG `gemini-3.8-flash-real` SSE | 1 | 3.18 秒 |
+| 生产实例 loopback API | Build Flash 普通 / anti 非流式 | 2 | 20.11 / 27.24 秒 |
+| 生产实例 loopback API | `build-st/gemini-3.8-flash-real`，v2 合成酒馆分段、anti 开启 | 1 | 19.04 秒 |
+
+early 首次使用 128 Token 测试上限，返回 `finish_reason=length`，标记少一个字符；提高至 1024 后通过。首次截断另存 `early-128-token-limit.json`，没有计入上表的 11 条通过请求，也没有将其记为成功验收。
+
+7 条隔离请求和 4 条生产请求均按 request ID 核对 SQLite：每条只有一条 `outcome=success`、HTTP 200 的记录，`attempt_count=1`，11 条均有实际用量。部分 SSE 未请求下游 usage 包，不能据此断言统计缺失。这里证明应用请求无重试、无重复统计；未单独抓取每次底层 RPC，不能将 `attempt_count=1` 扩大为所有 Build RPC 提交次数的独立证明。
+
+### 无浏览器进程、稳定性与备份
+
+- 隔离及生产各连续采样 30 次，实例内浏览器进程始终为 0，Go 引擎始终为 1；运行配置确认为 `local`。这些结果来自实际进程检查，不是从镜像安装内容推断。
+- 切换后 273.8 秒，容器 PID 和应用 instanceId 不变，`restart_count=0`，配置 `ready/operational=true`，无待重启项或重启错误。健康、存活、后台、设置、语言包及鉴权模型目录均正常。
+- 新备份通过 SQLite / 归档验证、上传及回下载字节校验后再轮换。最终归档 `daily-20261105T124755Z.tar.gz` 为 7,509,416 bytes，含新提交发布元数据；本地完成包 1 份、云端 10 份，备份 timer 正常。
+- 测试容器已移除、17860 端口关闭，生产容器 healthy。测试数据只保留在 bero 受限目录，不复制凭证至源码仓库。
+
+脱敏证据位于控制机 `/home/dev/workspace/infra/aistudio-bero/browserless-20261105/`：`acceptance.json`、`usage-verification.json`、`call-*.json`、`production/call-*.json`、两份 `*-process-observation.json`、`backup-check.json` 和 `final-state.json`。部署及回退说明为 `/home/dev/workspace/infra/runbooks/bero-local-browserless-upgrade-20261105.md`；服务器受限工作目录为 `/opt/aistudio-browserless-20261105`。未在此文档记录 Cookie、proof、认证头、账号身份或请求/响应正文。
+
 ## 未验收与限制
 
-**真实 Google 上游验收未执行。** 没有明确授权的测试账号，不能把编译、合成 proof 或 Mock RPC 成功等同于无浏览器调用成功。
+真实 Google 验收已覆盖上节指定模型的短文本调用、流式、Build anti、合成酒馆分段及用量落库，不能扩大为全部模型或功能均可用。酒馆分段测试直接构造兼容的 v2 封装，没有从实际酒馆浏览器界面执行完整端到端操作；短标记 anti 测试也不等于长文本抗截断效果验证。
 
-待隔离测试环境验收：PG 流式和非流式、real/fake/early、思考/工具/结构化/多模态/usage，Build/build-st 的创建/提交/读流/取消/清理，文件与模型权益查询，多账号真实代理出口、下游断连、真实 403 冷却及明确认证 401、实际用量与 Build 单次提交，以及跨日 Cookie 滚动维护。
+仍待真实验收：独立的思考参数、客户端工具往返、结构化输出、多模态、大文件、长文本，文件管理及人工模型/权益查询，多账号并发与不同代理出口，下游断连、取消、真实 403 冷却及明确认证 401 恢复，底层 Build 单次提交和删除状态，以及跨日 Cookie 滚动维护。本版本 Build 清理为 `best_effort`、历史自动恢复已停用；成功生成不等于所有上游项目已删除。
 
 参考版本只有 Set-Cookie 合并、auth_warmup/authcheck 等会话路径，没有独立 RotateCookies 调用。本地实现适配并周期触发这些路径，但长期 Google Cookie 续期尚无真实证据。其他明确限制包括 Linux 平台和私有接口容量上限，见 [运行与切换说明](local-browserless-backend.md)。
 
-升级后默认继续 browser；验收完成前不能据此宣称 local 已获真实 Google 可用性验证。后续验收只保存脱敏元数据，不记录凭证、proof、认证头或正文。
+软件默认后端仍为 `browser`；bero 经本次验收显式保存并启用了 `local`，没有修改全局默认值。账号交互登录仍可按需使用浏览器。本次没有实际演练生产回退；可按 [运行与切换说明](local-browserless-backend.md) 切回 browser。若同时回退到不识别 `CALL_BACKEND` 的旧版本，应先保留当前数据，再仅撤销相应覆盖并处理 last-good，避免整份恢复旧数据库或 Cookie。后续验收继续只保存脱敏元数据。
