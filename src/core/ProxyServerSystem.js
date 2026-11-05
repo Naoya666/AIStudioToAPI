@@ -38,7 +38,11 @@ class ProxyServerSystem extends EventEmitter {
         this.configurationService = new ConfigurationService(this);
 
         this.authSource = new AuthSource(this.logger);
-        this.browserManager = new BrowserManager(this.logger, this.config, this.authSource);
+        const SessionManager =
+            this.config.callBackend === "local"
+                ? require("./backends/LocalSessionManager").LocalSessionManager
+                : BrowserManager;
+        this.browserManager = new SessionManager(this.logger, this.config, this.authSource);
         this.usageStatsService = new UsageStatsService(
             this.authSource,
             this.logger,
@@ -59,6 +63,10 @@ class ProxyServerSystem extends EventEmitter {
                     return;
                 }
 
+                if (this.config.callBackend === "local") {
+                    await this.browserManager.attemptLightweightReconnect(authIndex);
+                    return;
+                }
                 // Check if this is the current account
                 const currentAuthIndex = this.browserManager.currentAuthIndex;
                 const isCurrentAccount = authIndex === currentAuthIndex;

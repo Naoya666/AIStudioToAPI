@@ -68,7 +68,11 @@ class PlaygroundConnection extends EventEmitter {
                 const kind =
                     error.kind ||
                     (status === 429 ? "upstream_rate_limited" : status >= 500 ? "upstream_5xx" : "upstream");
+                this.transport.logger.warn(
+                    `[Backend] backend=${this.transport.backend || "browser"} account=${this.transport.authIndex} event=error status=${status} kind=${kind} reason=${/^[a-z_]{1,80}$/.test(error.reason || "") ? error.reason : kind}`
+                );
                 transmit({
+                    backend: this.transport.backend || "browser",
                     cooldown: error.cooldown ?? (status === 429 || status >= 500),
                     event_type: "error",
                     kind,
@@ -203,7 +207,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
         if (!this.ready || this.closed) throw fail("Playground transport not ready");
         this.connection = new PlaygroundConnection(this);
         registry.addConnection(this.connection, {
-            address: "Playwright",
+            address: this.backend === "local" ? "Local SpiderMonkey" : "Playwright",
             attemptId: owner.id || owner.attemptId,
             authIndex: this.authIndex,
             browserGeneration: owner.browserGeneration,
@@ -212,6 +216,39 @@ class PlaygroundTransport extends MakerSuiteBridge {
         return this.connection;
     }
 
+    async expectedDocumentId() {
+        return this.benefit?._evaluate(() => window.__buildBenefit?.documentId);
+    }
+    startRpc(args) {
+        return this.page.evaluate(pageEval, `window.__makerSuiteBridge.start(${JSON.stringify(args)})`);
+    }
+    nextRpc(id) {
+        return this.page.evaluate(pageEval, `window.__makerSuiteBridge.next(${JSON.stringify(id)})`);
+    }
+    rejectStreamAuth(id) {
+        return this.page
+            .evaluate(pageEval, `window.__makerSuiteBridge.rejectStreamAuth(${JSON.stringify(id)})`)
+            .catch(() => {});
+    }
+    proofIsBroken() {
+        return withHardTimeout(
+            () => this.page.evaluate(pageEval, "window.__makerSuiteBridge?.proofBroken === true"),
+            2000
+        ).catch(() => true);
+    }
+    releaseRpc(id) {
+        return withHardTimeout(
+            () => this.page.evaluate(pageEval, `window.__makerSuiteBridge?.release(${JSON.stringify(id)})`),
+            2000,
+            { operation: "Playground stream cleanup", status: 504 }
+        ).catch(() => {});
+    }
+    run(args) {
+        return this.page.evaluate(pageEval, `window.__makerSuiteBridge.run(${JSON.stringify(args)})`);
+    }
+    drive(operation) {
+        return this.page.evaluate(pageEval, `window.__makerSuiteBridge.drive(${JSON.stringify(operation)})`);
+    }
     async generate(request, onChunk = null) {
         if (!this.ready || this.closed || this.benefit?.disposed || this.benefit?.isCurrent() === false)
             throw fail("Playground transport unavailable");
@@ -278,7 +315,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
         const execute = async () => {
             if (timeoutMs <= 0) throw fail("Playground generation deadline exceeded", 504);
             if (match[1] === "gemini-4-argon") await this.benefit?.assertReady();
-            const expectedDocumentId = await this.benefit?._evaluate(() => window.__buildBenefit?.documentId);
+            const expectedDocumentId = await this.expectedDocumentId();
             if (cancelled || this.closed || epoch !== this.epoch || !this.active.has(id))
                 throw fail("Playground document retired", 499);
             const chunks = [];
@@ -319,16 +356,19 @@ class PlaygroundTransport extends MakerSuiteBridge {
             });
             let result;
             try {
-                await this.page.evaluate(
-                    pageEval,
-                    `window.__makerSuiteBridge.start(${JSON.stringify({ body, excludedKeys, expectedDocumentId, ht, id, readyTimeoutMs: this.readyTimeoutMs, rpcMethod, timeoutMs })})`
-                );
+                await this.startRpc({
+                    body,
+                    excludedKeys,
+                    expectedDocumentId,
+                    ht,
+                    id,
+                    readyTimeoutMs: this.readyTimeoutMs,
+                    rpcMethod,
+                    timeoutMs,
+                });
                 // eslint-disable-next-line no-constant-condition
                 while (true) {
-                    const event = await this.page.evaluate(
-                        pageEval,
-                        `window.__makerSuiteBridge.next(${JSON.stringify(id)})`
-                    );
+                    const event = await this.nextRpc(id);
                     if (cancelled || this.closed || epoch !== this.epoch)
                         throw fail("Playground document retired", 499);
                     if (event?.result) {
@@ -347,10 +387,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
                 }
             } catch (error) {
                 if (error.rpcStatus) {
-                    if (error.status === 401)
-                        await this.page
-                            .evaluate(pageEval, `window.__makerSuiteBridge.rejectStreamAuth(${JSON.stringify(id)})`)
-                            .catch(() => {});
+                    if (error.status === 401) await this.rejectStreamAuth(id);
                     throw await this.upstreamError(
                         { status: error.status, text: JSON.stringify(error.rpcStatus) },
                         invalidated
@@ -360,7 +397,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
             }
             if (this.closed || epoch !== this.epoch) throw fail("Playground document retired", 499);
             this.logger.info(
-                `[Playground] account=${this.authIndex} attempt=${attemptId} rpc=${rpcMethod} fetch_completed=true status=${result.status}`
+                `[Playground] backend=${this.backend || "browser"} account=${this.authIndex} attempt=${attemptId} rpc=${rpcMethod} fetch_completed=true status=${result.status}`
             );
             if (result.proofBroken) this.ready = false;
             if (result.status !== 200) throw await this.upstreamError(result, invalidated);
@@ -421,10 +458,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
             error.upstreamOutputStarted = outputStarted;
             cancelled = true;
             await this.cancel(id);
-            const broken = await withHardTimeout(
-                () => this.page.evaluate(pageEval, "window.__makerSuiteBridge?.proofBroken === true"),
-                2000
-            ).catch(() => true);
+            const broken = await this.proofIsBroken();
             if (broken) {
                 if (epoch === this.epoch) this.ready = false;
                 error.kind = "transport";
@@ -441,11 +475,7 @@ class PlaygroundTransport extends MakerSuiteBridge {
                 });
             throw error;
         } finally {
-            await withHardTimeout(
-                () => this.page.evaluate(pageEval, `window.__makerSuiteBridge?.release(${JSON.stringify(id)})`),
-                2000,
-                { operation: "Playground stream cleanup", status: 504 }
-            ).catch(() => {});
+            await this.releaseRpc(id);
             this.active.delete(id);
         }
     }

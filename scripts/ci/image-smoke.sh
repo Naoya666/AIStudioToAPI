@@ -10,7 +10,8 @@ docker run --rm --network none --entrypoint node "$image" -e '
 const fs = require("node:fs");
 for (const file of ["/app/ui/dist/index.html", "/app/ui-public/dist/index.html",
     "/app/ui/locales/en.json", "/app/docs/licenses/antigravity-gateway-MIT.txt",
-    "/app/camoufox-linux/camoufox", "/usr/local/bin/mihomo"]) {
+    "/app/camoufox-linux/camoufox", "/usr/local/bin/mihomo", "/app/local-engine/bin/local-engine",
+    "/app/local-engine/LICENSE.MIT", "/app/THIRD_PARTY_NOTICES.md"]) {
     if (!fs.existsSync(file)) throw Error("Missing runtime file: " + file);
 }
 require("node:sqlite");
@@ -18,6 +19,21 @@ require("playwright");
 require("./src/core/ProxyServerSystem");
 if (fs.existsSync("/app/node_modules/vite")) throw Error("Build dependencies leaked into runtime");
 if (fs.existsSync("/app/.env")) throw Error("Environment file leaked into runtime");
+'
+# Exercise the actual local child with network disabled and no account data.
+docker run --rm --network none --entrypoint node "$image" -e '
+const {LocalEngine} = require("./src/core/backends/LocalEngine");
+(async () => {
+    const engine = new LocalEngine();
+    try {
+        await engine.ensure();
+        if (!engine.health().ready) throw Error("Local engine readiness failed");
+        try {
+            await engine.json("POST", "/sessions", {state: {cookies: [], origins: []}, model: "fixture"}, {timeoutMs: 1000});
+            throw Error("Empty credentials were accepted");
+        } catch (e) { if (e.status !== 503 || e.kind !== "transport") throw e; }
+    } finally { await engine.close(); }
+})().catch(error => { console.error(error.message); process.exit(1); });
 '
 docker run --rm --network none --entrypoint node "$image" -e '
 const {firefox} = require("playwright");

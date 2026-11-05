@@ -359,3 +359,7 @@ Playground 的工具、结构化输出、文件与本地缓存支持范围及迁
 保存后对新请求立即生效，状态持久化在 `data/managed-config.json`，已保存的面板值优先于环境变量；恢复默认后采用环境变量或内置默认值。
 开启后，OpenAI Chat Completions、Responses、Claude Messages 和原生 Gemini `/proxy` 的 Google 生成请求在最终消息为 model 时追加一条非空 user 继续响应指令。适用于非流式、real、fake 和 early；抗截断已补 user 时不会重复追加，重试复用已构造的正文。
 补充指令可能影响续写效果并增加少量输入 Token。计数接口、embeddings、上传和 Build/酒馆 Build 附件通道不补尾，因此独立计数与生成实际 usage 可能相差这部分 Token；真实 usage 原样计入。
+
+## 浏览器 / 本地无浏览器后端
+
+默认仍使用 Camoufox。可在受保护的设置页「调用后端」保存后重启，切换到本机 Go / SpiderMonkey；不自动回退。支持范围、固定依赖、本地/Docker 构建、回退和未验收项见 [双后端说明](docs/zh/local-browserless-backend.md)。真实 Google 上游与长期 Cookie 续期尚待授权环境验收。

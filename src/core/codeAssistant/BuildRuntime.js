@@ -6,8 +6,8 @@ const { encode, decode } = require("./BuildCodec");
 const fail = (message, status = 503) => buildError({ message, source: "local", status });
 // Each operation owns its resource identifiers only until its single best-effort cleanup finishes.
 class BuildRuntime {
-    constructor({ page, accountKey, accountIndex, timeoutMs = 300000, logger, assertCurrent }) {
-        Object.assign(this, { accountIndex, accountKey, assertCurrent, logger, page, timeoutMs });
+    constructor({ page, rpcTransport, accountKey, accountIndex, timeoutMs = 300000, logger, assertCurrent }) {
+        Object.assign(this, { accountIndex, accountKey, assertCurrent, logger, page, rpcTransport, timeoutMs });
         this.active = new Set();
         this.readyProjects = 0;
     }
@@ -15,7 +15,7 @@ class BuildRuntime {
         // No upstream messages, resource IDs, request content or credentials enter cleanup logs.
         try {
             this.logger?.warn?.(
-                `[BuildCleanup] operation=${op} request=${entry.requestId || "none"} account=${this.accountIndex ?? "unknown"} method=${method} outcome=${outcome} duration_ms=${Date.now() - startedAt} code=${code}`
+                `[BuildCleanup] backend=${this.rpcTransport?.backend || "browser"} operation=${op} request=${entry.requestId || "none"} account=${this.accountIndex ?? "unknown"} method=${method} outcome=${outcome} duration_ms=${Date.now() - startedAt} code=${code}`
             );
         } catch {
             /* Logging must never affect generation or cleanup. */
@@ -46,9 +46,11 @@ class BuildRuntime {
             if (cancelled) return;
             cancelled = true;
             rejectAborted(buildError({ message: "Build RPC cancelled", phase, source: "local", status: 499 }));
-            void this.page
-                .evaluate(pageEval, `window.__makerSuiteBridge.cancel(${JSON.stringify(id)})`)
-                .catch(() => {});
+            if (this.rpcTransport) void this.rpcTransport.cancel(id);
+            else
+                void this.page
+                    .evaluate(pageEval, `window.__makerSuiteBridge.cancel(${JSON.stringify(id)})`)
+                    .catch(() => {});
         };
         signal?.addEventListener("abort", cancel, { once: true });
         try {
@@ -67,10 +69,12 @@ class BuildRuntime {
             const result = await withHardTimeout(
                 () =>
                     Promise.race([
-                        this.page.evaluate(
-                            pageEval,
-                            `window.__makerSuiteBridge.run(${JSON.stringify(args)}).then(result => ({...result, bridgeId: window.__makerSuiteBridge.instanceId}))`
-                        ),
+                        this.rpcTransport
+                            ? this.rpcTransport.run(args)
+                            : this.page.evaluate(
+                                  pageEval,
+                                  `window.__makerSuiteBridge.run(${JSON.stringify(args)}).then(result => ({...result, bridgeId: window.__makerSuiteBridge.instanceId}))`
+                              ),
                         aborted,
                     ]),
                 timeoutMs,
@@ -94,10 +98,24 @@ class BuildRuntime {
                     error,
                     body.filter(value => typeof value === "string")
                 );
+            if (error.backend === "local") {
+                const normalized = buildError({
+                    httpStatus: error.authState === "session_expired" ? 401 : null,
+                    message: error.message,
+                    phase,
+                    source: error.authState === "session_expired" ? "google_http" : "local",
+                    status: error.status || 503,
+                });
+                normalized.backend = "local";
+                normalized.kind = error.kind;
+                normalized.retryable = false;
+                normalized.cooldown = false;
+                throw normalized;
+            }
             if (!error.source)
                 throw buildError({
                     code: "BUILD_READ_INTERRUPTED",
-                    message: signal?.aborted ? "Build 请求已取消" : "Build 浏览器 RPC 读取中断",
+                    message: signal?.aborted ? "Build 请求已取消" : "Build RPC 读取中断",
                     phase,
                     source: "transport",
                     status: signal?.aborted ? 499 : error.status || 502,
@@ -113,7 +131,12 @@ class BuildRuntime {
         entry.cleanupStarted = true;
         const usable = method => {
             try {
-                if (entry.authInvalid || entry.account !== this.accountKey || this.page.isClosed?.())
+                if (
+                    entry.authInvalid ||
+                    entry.account !== this.accountKey ||
+                    this.rpcTransport?.closed ||
+                    this.page?.isClosed?.()
+                )
                     throw fail("identity changed");
                 assertCurrent?.();
                 return true;

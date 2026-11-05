@@ -115,6 +115,7 @@ async function process(handler, req, res) {
         if (prepared.anti) res.setHeader("X-Build-Anti-Truncation", "synthetic-answer-v1");
         if (!scheduler) throw fail("Build 需要现有多账号调度器；不支持 legacy 调度", 503);
         scheduler.assertModelAccessible(prepared.identity.canonical);
+        await handler.browserManager.engine?.ensure();
         if (stream) {
             res.status(200).set({
                 "Cache-Control": "no-cache",
@@ -143,27 +144,31 @@ async function process(handler, req, res) {
             initialAccountName: handler._getAccountNameForIndex(account.index),
             initialAuthIndex: account.index,
         });
-        const page = handler.browserManager.contexts.get(account.index)?.page;
-        if (!page?.playgroundTransport?.ready) throw fail("账号 Playground 页面尚未就绪，Build 未发送", 503);
+        const data = handler.browserManager.contexts.get(account.index);
+        const page = data?.page;
+        const transport = handler.browserManager.getTransport?.(account.index) || page?.playgroundTransport;
+        if (!transport?.ready) throw fail("账号调用后端尚未就绪，Build 未发送", 503);
         handler.browserManager.notifyUserActivity(account.index);
         runtime =
-            page.codeAssistantRuntime ||
+            data.codeAssistantRuntime ||
+            page?.codeAssistantRuntime ||
             new BuildRuntime({
                 accountIndex: account.index,
                 accountKey: account.key,
                 logger: system.logger,
                 page,
+                rpcTransport: transport.backend === "local" ? transport : null,
                 timeoutMs: config.makerSuiteTimeoutMs,
             });
         {
-            const data = handler.browserManager.contexts.get(account.index);
-            const version = page.accountSessionVersion ?? data.sessionVersion;
+            const version = page?.accountSessionVersion ?? data.sessionVersion;
             const accountKey = account.key;
-            const transport = page.playgroundTransport;
             const epoch = transport.epoch;
             const authSource = handler.authSource || system.authSource;
             const login = authSource?.accountLoginService;
             runtime.assertCurrent = () => {
+                const activeTransport =
+                    handler.browserManager.getTransport?.(account.index) || data.page?.playgroundTransport;
                 if (
                     scheduler.account(account.index).key !== accountKey ||
                     authSource?.isExpired?.(account.index) ||
@@ -174,13 +179,12 @@ async function process(handler, req, res) {
                             ))) ||
                     handler.browserManager.isContextReady?.(account.index) === false ||
                     handler.browserManager.contexts.get(account.index) !== data ||
-                    data.page !== page ||
-                    page.isClosed?.() ||
-                    (page.accountSessionVersion ?? data.sessionVersion) !== version ||
-                    page.playgroundTransport !== transport ||
+                    page?.isClosed?.() ||
+                    (page?.accountSessionVersion ?? data.sessionVersion) !== version ||
+                    activeTransport !== transport ||
                     transport.epoch !== epoch ||
                     transport.closed ||
-                    !page.playgroundTransport?.ready
+                    !transport.ready
                 )
                     throw buildError({ message: "Build cleanup context changed", source: "local", status: 503 });
             };
@@ -322,6 +326,9 @@ async function process(handler, req, res) {
             statusCode: res.__usageTrackingError?.status,
             usage,
         });
+        system.logger?.info?.(
+            `[Backend] backend=${config.callBackend || "browser"} channel=build account=${lease?.account.index ?? "none"} event=result outcome=${success ? "success" : controller.signal.aborted ? "aborted" : "error"} status=${res.__usageTrackingError?.status || res.statusCode || 0}`
+        );
         startCleanup?.();
     }
 }

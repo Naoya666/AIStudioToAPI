@@ -19,6 +19,15 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
+# Build the private native service for the target platform; Node remains its sole supervisor.
+FROM golang:1.27.0-bookworm@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452 AS local-engine
+RUN apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /engine
+COPY local-engine/go.mod local-engine/go.sum ./
+RUN go mod download
+COPY local-engine ./
+RUN ./build.sh && ./build.sh test
+
 FROM ${NODE_IMAGE} AS runtime
 ARG TARGETARCH
 ARG MIHOMO_VERSION=v1.19.31
@@ -74,6 +83,10 @@ RUN set -eu; \
 
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY package.json package-lock.json main.js LICENSE ./
+COPY --from=local-engine /engine/bin/local-engine ./local-engine/bin/local-engine
+COPY --from=local-engine /engine/bin/third-party-licenses ./local-engine/third-party-licenses
+COPY local-engine/LICENSE.MIT ./local-engine/LICENSE.MIT
+COPY THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 COPY src ./src
 COPY scripts ./scripts
 COPY configs/models.json ./configs/models.json

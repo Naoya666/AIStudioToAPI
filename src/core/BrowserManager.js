@@ -2184,6 +2184,15 @@ class BrowserManager {
         }
     }
 
+    getTransport(authIndex) {
+        const data = this.contexts.get(authIndex);
+        return data?.transport || data?.page?.playgroundTransport || data?.page?.makerSuiteBridge;
+    }
+    getBenefit(authIndex) {
+        const data = this.contexts.get(authIndex);
+        return data?.benefit || data?.page?.buildBenefit;
+    }
+
     isContextReady(authIndex) {
         const data = this.contexts.get(authIndex);
         if (
@@ -2233,12 +2242,12 @@ class BrowserManager {
             else if (this.isContextReady(authIndex)) state = inflight > 0 ? "BUSY" : "READY";
             return {
                 auth_index: authIndex,
-                build_benefit: data.page?.buildBenefit
+                build_benefit: this.getBenefit(authIndex)
                     ? {
-                          query_status: data.page.buildBenefit.queryStatus || null,
-                          reason: data.page.buildBenefit.failureReason || null,
-                          source: data.page.buildBenefit.source || null,
-                          state: data.page.buildBenefit.state,
+                          query_status: this.getBenefit(authIndex).queryStatus || null,
+                          reason: this.getBenefit(authIndex).failureReason || null,
+                          source: this.getBenefit(authIndex).source || null,
+                          state: this.getBenefit(authIndex).state,
                           tier: resolveTier(accountForIndex(this.authSource, authIndex)),
                       }
                     : null,

@@ -218,14 +218,15 @@ API Key 修改要处理现有控制台认证的关联，不能因请求重复提
 | --------------------------------- | ---------------------------- |
 | `BUILD_FREE_DAILY_TOKEN_ESTIMATE` | 保存后生效；0 为未知，仅展示 |
 
-| 配置                      | 生效                       |
-| ------------------------- | -------------------------- |
-| `BUILD_ENABLED`           | 重启，默认关闭             |
-| `BUILD_PRESET_MATCHING`   | 重启，默认关闭             |
-| `PG_TOOL_CALLING_MODE`    | 重启，默认 auto_fallback   |
-| `BUILD_TOOL_CALLING_MODE` | 重启，默认 auto_fallback   |
-| `PG_MAX_CONCURRENCY`      | 重启，默认 0（不附加限制） |
-| `BUILD_MAX_CONCURRENCY`   | 重启，默认 1               |
+| 配置                      | 生效                                               |
+| ------------------------- | -------------------------------------------------- |
+| `CALL_BACKEND`            | 重启，默认 browser；local 为本机 Go / SpiderMonkey |
+| `BUILD_ENABLED`           | 重启，默认关闭                                     |
+| `BUILD_PRESET_MATCHING`   | 重启，默认关闭                                     |
+| `PG_TOOL_CALLING_MODE`    | 重启，默认 auto_fallback                           |
+| `BUILD_TOOL_CALLING_MODE` | 重启，默认 auto_fallback                           |
+| `PG_MAX_CONCURRENCY`      | 重启，默认 0（不附加限制）                         |
+| `BUILD_MAX_CONCURRENCY`   | 重启，默认 1                                       |
 
 ## 5. 结构化输入
 

@@ -76,3 +76,7 @@ accounts.csv
 scripts/auth
 proxylist.txt
 proxy_mapping.json
+
+local-engine/bin
+local-engine/.deps
+!THIRD_PARTY_NOTICES.md

@@ -61,6 +61,8 @@ class ConfigLoader {
             },
         };
 
+        config.callBackend = env.CALL_BACKEND || "browser";
+        if (!["browser", "local"].includes(config.callBackend)) throw new Error("Invalid CALL_BACKEND");
         config.buildEnabled = env.BUILD_ENABLED === "true";
         config.buildPresetMatching = env.BUILD_PRESET_MATCHING === "true";
         config.pgToolCallingMode = env.PG_TOOL_CALLING_MODE || "auto_fallback";

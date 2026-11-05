@@ -122,6 +122,7 @@ class PlaygroundResources {
 
     async withTransport(model, owner, signal, execute) {
         const system = this.system;
+        await system.browserManager.engine?.ensure();
         const controller = new AbortController();
         signal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
         let lease, index;
@@ -143,7 +144,9 @@ class PlaygroundResources {
         let success = false;
         try {
             if (signal?.aborted) throw failure("Client disconnected", 499);
-            const transport = system.browserManager.contexts.get(index)?.page?.playgroundTransport;
+            const transport =
+                system.browserManager.getTransport?.(index) ||
+                system.browserManager.contexts.get(index)?.page?.playgroundTransport;
             if (!transport?.ready) throw failure("Playground transport unavailable", 503);
             if (model && model !== "__files__")
                 system.requestHandler._assertModelPermission(
@@ -169,22 +172,38 @@ class PlaygroundResources {
         signal?.addEventListener("abort", cancel, { once: true });
         try {
             if (signal?.aborted) throw failure("Client disconnected", 499);
+            if (transport.backend === "local") {
+                const response = await transport.drive({ ...operation, id });
+                if (response.status >= 400) throw await transport.upstreamError(response);
+                return response;
+            }
             return await withHardTimeout(
                 async () => {
-                    const result = await transport.page.evaluate(
-                        pageEval,
-                        `window.__makerSuiteBridge.run(${JSON.stringify({ body: ["users/me"], ht: "", id, readyTimeoutMs: 10000, rpcMethod: "GenerateAccessToken", timeoutMs: 30000 })})`
-                    );
+                    const result = transport.run
+                        ? await transport.run({
+                              body: ["users/me"],
+                              ht: "",
+                              id,
+                              readyTimeoutMs: 10000,
+                              rpcMethod: "GenerateAccessToken",
+                              timeoutMs: 30000,
+                          })
+                        : await transport.page.evaluate(
+                              pageEval,
+                              `window.__makerSuiteBridge.run(${JSON.stringify({ body: ["users/me"], ht: "", id, readyTimeoutMs: 10000, rpcMethod: "GenerateAccessToken", timeoutMs: 30000 })})`
+                          );
                     if (result.status !== 200) throw await transport.upstreamError(result);
                     const wire = parseWire(result.text);
                     if (rpcStatusOf(wire)) throw await transport.upstreamError(result);
                     const token = wire?.[0];
                     if (typeof token !== "string" || !token) throw failure("Drive authorization unavailable", 502);
                     if (signal?.aborted) throw failure("Client disconnected", 499);
-                    const response = await transport.page.evaluate(
-                        pageEval,
-                        `window.__makerSuiteBridge.drive(${JSON.stringify({ ...operation, id, token })})`
-                    );
+                    const response = transport.drive
+                        ? await transport.drive({ ...operation, id, token })
+                        : await transport.page.evaluate(
+                              pageEval,
+                              `window.__makerSuiteBridge.drive(${JSON.stringify({ ...operation, id, token })})`
+                          );
                     if (response.status >= 400) throw await transport.upstreamError(response);
                     return response;
                 },

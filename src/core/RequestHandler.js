@@ -632,6 +632,14 @@ class RequestHandler {
     }
 
     async _ensureBrowserBackedRequestReady(res, options = {}) {
+        if (this.browserManager.backend === "local") {
+            await this.browserManager.engine.ensure();
+            const index = this.currentAuthIndex >= 0 ? this.currentAuthIndex : this.authSource.getRotationIndices()[0];
+            if (!Number.isInteger(index)) throw Object.assign(new Error("No available accounts"), { status: 503 });
+            await this.browserManager.launchOrSwitchContext(index);
+            this.authSwitcher.currentAuthIndex = index;
+            return this.browserManager.isContextReady(index);
+        }
         const { logPrefix = "Request", waitErrorType = null, waitOptions } = options;
 
         // Check current account's browser connection
@@ -673,6 +681,8 @@ class RequestHandler {
     }
 
     _shouldRetryError(error) {
+        if (error.retryable === false && (error.backend === "local" || this.config.callBackend === "local"))
+            return false;
         if (isPromptBlocked(error)) return false;
         if (error.upstreamOutputStarted) return false;
         if (require("../utils/MakerSuiteAuth").isBridgeAuthFailure(error)) return false;
@@ -4665,9 +4675,10 @@ class RequestHandler {
 
     _cancelBrowserRequest(requestId, authIndex, requestAttemptId = null) {
         const targetAuthIndex = authIndex !== undefined ? authIndex : this.currentAuthIndex;
-        this.browserManager.contexts
-            ?.get(targetAuthIndex)
-            ?.page?.makerSuiteBridge?.cancelAttempt(requestId, requestAttemptId);
+        (
+            this.browserManager.getTransport?.(targetAuthIndex) ||
+            this.browserManager.contexts?.get(targetAuthIndex)?.page?.makerSuiteBridge
+        )?.cancelAttempt(requestId, requestAttemptId);
         const connection = this.connectionRegistry.getConnectionByAuth(targetAuthIndex);
         if (connection) {
             this.logger.info(
@@ -5035,7 +5046,9 @@ class RequestHandler {
         if (!this.scheduled) this._assertModelPermission(proxyRequest);
         if (this.scheduled || !isArgon(this._extractModelFromPath(proxyRequest.path)) || !proxyRequest.is_generative)
             return;
-        const benefit = this.browserManager.contexts?.get(this.currentAuthIndex)?.page?.buildBenefit;
+        const benefit =
+            this.browserManager?.getBenefit?.(this.currentAuthIndex) ||
+            this.browserManager?.contexts?.get(this.currentAuthIndex)?.page?.buildBenefit;
         if (this.browserManager.benefitCheckingIndices?.has(this.currentAuthIndex))
             throw benefitError("Account benefit check in progress");
         if (!benefit) throw benefitError("Build benefit context unavailable");
@@ -5110,7 +5123,9 @@ class RequestHandler {
         }
         const policy = proxyRequest.is_generative ? proxyRequest.transport_policy : null;
         if (policy?.transport === "makersuite") {
-            const bridge = this.browserManager.contexts?.get(authIndex)?.page?.makerSuiteBridge;
+            const bridge =
+                this.browserManager.getTransport?.(authIndex) ||
+                this.browserManager.contexts?.get(authIndex)?.page?.makerSuiteBridge;
             if (!bridge) throw benefitError("MakerSuite bridge unavailable");
         }
         if (policy) {
@@ -5135,7 +5150,9 @@ class RequestHandler {
         if (this.browserManager.benefitCheckingIndices?.has(authIndex))
             throw benefitError("Account benefit check in progress");
         if (proxyRequest.is_generative && isArgon(this._extractModelFromPath(proxyRequest.path))) {
-            const benefit = this.browserManager.contexts?.get(authIndex)?.page?.buildBenefit;
+            const benefit =
+                this.browserManager?.getBenefit?.(authIndex) ||
+                this.browserManager?.contexts?.get(authIndex)?.page?.buildBenefit;
             if (!benefit || benefit.disposed || benefit.isCurrent?.() === false)
                 throw benefitError("No qualified Playground account for gemini-4-argon");
             this.logger.info(

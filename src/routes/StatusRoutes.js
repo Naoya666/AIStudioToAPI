@@ -242,8 +242,11 @@ class StatusRoutes {
             };
             const browserConnected = Boolean(browserManager.browser?.isConnected?.() ?? browserManager.browser);
             const initLimit = this.serverSystem.scheduler?.config?.contextInitConcurrency || 1;
+            const backend = this.serverSystem.config.callBackend || "browser";
+            const localEngine = browserManager.engine?.health() || null;
+            const backendConnected = backend === "local" ? localEngine?.ready : browserConnected;
             const status =
-                contextPool.recovering || contextPool.ready === 0 || !browserConnected
+                contextPool.recovering || contextPool.ready === 0 || !backendConnected
                     ? "unhealthy"
                     : contextPool.staleInitializing >= initLimit
                       ? "unhealthy"
@@ -251,8 +254,11 @@ class StatusRoutes {
                         ? "degraded"
                         : "ok";
             const healthStatus = {
+                backend,
+                backendConnected,
                 browserConnected,
                 contextPool,
+                localEngine,
                 runtime: this.serverSystem.runtimeHealth || null,
                 scheduler: this.serverSystem.scheduler
                     ? {

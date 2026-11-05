@@ -10,7 +10,11 @@
         <p role="status">
             {{ dirtyNames.length }} 项修改尚未保存；{{ snapshot?.pending.length || 0 }} 项已保存配置待重启生效。
         </p>
-        <p v-if="snapshot">当前运行：{{ modeLabel(snapshot.running.ACCOUNT_ROTATION_STRATEGY) }}</p>
+        <p v-if="snapshot">
+            当前运行：{{ modeLabel(snapshot.running.ACCOUNT_ROTATION_STRATEGY) }}；调用后端：{{
+                choiceLabel(snapshot.running.CALL_BACKEND)
+            }}
+        </p>
         <p v-if="snapshot?.environmentError" role="alert">
             环境配置存在无效值：{{ snapshot.environmentError }}。恢复环境值时需要先修正文件配置。
         </p>
@@ -348,6 +352,7 @@ const choiceLabels = {
     BLOCK_MEDIUM_AND_ABOVE: "拦截中及高风险",
     BLOCK_NONE: "不拦截",
     BLOCK_ONLY_HIGH: "仅拦截高风险",
+    browser: "浏览器",
     different_proxy_first: "不同代理优先",
     early: "提前发送空首块",
     fake: "缓冲后模拟流式",
@@ -355,6 +360,7 @@ const choiceLabels = {
     least_recently_used: "较久未使用优先",
     least_used: "较少使用优先",
     legacy: "旧版切换",
+    local: "本地无浏览器",
     master: "主控端",
     OFF: "关闭安全拦截",
     real: "真实流式",

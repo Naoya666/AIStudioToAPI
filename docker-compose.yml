@@ -7,6 +7,7 @@ services:
       dockerfile: Dockerfile
     image: aistudio-to-api:local
     pull_policy: never
+    # Node owns the private Go child; no sidecar, public signing port or second watchdog.
     init: true
     restart: unless-stopped
     env_file:

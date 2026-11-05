@@ -2,6 +2,18 @@ const { MAX_GENERATION_TIMEOUT_MS } = require("./TransportConfig");
 
 module.exports = [
     {
+        application: "restart",
+        choices: ["browser", "local"],
+        description:
+            "浏览器使用 Camoufox；本地无浏览器使用本机 Go / SpiderMonkey 签名及传输服务。保存后重启服务生效，不自动回退。登录仍可按需使用浏览器。",
+        group: "调用后端",
+        label: "调用后端",
+        mode: "all",
+        name: "CALL_BACKEND",
+        path: "callBackend",
+        type: "enum",
+    },
+    {
         application: "hot",
         description:
             "Free Build gemini-3.8-flash 每模型日 Token 预算的人工覆盖值；0 使用已知观测值 800 万，其他 Build 模型不套用。仅用于面板展示，不据此封禁或宣称 Google 上限。",

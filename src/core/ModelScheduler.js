@@ -623,7 +623,9 @@ class ModelScheduler {
         if ((!this.config.readyContextOnly && !isArgon(model)) || !this.browserManager) return true;
         if (!this.browserManager.isContextReady(account.index)) return false;
         if (isArgon(model)) {
-            const benefit = this.browserManager.contexts?.get(account.index)?.page?.buildBenefit;
+            const benefit =
+                this.browserManager?.getBenefit?.(account.index) ||
+                this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit;
             if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
         }
         return true;
@@ -678,7 +680,9 @@ class ModelScheduler {
         if (this.browserManager?.benefitCheckingIndices?.has(account.index)) return false;
         if (this.browserManager?.contexts?.get(account.index)?.draining) return false;
         if (isArgon(model)) {
-            const benefit = this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit;
+            const benefit =
+                this.browserManager?.getBenefit?.(account.index) ||
+                this.browserManager?.contexts?.get(account.index)?.page?.buildBenefit;
             if (benefit?.disposed || benefit?.isCurrent?.() === false) return false;
         }
         if (!this.isTierAllowed(account.index, model)) return false;
@@ -1196,6 +1200,7 @@ class ModelScheduler {
             error.upstreamError?.message || error.error?.message || error.message || "Request failed"
         ).slice(0, 2000);
         slot.last_error_kind = kind;
+        slot.last_backend = error.backend || this.browserManager?.backend || "browser";
         if (error.transport) slot.last_transport = error.transport;
         slot.last_http_status = observedHttpStatus(error, kind);
         account.last_error = slot.last_error;

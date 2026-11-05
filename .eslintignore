@@ -26,3 +26,6 @@ ui/dist/
 
 # Logs
 *.log
+
+# Vendored Firefox host scripts must retain upstream semantics and property order.
+local-engine/

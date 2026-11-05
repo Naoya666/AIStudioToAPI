@@ -11,7 +11,7 @@ const { ConfigurationService } = require("../src/config/ConfigurationService");
 
 test(
     "configuration form stages drafts, preserves hidden fields, saves structured rows and detects concurrent pages",
-    { skip: !fs.existsSync(chromium.executablePath()), timeout: 45000 },
+    { skip: !fs.existsSync(chromium.executablePath()), timeout: 60000 },
     async t => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), "configuration-ui-"));
         t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
@@ -344,6 +344,29 @@ test(
                 document.querySelector('.configuration-panel [role="status"]')?.textContent.includes("0 项修改")
         );
         assert.equal(service.saved.publicDashboard.agents[0].token, "AGENT_TEST_SECRET");
+        for (const [value, name] of [
+            ["local", "本地无浏览器"],
+            ["browser", "浏览器"],
+        ]) {
+            const previous = service.running.callBackend;
+            await panel
+                .locator(".configuration-field")
+                .filter({ has: page.locator('label[for="config-CALL_BACKEND"]') })
+                .locator(".el-select")
+                .click();
+            await page.getByRole("option", { exact: true, name }).click();
+            assert.equal(service.running.callBackend, previous);
+            await panel.getByRole("button", { exact: true, name: "保存" }).click();
+            await panel.getByText("查看待重启变更").waitFor();
+            assert.equal(service.saved.callBackend, value);
+            assert.equal(service.running.callBackend, previous);
+            assert.ok(service.snapshot().pending.some(item => item.name === "CALL_BACKEND"));
+            await panel.getByRole("button", { exact: true, name: "重启" }).click();
+            await page.locator(".el-message-box").getByRole("button", { exact: true, name: "重启" }).click();
+            await panel.getByText("新实例启动成功，已确认保存配置实际生效。").waitFor();
+            assert.equal(service.running.callBackend, value);
+            assert.ok((await panel.textContent()).includes("调用后端：" + name));
+        }
         assert.deepEqual(errors, []);
     }
 );

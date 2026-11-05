@@ -507,9 +507,10 @@ class ConnectionRegistry extends EventEmitter {
         const entry = this.messageQueues.get(requestId);
         if (entry) {
             const authIndex = entry.authIndex;
-            this.browserManager?.contexts
-                ?.get(authIndex)
-                ?.page?.makerSuiteBridge?.cancelAttempt(requestId, entry.requestAttemptId);
+            (
+                this.browserManager?.getTransport?.(authIndex) ||
+                this.browserManager?.contexts?.get(authIndex)?.page?.makerSuiteBridge
+            )?.cancelAttempt(requestId, entry.requestAttemptId);
             entry.queue.close(reason);
             this.messageQueues.delete(requestId);
             this._emitAuthQueuesDrainedIfNeeded(authIndex);

@@ -176,6 +176,7 @@ class ScheduledRequestHandler extends RequestHandler {
     }
 
     async _acquireScheduledLease(proxyRequest) {
+        await this.browserManager.engine?.ensure();
         this.proxyRequest = proxyRequest;
         this.model = this._extractModelFromPath(proxyRequest.path);
         if (!this.model && proxyRequest.body) {
@@ -388,6 +389,8 @@ class ScheduledRequestHandler extends RequestHandler {
     }
 
     async _retryTransportQueue(error, registry) {
+        if (error.retryable === false && (error.backend === "local" || this.config.callBackend === "local"))
+            throw error;
         if (error.upstreamOutputStarted) throw error;
         if (require("../utils/UpstreamBlock").isPromptBlocked(error)) throw error;
         if (isArgon(this.model) || !/:streamGenerateContent$/.test(this.proxyRequest?.path || ""))
@@ -472,7 +475,10 @@ class ScheduledRequestHandler extends RequestHandler {
         this.response.removeListener("close", this.onClose);
         const success =
             !this.controller.signal.aborted && !this.response.__usageTrackingOutcome && this.response.statusCode < 400;
-        await this.browserManager.contexts?.get(this.currentAuthIndex)?.page?.makerSuiteBridge?.settle?.();
+        await (
+            this.browserManager.getTransport?.(this.currentAuthIndex) ||
+            this.browserManager.contexts?.get(this.currentAuthIndex)?.page?.makerSuiteBridge
+        )?.settle?.();
         this.scheduler.release(this.lease, success);
     }
 }

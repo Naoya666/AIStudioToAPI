@@ -32,3 +32,9 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Vendored native runtime and generated binaries
+local-engine/
+
+# Verbatim upstream license notices
+docs/licenses/firefox-*

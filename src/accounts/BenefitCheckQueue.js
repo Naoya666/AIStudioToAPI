@@ -195,116 +195,147 @@ class BenefitCheckQueue {
                 browserManager.benefitCheckingIndices ||= new Set();
                 browserManager.benefitCheckingIndices.add(task.authIndex);
                 locked = true;
-                const data = browserManager.contexts.get(task.authIndex);
-                if (data) {
-                    if (
-                        !browserManager.isContextReady(task.authIndex) ||
-                        !data.page?.buildBenefit ||
-                        data.page.accountSessionVersion !== task.sessionVersion
-                    )
-                        throw failure("context_unavailable");
-                    benefit = data.page.buildBenefit;
-                    reused = true;
-                } else {
-                    // Ordinary capacity is reserved when available; otherwise this
-                    // sole executor owns the one global overflow detection context.
-                    const capacity = browserManager.scheduler?.config?.maxWorkers || browserManager.config?.maxContexts;
-                    if (capacity && browserManager._contextCapacityIndices().size < capacity) {
-                        reservation = { authIndex: task.authIndex, purpose: "benefit" };
-                        browserManager.contextCapacityReservations ||= new Map();
-                        browserManager.contextCapacityReservations.set(task.authIndex, reservation);
-                    }
-                    await this.bound(() => browserManager._ensureBrowser(), signal);
+                if (browserManager.backend === "local") {
+                    await browserManager.engine.ensure();
                     generation = browserManager.browserGeneration;
-                    const storage = await this.service.readAuth(task.authIndex);
-                    if (
-                        !storage ||
-                        (storage._accountSessionVersion ?? task.sessionVersion) !== task.sessionVersion ||
-                        !current()
-                    )
+                    const data = browserManager.contexts.get(task.authIndex);
+                    let result;
+                    if (data) {
+                        if (data.sessionVersion !== task.sessionVersion) throw failure("session_changed");
+                        await this.bound(() => data.benefit.query(), signal, this.queryMs + 1000);
+                        result = {
+                            rawTier: data.benefit.rawTier,
+                            reason: data.benefit.failureReason,
+                            source: "query",
+                            state: data.benefit.state,
+                        };
+                    } else
+                        result = await this.bound(
+                            () => browserManager.queryBenefit(task.authIndex, signal),
+                            signal,
+                            this.queryMs + 60000
+                        );
+                    if (!current()) throw failure("session_changed");
+                    if (!(await this.service.recordBenefit(task.accountId, task.sessionVersion, result, current)))
                         throw failure("session_changed");
-                    const proxy = await this.bound(
-                        async () => this.service.resolveProxy(this.service.account(task.accountId)),
-                        signal
-                    );
-                    const creation = browserManager._createBrowserContext(
-                        {
-                            storageState: { cookies: storage.cookies, origins: storage.origins },
-                            ...(proxy ? { proxy } : {}),
-                        },
-                        task.authIndex
-                    );
-                    this.resourceGeneration = generation;
-                    const barrier = creation
-                        .then(async value => {
-                            if (signal.aborted || !current()) await value.close();
-                        })
-                        .catch(() => {
-                            this.resourceFaultGeneration = generation;
-                            browserManager._triggerBrowserRecovery?.("benefit_context_creation_failed");
-                        });
-                    this.resourceBarrier = barrier;
-                    barrier.finally(() => {
-                        if (this.resourceBarrier === barrier) this.resourceBarrier = null;
+                    Object.assign(task, {
+                        reason: result.reason || null,
+                        result,
+                        status: result.state === "failed" ? "failed" : "succeeded",
                     });
-                    context = await this.bound(
-                        () => creation,
-                        signal,
-                        this.operationMs,
-                        value => {
-                            const closing = value.close();
-                            this.holdResource(closing, generation);
-                            closing.catch(() => {});
+                } else {
+                    const data = browserManager.contexts.get(task.authIndex);
+                    if (data) {
+                        if (
+                            !browserManager.isContextReady(task.authIndex) ||
+                            !data.page?.buildBenefit ||
+                            data.page.accountSessionVersion !== task.sessionVersion
+                        )
+                            throw failure("context_unavailable");
+                        benefit = data.page.buildBenefit;
+                        reused = true;
+                    } else {
+                        // Ordinary capacity is reserved when available; otherwise this
+                        // sole executor owns the one global overflow detection context.
+                        const capacity =
+                            browserManager.scheduler?.config?.maxWorkers || browserManager.config?.maxContexts;
+                        if (capacity && browserManager._contextCapacityIndices().size < capacity) {
+                            reservation = { authIndex: task.authIndex, purpose: "benefit" };
+                            browserManager.contextCapacityReservations ||= new Map();
+                            browserManager.contextCapacityReservations.set(task.authIndex, reservation);
                         }
-                    );
-                    const page = await this.bound(() => context.newPage(), signal);
-                    benefit = new BuildBenefitContext(page, {
-                        authIndex: task.authIndex,
-                        isCurrent: current,
-                        timeoutMs: this.queryMs,
-                    });
-                    await this.bound(() => benefit.install(), signal);
-                    await this.bound(
-                        () =>
-                            page.goto(browserManager.targetUrl, {
-                                timeout: this.operationMs,
-                                waitUntil: "domcontentloaded",
-                            }),
-                        signal
-                    );
-                }
-                generation ??= browserManager.browserGeneration;
-                const epoch = benefit.epoch;
-                const validDocument = () =>
-                    current() && !benefit.disposed && benefit.isCurrent() && benefit.epoch === epoch;
-                Object.assign(task, { status: "running" });
-                await this.service.exclusive(() => this.service.save());
-                const authDeadline = Date.now() + this.operationMs;
-                while (!(await this.bound(() => benefit._evaluate(() => !!window.__buildBenefit?.auth), signal))) {
+                        await this.bound(() => browserManager._ensureBrowser(), signal);
+                        generation = browserManager.browserGeneration;
+                        const storage = await this.service.readAuth(task.authIndex);
+                        if (
+                            !storage ||
+                            (storage._accountSessionVersion ?? task.sessionVersion) !== task.sessionVersion ||
+                            !current()
+                        )
+                            throw failure("session_changed");
+                        const proxy = await this.bound(
+                            async () => this.service.resolveProxy(this.service.account(task.accountId)),
+                            signal
+                        );
+                        const creation = browserManager._createBrowserContext(
+                            {
+                                storageState: { cookies: storage.cookies, origins: storage.origins },
+                                ...(proxy ? { proxy } : {}),
+                            },
+                            task.authIndex
+                        );
+                        this.resourceGeneration = generation;
+                        const barrier = creation
+                            .then(async value => {
+                                if (signal.aborted || !current()) await value.close();
+                            })
+                            .catch(() => {
+                                this.resourceFaultGeneration = generation;
+                                browserManager._triggerBrowserRecovery?.("benefit_context_creation_failed");
+                            });
+                        this.resourceBarrier = barrier;
+                        barrier.finally(() => {
+                            if (this.resourceBarrier === barrier) this.resourceBarrier = null;
+                        });
+                        context = await this.bound(
+                            () => creation,
+                            signal,
+                            this.operationMs,
+                            value => {
+                                const closing = value.close();
+                                this.holdResource(closing, generation);
+                                closing.catch(() => {});
+                            }
+                        );
+                        const page = await this.bound(() => context.newPage(), signal);
+                        benefit = new BuildBenefitContext(page, {
+                            authIndex: task.authIndex,
+                            isCurrent: current,
+                            timeoutMs: this.queryMs,
+                        });
+                        await this.bound(() => benefit.install(), signal);
+                        await this.bound(
+                            () =>
+                                page.goto(browserManager.targetUrl, {
+                                    timeout: this.operationMs,
+                                    waitUntil: "domcontentloaded",
+                                }),
+                            signal
+                        );
+                    }
+                    generation ??= browserManager.browserGeneration;
+                    const epoch = benefit.epoch;
+                    const validDocument = () =>
+                        current() && !benefit.disposed && benefit.isCurrent() && benefit.epoch === epoch;
+                    Object.assign(task, { status: "running" });
+                    await this.service.exclusive(() => this.service.save());
+                    const authDeadline = Date.now() + this.operationMs;
+                    while (!(await this.bound(() => benefit._evaluate(() => !!window.__buildBenefit?.auth), signal))) {
+                        if (!validDocument()) throw failure("document_changed");
+                        if (Date.now() >= authDeadline) throw failure("auth_unavailable");
+                        await this.pause(signal);
+                    }
+                    await this.bound(() => benefit.ensure({ refresh: true, signal }), signal, this.queryMs + 1000);
                     if (!validDocument()) throw failure("document_changed");
-                    if (Date.now() >= authDeadline) throw failure("auth_unavailable");
-                    await this.pause(signal);
+                    const result = {
+                        rawTier: benefit.rawTier,
+                        reason: benefit.failureReason,
+                        source: "query",
+                        state: benefit.state,
+                    };
+                    const saved = await this.service.recordBenefit(
+                        task.accountId,
+                        task.sessionVersion,
+                        result,
+                        validDocument
+                    );
+                    if (!saved) throw failure("session_changed");
+                    Object.assign(task, {
+                        reason: result.reason || null,
+                        result,
+                        status: result.state === "failed" ? "failed" : "succeeded",
+                    });
                 }
-                await this.bound(() => benefit.ensure({ refresh: true, signal }), signal, this.queryMs + 1000);
-                if (!validDocument()) throw failure("document_changed");
-                const result = {
-                    rawTier: benefit.rawTier,
-                    reason: benefit.failureReason,
-                    source: "query",
-                    state: benefit.state,
-                };
-                const saved = await this.service.recordBenefit(
-                    task.accountId,
-                    task.sessionVersion,
-                    result,
-                    validDocument
-                );
-                if (!saved) throw failure("session_changed");
-                Object.assign(task, {
-                    reason: result.reason || null,
-                    result,
-                    status: result.state === "failed" ? "failed" : "succeeded",
-                });
             } catch (error) {
                 const reason = error.reason || "query_failed";
                 if (active(task)) {
