@@ -392,7 +392,17 @@ function installPageBridge({ direct = false } = {}) {
                         if (!upload) continue;
                         const [mime, data, name] = upload;
                         const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
-                        if (mime !== "text/plain" || bytes.length > 8 * 1024 * 1024)
+                        if (
+                            typeof mime !== "string" ||
+                            !/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mime) ||
+                            typeof name !== "string" ||
+                            !name ||
+                            name.length > 255 ||
+                            Array.from(name).some(
+                                c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 || c === "/" || c === "\\"
+                            ) ||
+                            bytes.length > 8 * 1024 * 1024
+                        )
                             throw new Error("Invalid Build attachment");
                         const digest = new Uint8Array(await abortable(crypto.subtle.digest("SHA-256", bytes)));
                         const hash = "sha256=" + btoa(String.fromCharCode(...digest));

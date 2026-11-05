@@ -141,7 +141,10 @@ test("full attachment preserves every ordered message, trailing instructions, na
     assert.doesNotMatch(p.context.prompt, /External client tool protocol/);
     assert.throws(() =>
         prepare(
-            { ...base, messages: [{ content: [{ image_url: { url: "x" }, type: "image_url" }], role: "user" }] },
+            {
+                ...base,
+                messages: [{ content: [{ image_url: { url: "x" }, type: "unsupported_media" }], role: "user" }],
+            },
             config,
             {}
         )
@@ -212,7 +215,7 @@ for (const generationType of ["normal", "regenerate", "swipe", "continue", "quie
 test("ST rejects missing/broken/failure/version/budget envelopes without fallback", () => {
     assert.throws(() => prepare({ ...base, model: "build-st/gemini-3.8-flash" }, config, {}), /build\//);
     for (const value of [
-        { ...envelope(), version: 3 },
+        { ...envelope(), version: 4 },
         { ...envelope(), error: "failed" },
         { ...envelope(), inlineTokens: 45001 },
         { ...envelope(), segments: [{ ...envelope().segments[0], message: 2 }] },
@@ -1505,4 +1508,253 @@ test("repeated completion callbacks clean each operation's own new project only 
             .sort(),
         ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"]
     );
+});
+
+const Attachments = require("../src/core/codeAssistant/Attachments");
+const pngInput = { image_url: { url: "data:image/png;base64,iVBORw==" }, type: "image_url" };
+const pdfInput = { file: { file_data: "data:application/pdf;base64,JVBERg==", filename: "notes.pdf" }, type: "file" };
+for (const mode of ["auto_fallback", "strict"])
+    for (const model of ["build/gemini-3.8-flash", "anti-build/gemini-3.8-flash"])
+        test(`Build media preserve positions and coexist with ${mode} tools on ${model}`, async t => {
+            const body = {
+                ...base,
+                messages: [
+                    {
+                        content: [
+                            { text: "before", type: "text" },
+                            pngInput,
+                            pdfInput,
+                            { text: "after", type: "text" },
+                        ],
+                        role: "user",
+                    },
+                ],
+                model,
+                tools,
+            };
+            const p = prepare(body, { ...config, buildToolCallingMode: mode }, {});
+            assert.equal(p.attachments.length, 2);
+            assert.deepEqual(
+                p.attachments.map(a => a.mime),
+                ["image/png", "application/pdf"]
+            );
+            const conversation = JSON.parse(p.context.files[0].text).messages[0].content;
+            assert.equal(conversation[0].text, "before");
+            assert.match(conversation[1].text, /message 0, part 1/);
+            assert.match(conversation[2].text, /message 0, part 2/);
+            assert.equal(conversation[3].text, "after");
+            assert.doesNotMatch(p.context.files[0].text, /iVBORw|JVBERg/);
+            const files = await Attachments.resolve(p.attachments, {});
+            p.context.files.push(...files);
+            const parts = encode(p.identity, p.context, "app").body[0][0][0];
+            assert.deepEqual(
+                parts.slice(1, 3).map(part => part.__upload.slice(0, 2)),
+                [
+                    ["image/png", "iVBORw=="],
+                    ["application/pdf", "JVBERg=="],
+                ]
+            );
+            const f = handlerFixture(t, { mode });
+            // Use the plain tool path for the handler; anti reply decoding has its own fixtures.
+            await processBuild(f.h, { body: { ...body, model: base.model }, method: "POST" }, f.res);
+            assert.equal(f.res.statusCode, 200);
+            assert.equal(f.requests[0].ctx.files.length, 3);
+            assert.equal(f.requests[0].ctx.files[1].data, "iVBORw==");
+            assert.deepEqual(f.releases, [true]);
+        });
+
+test("Build attachments validate base64, names, MIME, count and aggregate size", async () => {
+    const request = content => prepare({ ...base, messages: [{ content, role: "user" }] }, config, {});
+    for (const part of [
+        { image_url: { url: "data:text/plain;base64,YQ==" }, type: "image_url" },
+        { file: { file_data: "%%%", filename: "bad.pdf" }, type: "file" },
+        { file: { file_data: "YQ==", filename: "../bad.pdf" }, type: "file" },
+        { file: { file_data: "data:text/plain;bad;base64,YQ==" }, type: "file" },
+        { file: {}, type: "file" },
+    ])
+        assert.throws(() => request([part]), { status: 400 });
+    assert.throws(() => request(Array(33).fill(pngInput)), { status: 413 });
+    const a = Attachments.extract([{ content: [pdfInput, pdfInput], role: "user" }]).attachments;
+    assert.notEqual(a[0].name, a[1].name);
+    const large = Buffer.alloc(5 * 1024 * 1024).toString("base64");
+    await assert.rejects(
+        Attachments.resolve(
+            [
+                { data: large, mime: "application/pdf", name: "a" },
+                { data: large, mime: "application/pdf", name: "b" },
+            ],
+            {}
+        ),
+        { status: 413 }
+    );
+});
+
+test("Build file IDs download through their owner before acquiring the generation account", async t => {
+    const f = handlerFixture(t);
+    const events = [];
+    const acquire = f.h.serverSystem.scheduler.acquire;
+    f.h.serverSystem.scheduler.acquire = async (...args) => {
+        events.push("generate");
+        return acquire(...args);
+    };
+    f.h.serverSystem.playgroundResources = {
+        drive: async (_transport, operation) => {
+            assert.deepEqual(operation, { download: true, fileId: "drive-1", method: "GET" });
+            return { data: "JVBERg==" };
+        },
+        files: new Map([
+            ["file-1", { driveId: "drive-1", mimeType: "application/pdf", owner: "other-account", size: 4 }],
+        ]),
+        withTransport: async (model, owner, signal, execute) => {
+            assert.equal(owner, "other-account");
+            events.push("download");
+            return execute({}, 1, signal);
+        },
+    };
+    await processBuild(
+        f.h,
+        {
+            body: { ...base, messages: [{ content: [{ file: { file_id: "file-1" }, type: "file" }], role: "user" }] },
+            method: "POST",
+        },
+        f.res
+    );
+    assert.equal(f.res.statusCode, 200);
+    assert.deepEqual(events, ["download", "generate"]);
+    assert.equal(f.requests[0].ctx.files[1].type, "application/pdf");
+    await assert.rejects(Attachments.resolve([{ fileId: "missing" }], f.h.serverSystem), { status: 404 });
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(Attachments.resolve([{ fileId: "file-1" }], f.h.serverSystem, controller.signal), {
+        status: 499,
+    });
+});
+
+test("Build URL inputs reject non-public destinations before generation", async t => {
+    for (const url of [
+        "file:///etc/passwd",
+        "http://127.0.0.1/a",
+        "http://169.254.169.254/",
+        "http://[::1]/",
+        "http://[::ffff:127.0.0.1]/",
+        "https://user:pass@example.com/a",
+    ])
+        await assert.rejects(Attachments.resolve([{ name: "a", url }], {}), { status: 400 });
+    const f = handlerFixture(t);
+    await processBuild(
+        f.h,
+        {
+            body: {
+                ...base,
+                messages: [
+                    { content: [{ image_url: { url: "http://127.0.0.1/a" }, type: "image_url" }], role: "user" },
+                ],
+            },
+            method: "POST",
+        },
+        f.res
+    );
+    assert.equal(f.res.statusCode, 400);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.releases.length, 0);
+});
+
+test("Tavern v3 carries media segments and preserves preset placement and ordered references", async () => {
+    const adapter = await import("../integrations/sillytavern-build-adapter/transport.js");
+    // Tagger API is exercised by existing preset tests; add media to a valid split.
+    const value = envelope();
+    value.version = 3;
+    value.messageMetadata = [];
+    value.segments = [
+        { ...value.segments[0], message: 0, part: 0, placement: "inline", role: "system", text: "preset" },
+        { ...value.segments[0], message: 1, part: 0, placement: "file", role: "user", text: "look" },
+        { ...value.segments[0], media: pngInput, message: 1, part: 1, placement: "file", role: "user", text: "" },
+        { ...value.segments[0], message: 1, part: 2, placement: "file", role: "user", text: "then read" },
+        { ...value.segments[0], media: pdfInput, message: 1, part: 3, placement: "file", role: "user", text: "" },
+    ];
+    const encoded = adapter.encodeEnvelope(value.segments);
+    assert.equal(JSON.parse(encoded.content.slice(WIRE_PREFIX.length)).version, 3);
+    const p = prepare({ ...base, messages: [encoded], model: "build-st/gemini-3.8-flash", tools }, config, {});
+    assert.equal(p.attachments.length, 2);
+    assert.equal(p.context.mode, "sillytavern_split");
+    assert.match(p.context.prompt, /preset/);
+    assert.doesNotMatch(p.context.files[0].text, /iVBORw|JVBERg/);
+    assert.match(p.context.files[0].text, /message 1, part 1/);
+    assert.match(p.context.files[0].text, /message 1, part 3/);
+    assert.throws(() => parseSillyTavern(wrapped({ ...value, version: 2 })), { status: 400 });
+    assert.throws(
+        () =>
+            parseSillyTavern(
+                wrapped({ ...value, segments: value.segments.map(s => (s.media ? { ...s, placement: "inline" } : s)) })
+            ),
+        { status: 400 }
+    );
+});
+
+test("Build URL downloads preserve MIME, validate redirect destinations and DNS socket addresses", async t => {
+    const axios = require("axios");
+    const dns = require("node:dns");
+    const lookups = [];
+    t.mock.method(dns, "lookup", (host, options, callback) => {
+        lookups.push(host);
+        callback(null, [{ address: host === "private.example" ? "127.0.0.1" : "93.184.216.34", family: 4 }]);
+    });
+    let calls = 0;
+    t.mock.method(axios, "get", async (url, options) => {
+        assert.equal(options.maxRedirects, 0);
+        assert.equal(options.maxContentLength, 8 * 1024 * 1024);
+        assert.equal(options.proxy, false);
+        const host = new URL(url).hostname;
+        await new Promise((resolve, reject) =>
+            options.httpsAgent.options.lookup(host, { all: true }, (error, addresses) => {
+                if (error) return reject(error);
+                assert.equal(addresses[0].address, "93.184.216.34");
+                resolve();
+            })
+        );
+        calls++;
+        if (url.includes("redirect-private")) return { headers: { location: "http://127.0.0.1/secret" }, status: 302 };
+        if (url.endsWith("/redirect")) return { headers: { location: "/image" }, status: 302 };
+        return { data: Buffer.from("image"), headers: { "content-type": "image/png; charset=binary" }, status: 200 };
+    });
+    const result = await Attachments.resolve([{ image: true, name: "a", url: "https://public.example/redirect" }], {});
+    assert.equal(result[0].type, "image/png");
+    assert.equal(result[0].data, Buffer.from("image").toString("base64"));
+    assert.equal(calls, 2);
+    await assert.rejects(Attachments.resolve([{ name: "a", url: "https://public.example/redirect-private" }], {}), {
+        status: 400,
+    });
+    assert.equal(calls, 3);
+    await assert.rejects(Attachments.resolve([{ name: "a", url: "https://private.example/image" }], {}), {
+        status: 400,
+    });
+    assert.ok(lookups.includes("private.example"));
+    assert.equal(calls, 3);
+});
+
+test("Tavern adapter extracts mixed text/media arrays into ordered v3 segments", async () => {
+    const adapter = await import("../integrations/sillytavern-build-adapter/transport.js");
+    const tagger = adapter.createTagger("b".repeat(24));
+    const chat = [
+        { content: tagger.mark("preset", { placement: "inline", source: "main" }), role: "system" },
+        {
+            content: [{ text: "before", type: "text" }, pngInput, { text: "middle", type: "text" }, pdfInput],
+            role: "user",
+        },
+    ];
+    const segments = adapter.readPresetSegments(chat, tagger);
+    assert.deepEqual(
+        segments.map(s => s.part),
+        [0, 0, 1, 2, 3]
+    );
+    assert.equal(segments[0].placement, "inline");
+    assert.deepEqual(
+        segments.filter(s => s.media).map(s => s.media),
+        [pngInput, pdfInput]
+    );
+    const data = { chat_completion_source: "custom", messages: chat, model: "build-st/gemini-3.8-flash" };
+    const envelope = adapter.prepareOutgoing(data, { segments }, { inlineTokens: 10 });
+    const p = prepare({ ...base, messages: [envelope], model: data.model }, config, {});
+    assert.equal(p.attachments.length, 2);
+    assert.doesNotMatch(p.context.files[0].text, /BST:|iVBORw|JVBERg/);
 });

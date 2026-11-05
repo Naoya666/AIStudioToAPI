@@ -96,11 +96,39 @@ Build 任务返回累计快照，普通正文可以按新增后缀发布。不�
 
 ## 上下文与工具
 
-`build/` 无需插件：完整有序 messages 打包请求专属 JSON 文本附件，直接输入只放读取、生成要求。保留名称、角色、文本分段、中间 / 末尾 system/developer、assistant 续写、工具定义与历史。无工具请求不注入工具协议。当前仅文本及工具历史；多模态、强制 JSON 输出、n>1 明确拒绝。
+`build/` 无需插件：完整有序 messages 打包请求专属 JSON 文本附件，直接输入只放读取、生成要求。保留名称、角色、文本分段、中间 / 末尾 system/developer、assistant 续写、工具定义与历史。无工具请求不注入工具协议。支持文本、图片 / 文件输入及工具历史；强制 JSON 输出、n>1 仍明确拒绝。图片和文件的读取能力由上游模型决定。
+
+图片 / 文件输入参考 AIStudio2API 的 `assistant` 通道实现（`internal/aistudio/assistant.go`、`transport_http.go`）。OpenAI Chat Completions 的消息 `content` 数组接受：
+
+- `image_url`：`image_url.url` 为图片的 Base64 data URL 或公网 HTTP(S) URL。
+- `file`：`file.file_data` 为 Base64 data URL 或原始 Base64（以 `filename` 推断 MIME）；或通过 `file.file_id` 引用 `/v1/files` 已上传文件；也支持 `file.file_url` 为公网 HTTP(S) URL。
+- 同时兼容内容块别名 `input_image`、`input_file`；端点仍为 `/v1/chat/completions`。
+
+媒体字节不写入聊天 JSON 附件：原位置替换成带随机唯一附件名的文本引用，保留消息角色与顺序；原始文件名作为引用说明保留。浏览器 / 本地引擎均通过 `/_/upload` 上传媒体，最终 Part field 18 使用 `[mime, 上传路径, 文件名, 字节数]`。上传完成后才计算签名，不把 Base64 或上传占位对象作为签名输入。文件 ID 先从所属账号下载，再上传到本次 Build 生成账号；读取时不占用 Build 生成租约。
+
+每次最多 32 个媒体附件，媒体合计最多 8 MiB；原有请求 JSON 10 MiB 限制仍生效（Base64 会增加请求体大小），聊天上下文附件单独保留 8 MiB 限制。URL 下载每跳校验公网地址、最多 3 次重定向、单次请求 30 秒，支持请求取消；禁止内网地址和 URL 凭据。无效数据、下载 / 上传失败明确报错，不跳过附件继续生成。`build-st/` 和 `anti-build-st/` 的媒体请求需重新复制当前附带酒馆适配器并刷新，使其发送 v3 媒体分段。
+
+```json
+{
+  "model": "build/gemini-3.8-flash",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "请结合图片解释这份文件" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,<BASE64>" } },
+        { "type": "file", "file": { "file_id": "<上传返回的 id>" } }
+      ]
+    }
+  ]
+}
+```
+
+附件能力已覆盖离线请求转换、上传协议和错误回归；不代表所有文件格式均已通过真实账号验收。
 
 安全保护：请求最多 10 MiB；附件最多 8 MiB；直接输入使用 180000 字节保守预算，同时保留附件适配器的 1 MiB 外层保护；酒馆 inlineTokens 超过其 45000 估算预算会拒绝。后两者都不是 Google 所有 RPC 的绝对 token 上限。超限明确报错，不截断或挪动已标记预设。附件不扩大模型上下文，不保证模型全文读取。
 
-200 KiB 以内的附件使用 inline-data；更大附件通过同页 `/_/upload` 可续传上传，再使用 Part field 18。上传目标只接受 `https://aistudio.google.com/_/upload...`；若 Google 返回其他官方 origin，当前明确失败，需有证据后补充允许列表。不会向任意 URL 转发内容。
+200 KiB 以内的文本上下文附件使用 inline-data；更大的文本上下文附件通过同页 `/_/upload` 可续传上传，再使用 Part field 18。用户图片 / 文件无论大小均通过上述上传接口提交。上传目标只接受 `https://aistudio.google.com/_/upload...`；若 Google 返回其他官方 origin，当前明确失败，需有证据后补充允许列表。不会向任意 URL 转发内容。
 
 可选预设管理位于控制台配置页的 Build 诊断面板，也有管理员会话接口 `/api/build/presets`。上传 JSON 后提取固定文本，以宏间字面片段匹配最终 messages；命中部分留直接输入，其余历史 / 背景放附件。支持嵌套 `{{...}}`、`<%...%>`、`<USER>` 等宏间隙；长宏背景分段进附件，字面预设不截断。未命中回完整附件。工具消息和调用元数据始终保留，不因含工具而舍弃会话。仅记录命中次数 / 时间 / 条目，不记录请求正文。匹配是启发式自用功能，插件精准分段不受它覆盖。
 
@@ -118,7 +146,7 @@ Build 任务返回累计快照，普通正文可以按新增后缀发布。不�
 
 附带快照 `integrations/sillytavern-build-adapter/`，来源版本 0.6.0。复制到 SillyTavern 的第三方扩展目录（例如 `public/scripts/extensions/third-party/aistudio-build-adapter`），刷新并在扩展面板启用。本网关附带版本识别 `build-st/` 与 `anti-build-st/`，不会拦截普通 `build/`；custom 连接或 OpenAI reverse_proxy 均有源码分支，沿用用户配置的服务地址与凭据。
 
-实际线协议前缀为 `BUILD_ST_CONTEXT_V1\n`，内部 `version` 可以是 1 或 2；v2 保留 messageMetadata、contentNull、tool_calls、tool_call_id、function_call。normal / regenerate / swipe / continue / quiet / impersonate 均按封装执行。缺少扩展、损坏、主动 error 或不支持版本明确拒绝。不会对 build-st 自动完整附件降级或猜测分段。扩展 custom_include_body 中保留工具字段；与其他自定义 body 覆盖冲突时主动失败。
+实际线协议前缀为 `BUILD_ST_CONTEXT_V1\n`，内部 `version` 可以是 1、2 或 3；v2 保留 messageMetadata、contentNull、tool_calls、tool_call_id、function_call；v3 在 `placement: "file"` 的分段中增加 `media`，承载原始图片 / 文件内容块，`text` 为空字符串。纯文本继续发送 v1 / v2。normal / regenerate / swipe / continue / quiet / impersonate 均按封装执行。缺少扩展、损坏、主动 error 或不支持版本明确拒绝。不会对 build-st 自动完整附件降级或猜测分段。扩展 custom_include_body 中保留工具字段；与其他自定义 body 覆盖冲突时主动失败。
 
 此安装路径与服务器地址支持经过源码及适配器模拟测试；**尚未在真实新版酒馆浏览器中端到端验证**。使用 `anti-build-st/` 时需复制当前附带适配器并刷新酒馆；服务端 v1/v2 封装已做真实生成验证。
 

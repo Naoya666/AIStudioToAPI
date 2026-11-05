@@ -20,7 +20,7 @@ function parseSillyTavern(messages) {
     } catch {
         fail("酒馆上下文封装损坏");
     }
-    if (!value || ![1, 2].includes(value.version)) fail("不支持的酒馆适配版本");
+    if (!value || ![1, 2, 3].includes(value.version)) fail("不支持的酒馆适配版本");
     if (value.error) fail("酒馆适配器已阻止请求，请查看酒馆中的 Build 分流提示；未调用 Google");
     if (!["normal", "regenerate", "swipe", "continue", "quiet", "impersonate"].includes(value.generationType))
         fail("不支持的酒馆生成类型");
@@ -41,6 +41,13 @@ function parseSillyTavern(messages) {
             !["system", "developer", "user", "assistant", "tool", "function"].includes(s.role) ||
             !["inline", "file"].includes(s.placement) ||
             typeof s.text !== "string" ||
+            (s.media !== undefined &&
+                (value.version !== 3 ||
+                    s.text !== "" ||
+                    s.placement !== "file" ||
+                    !s.media ||
+                    typeof s.media !== "object" ||
+                    Array.isArray(s.media))) ||
             typeof s.source !== "string" ||
             s.source.length > 128
         )
@@ -64,6 +71,7 @@ function parseSillyTavern(messages) {
             source: s.source,
             text: s.text,
             ...(s.name ? { name: s.name } : {}),
+            ...(s.media ? { media: s.media } : {}),
         };
     });
     if (inlineBytes > 1024 * 1024)
@@ -99,7 +107,7 @@ function parseSillyTavern(messages) {
         if (m.contentNull !== undefined && m.contentNull !== true) fail("工具历史空正文标记无效");
         const parts = grouped.get(m.message);
         if (parts.some(s => s.placement !== "file")) fail("工具调用历史必须放在附件中");
-        if (m.contentNull && (parts[0].role !== "assistant" || parts.some(s => s.text !== "")))
+        if (m.contentNull && (parts[0].role !== "assistant" || parts.some(s => s.text !== "" || s.media)))
             fail("工具历史空正文标记与内容不一致");
         seen.add(m.message);
     }

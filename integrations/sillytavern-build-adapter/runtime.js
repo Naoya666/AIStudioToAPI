@@ -57,7 +57,7 @@ export function installSillyTavern({ getContext, openAI, owner = "legacy" }) {
         preset_not_ready: "尚未读取到本次酒馆预设。请刷新酒馆后发送聊天；“测试连接”请使用普通 gemini 模型。",
         preset_read_failed: "读取本次预设失败，请查看扩展控制台中的错误代码。",
         prompt_api_missing: "当前酒馆缺少所需 Prompt Manager 接口。",
-        text_only: "目前支持文本和函数工具；请关闭图片、JSON schema 与多候选回复，工具结果须为文本。",
+        text_only: "目前支持文本、图片、文件和函数工具；请关闭图片生成、JSON schema 与多候选回复。",
         token_count_unavailable: "酒馆无法完成 token 估算，已阻止请求。",
         unknown_boundary: "内容来源标记已失效，请重新生成。",
     };

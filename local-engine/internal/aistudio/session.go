@@ -39,6 +39,8 @@ type Call struct {
 	PagePrompt *string `json:"proofText"`
 }
 
+var buildAttachmentMIME = regexp.MustCompile(`^[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+$`)
+
 var methods = map[string]bool{"GenerateContent": true, "CountTokens": true, "GetAiStudioBenefitTier": true, "ListModels": true, "GenerateAccessToken": true, "GetLoggingContext": true, "CreateApplet": true, "CodeAssistantOffline": true, "StreamCodeAssistantOfflineGeneration": true, "CancelCodeAssistantOfflineGeneration": true, "DeleteApplet": true}
 
 func AllowedMethod(method string) bool { return methods[method] }
@@ -224,7 +226,9 @@ func (s *Session) uploadAttachments(ctx context.Context, call *Call) error {
 			data, _ := values[1].(string)
 			name, _ := values[2].(string)
 			raw, err := base64.StdEncoding.DecodeString(data)
-			if err != nil || mime != "text/plain" || len(raw) > 8*1024*1024 {
+			validName := name != "" && len(name) <= 255 && !strings.ContainsAny(name, "/\\") &&
+				!strings.ContainsFunc(name, func(r rune) bool { return r < 32 || r == 127 })
+			if err != nil || !buildAttachmentMIME.MatchString(mime) || !validName || len(raw) > 8*1024*1024 {
 				return errors.New("invalid Build attachment")
 			}
 			hash := sha256.Sum256(raw)

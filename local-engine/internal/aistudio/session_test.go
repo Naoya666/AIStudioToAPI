@@ -153,48 +153,56 @@ func TestMain(m *testing.M) {
 }
 
 func TestBuildLargeAttachmentUploadsBeforeProofAndSubmit(t *testing.T) {
-	calls := []string{}
-	s := fixtureSession(t, "upload-account", func(r *http.Request) (*http.Response, error) {
-		calls = append(calls, r.URL.String())
-		if !strings.Contains(r.Header.Get("Cookie"), "SAPISID=upload-account") || r.Header.Get("User-Agent") != "fixture-firefox" {
-			t.Fatal("upload identity differs")
-		}
-		if r.URL.String() == aiStudioOrigin+"/_/upload" {
-			res := response(200, "")
-			res.Header.Set("X-Goog-Upload-URL", aiStudioOrigin+"/_/upload?fixture=1")
-			return res, nil
-		}
-		if strings.HasPrefix(r.URL.String(), aiStudioOrigin+"/_/upload?") {
-			if r.Header.Get("X-Goog-Upload-Command") != "upload, finalize" {
-				t.Fatal("missing finalize")
+	for _, mime := range []string{"text/plain", "image/png", "application/pdf"} {
+		t.Run(mime, func(t *testing.T) {
+			calls := []string{}
+			s := fixtureSession(t, "upload-account", func(r *http.Request) (*http.Response, error) {
+				calls = append(calls, r.URL.String())
+				if !strings.Contains(r.Header.Get("Cookie"), "SAPISID=upload-account") || r.Header.Get("User-Agent") != "fixture-firefox" {
+					t.Fatal("upload identity differs")
+				}
+				if r.URL.String() == aiStudioOrigin+"/_/upload" {
+					if r.Header.Get("X-Goog-Upload-Header-Content-Type") != mime {
+						t.Fatal("upload MIME lost")
+					}
+					res := response(200, "")
+					res.Header.Set("X-Goog-Upload-URL", aiStudioOrigin+"/_/upload?fixture=1")
+					return res, nil
+				}
+				if strings.HasPrefix(r.URL.String(), aiStudioOrigin+"/_/upload?") {
+					if r.Header.Get("Content-Type") != mime || r.Header.Get("X-Goog-Upload-Command") != "upload, finalize" {
+						t.Fatal("missing finalize")
+					}
+					return response(200, "uploaded/path"), nil
+				}
+				var body []any
+				json.NewDecoder(r.Body).Decode(&body)
+				proof := fmt.Sprintf("!fixture:%x", sha256.Sum256([]byte(" prompt")))
+				if body[1] != proof {
+					t.Fatal("Build bound a placeholder rather than final parts")
+				}
+				turn := body[0].([]any)[0].([]any)
+				part := turn[0].([]any)[0].([]any)
+				if part[17].([]any)[0] != mime || part[17].([]any)[1] != "uploaded/path" {
+					t.Fatal("upload reference lost")
+				}
+				return response(200, `["task"]`), nil
+			})
+			prompt := "prompt"
+			body := make([]any, 8)
+			body[0] = []any{[]any{[]any{map[string]any{"__upload": []any{mime, base64.StdEncoding.EncodeToString([]byte(strings.Repeat("附件", 100000))), "context.txt"}}, []any{nil, prompt}}, "user"}}
+			result, err := s.Send(context.Background(), Call{Method: "CodeAssistantOffline", Body: body, PagePrompt: &prompt})
+			if err != nil {
+				t.Fatal(err)
 			}
-			return response(200, "uploaded/path"), nil
-		}
-		var body []any
-		json.NewDecoder(r.Body).Decode(&body)
-		proof := fmt.Sprintf("!fixture:%x", sha256.Sum256([]byte(" prompt")))
-		if body[1] != proof {
-			t.Fatal("Build bound a placeholder rather than final parts")
-		}
-		turn := body[0].([]any)[0].([]any)
-		part := turn[0].([]any)[0].([]any)
-		if part[17].([]any)[1] != "uploaded/path" {
-			t.Fatal("upload reference lost")
-		}
-		return response(200, `["task"]`), nil
-	})
-	prompt := "prompt"
-	body := make([]any, 8)
-	body[0] = []any{[]any{[]any{map[string]any{"__upload": []any{"text/plain", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("附件", 100000))), "context.txt"}}, []any{nil, prompt}}, "user"}}
-	result, err := s.Send(context.Background(), Call{Method: "CodeAssistantOffline", Body: body, PagePrompt: &prompt})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result.Body.Close()
-	if len(calls) != 3 || calls[2] != makerSuiteRPCURL+"CodeAssistantOffline" {
-		t.Fatal(calls)
+			result.Body.Close()
+			if len(calls) != 3 || calls[2] != makerSuiteRPCURL+"CodeAssistantOffline" {
+				t.Fatal(calls)
+			}
+		})
 	}
 }
+
 func TestPlaygroundBindingIncludesMediaWhilePageUsesOnlyLastTurn(t *testing.T) {
 	file := make([]any, 6)
 	file[5] = []any{"drive-file"}

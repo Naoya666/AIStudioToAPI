@@ -4,6 +4,7 @@ const Identity = require("./ModelIdentity");
 const { parseSillyTavern, sillyTavernMessages } = require("./SillyTavern");
 const { makeAttachmentContext } = require("./AttachmentContext");
 const Tools = require("./ToolContract");
+const Attachments = require("./Attachments");
 const AntiTransport = require("./AntiTransport");
 const { buildError, errorInfo, serializeError } = require("./BuildError");
 const { BuildRuntime } = require("./BuildRuntime");
@@ -23,7 +24,25 @@ function prepare(body, config, system) {
     for (const key of ["response_format", "audio", "modalities"])
         if (body[key] !== undefined) throw fail(`Build 尚未支持 ${key}`);
     let split = identity.contextMode === "sillytavern" ? parseSillyTavern(body.messages) : null;
-    const messages = (split ? sillyTavernMessages(split) : body.messages).map(message =>
+    let splitAttachments = [];
+    if (split?.segments.some(s => s.media)) {
+        const extracted = Attachments.extract(
+            split.segments.map(s => ({
+                content: s.media ? [s.media] : s.text,
+                role: s.role,
+            })),
+            split.segments
+        );
+        splitAttachments = extracted.attachments;
+        split = {
+            ...split,
+            segments: split.segments.map((s, i) => {
+                const { media, ...rest } = s;
+                return media ? { ...rest, text: extracted.messages[i].content[0].text } : rest;
+            }),
+        };
+    }
+    const inputMessages = (split ? sillyTavernMessages(split) : body.messages).map(message =>
         config.buildToolCallingMode !== "strict" &&
         ["tool", "function"].includes(message?.role) &&
         message.content !== null &&
@@ -32,6 +51,8 @@ function prepare(body, config, system) {
             ? { ...message, content: JSON.stringify(message.content) }
             : message
     );
+    const { messages, attachments } = Attachments.extract(inputMessages);
+    attachments.unshift(...splitAttachments);
     // Reject unsupported content rather than dropping images, names or metadata.
     for (const m of messages) {
         if (!m || !["system", "developer", "user", "assistant", "tool", "function"].includes(m.role))
@@ -47,7 +68,7 @@ function prepare(body, config, system) {
             m.content === null ||
             (Array.isArray(m.content) && m.content.every(p => p?.type === "text" && typeof p.text === "string"))
         ))
-            throw fail("Build 当前只支持文本与工具历史");
+            throw fail("Build 消息需要文本、图片、文件或工具历史");
     }
     const contract = Tools.prepareTools(
         { ...body, messages },
@@ -67,11 +88,19 @@ function prepare(body, config, system) {
               : {}),
         requestedMaxOutputTokens: body.max_completion_tokens ?? body.max_tokens,
     });
+    if (attachments.length) {
+        context.prompt = context.prompt.replaceAll(
+            "This is a text-only conversation",
+            "This is a conversation with attachments"
+        );
+        context.prompt +=
+            "\nRead the separately attached media/files at their [Attached file: ...] positions in the ordered conversation. Preserve their message roles and order. These files are conversation input, not app source files.";
+    }
     if (anti) context.prompt += "\n\n" + anti.directInstructions;
     // A conservative local safety budget, not a Google RPC context limit.
     if (Buffer.byteLength(context.prompt) > 180000)
         throw fail("Build 直接输入超过 180000 字节保守预算；未移动或截断预设", 413);
-    return { anti, context, contract, identity, presetHits: split?.hits || 0 };
+    return { anti, attachments, context, contract, identity, presetHits: split?.hits || 0 };
 }
 async function process(handler, req, res) {
     const requestId = randomUUID(),
@@ -115,6 +144,8 @@ async function process(handler, req, res) {
         if (prepared.anti) res.setHeader("X-Build-Anti-Truncation", "synthetic-answer-v1");
         if (!scheduler) throw fail("Build 需要现有多账号调度器；不支持 legacy 调度", 503);
         scheduler.assertModelAccessible(prepared.identity.canonical);
+        const media = await Attachments.resolve(prepared.attachments, system, controller.signal);
+        prepared.context.files.push(...media);
         await handler.browserManager.engine?.ensure();
         if (stream) {
             res.status(200).set({

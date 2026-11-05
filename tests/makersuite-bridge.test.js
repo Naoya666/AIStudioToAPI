@@ -927,48 +927,50 @@ for (const mode of ["auto_fallback", "strict"])
         assert.equal(usage.at(-1).cachedContentTokenCount, 4);
     });
 
-test("large Build attachments upload through the existing page and sign only their final parts", async t => {
-    const f = fixture(t, 0, {
-        fetch: async (url, init) => {
-            if (String(url) === "https://aistudio.google.com/_/upload")
-                return new Response("", {
-                    headers: { "X-Goog-Upload-URL": "https://aistudio.google.com/_/upload?upload_id=fixture" },
-                    status: 200,
-                });
-            if (String(url).includes("upload_id=")) {
-                assert.ok(ArrayBuffer.isView(init.body));
-                return new Response("fixture-upload-path", { status: 200 });
-            }
-            return new Response('["task"]', { status: 200 });
-        },
+for (const [mime, name] of [
+    ["text/plain", "context.txt"],
+    ["image/png", "image.png"],
+    ["application/pdf", "document.pdf"],
+])
+    test(`Build ${mime} uploads through the existing page and signs only final parts`, async t => {
+        const f = fixture(t, 0, {
+            fetch: async (url, init) => {
+                if (String(url) === "https://aistudio.google.com/_/upload") {
+                    assert.equal(init.headers["X-Goog-Upload-Header-Content-Type"], mime);
+                    return new Response("", {
+                        headers: { "X-Goog-Upload-URL": "https://aistudio.google.com/_/upload?upload_id=fixture" },
+                        status: 200,
+                    });
+                }
+                if (String(url).includes("upload_id=")) {
+                    assert.equal(init.headers["Content-Type"], mime);
+                    assert.ok(ArrayBuffer.isView(init.body));
+                    return new Response("fixture-upload-path", { status: 200 });
+                }
+                return new Response('["task"]', { status: 200 });
+            },
+        });
+        await f.init();
+        Object.assign(f.sandbox, { atob, btoa, crypto: require("node:crypto").webcrypto, TextDecoder });
+        const body = Array(29).fill(null);
+        body[0] = [
+            [[{ __upload: [mime, Buffer.from("large fixture").toString("base64"), name] }, [null, "prompt"]], "user"],
+        ];
+        const result = await f.sandbox.__makerSuiteBridge.run({
+            body,
+            ht: "before upload",
+            id: "large",
+            proofText: "prompt",
+            readyTimeoutMs: 100,
+            rpcMethod: "CodeAssistantOffline",
+            timeoutMs: 2000,
+        });
+        assert.equal(result.status, 200);
+        assert.equal(f.calls.length, 3);
+        const submitted = JSON.parse(f.calls[2].init.body);
+        assert.deepEqual(Array.from(submitted[0][0][0][0][17]), [mime, "fixture-upload-path", name, "13"]);
+        assert.equal(typeof submitted[1], "string");
     });
-    await f.init();
-    Object.assign(f.sandbox, { atob, btoa, crypto: require("node:crypto").webcrypto, TextDecoder });
-    const body = Array(29).fill(null);
-    body[0] = [
-        [
-            [
-                { __upload: ["text/plain", Buffer.from("large fixture").toString("base64"), "context.txt"] },
-                [null, "prompt"],
-            ],
-            "user",
-        ],
-    ];
-    const result = await f.sandbox.__makerSuiteBridge.run({
-        body,
-        ht: "before upload",
-        id: "large",
-        proofText: "prompt",
-        readyTimeoutMs: 100,
-        rpcMethod: "CodeAssistantOffline",
-        timeoutMs: 2000,
-    });
-    assert.equal(result.status, 200);
-    assert.equal(f.calls.length, 3);
-    const submitted = JSON.parse(f.calls[2].init.body);
-    assert.equal(submitted[0][0][0][0][17][1], "fixture-upload-path");
-    assert.equal(typeof submitted[1], "string");
-});
 
 for (const stream of [false, true])
     for (const kind of ["text", "unknown-call"])

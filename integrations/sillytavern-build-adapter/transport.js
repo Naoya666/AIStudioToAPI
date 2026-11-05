@@ -148,7 +148,7 @@ function textMessage(m) {
     if (
         !m ||
         !["system", "developer", "user", "assistant", "tool", "function"].includes(m.role) ||
-        (typeof m.content !== "string" && !(call && m.content === null)) ||
+        (typeof m.content !== "string" && !Array.isArray(m.content) && !(call && m.content === null)) ||
         m.reasoning ||
         m.signature
     )
@@ -176,14 +176,25 @@ export function readPresetSegments(chat, tagger, { latestUserText } = {}) {
         current = -1;
     for (let i = 0; i < chat.length; i++) {
         const sent = textMessage(chat[i]);
-        if (sent.content.includes(tagger.prefix)) prepared = true;
+        const content = Array.isArray(sent.content) ? sent.content : [{ text: sent.content, type: "text" }];
+        if (content.some(p => p?.type === "text" && p.text.includes(tagger.prefix))) prepared = true;
         const toolHistory = ["tool", "function"].includes(sent.role) || chat[i].tool_calls || chat[i].function_call;
-        const split = toolHistory
-            ? [{ placement: "file", source: "tool-history", text: sent.content }]
-            : tagger.split(sent.content, { placement: "file", source: "conversation-context" });
+        const split = content.flatMap(p => {
+            if (p?.type === "text" && typeof p.text === "string")
+                return toolHistory
+                    ? [{ placement: "file", source: "tool-history", text: p.text }]
+                    : tagger.split(p.text, { placement: "file", source: "conversation-context" });
+            if (!["image_url", "input_image", "file", "input_file"].includes(p?.type)) fail("text_only");
+            return [{ media: p, placement: "file", source: "attachment", text: "" }];
+        });
         // An exact unmarked user message can remain in the composer. A user-role
         // preset or World Info fragment must never be promoted as the current turn.
-        if (sent.role === "user" && sent.content === latestUserText && !sent.content.includes(tagger.prefix))
+        if (
+            sent.role === "user" &&
+            sent.content === latestUserText &&
+            typeof sent.content === "string" &&
+            !sent.content.includes(tagger.prefix)
+        )
             current = i;
         split.forEach((piece, part) =>
             pieces.push({ message: i, part, role: sent.role, ...(sent.name ? { name: sent.name } : {}), ...piece })
@@ -191,7 +202,7 @@ export function readPresetSegments(chat, tagger, { latestUserText } = {}) {
     }
     if (!prepared) fail("preset_not_ready");
     for (const piece of pieces)
-        if (piece.message === current) {
+        if (piece.message === current && !piece.media) {
             piece.placement = "inline";
             piece.source = "currentUser";
         }
@@ -206,7 +217,7 @@ export function encodeEnvelope(segments, generationType = "normal", inlineTokens
                 generationType: generationType || "normal",
                 inlineTokens,
                 segments,
-                version: messageMetadata.length ? 2 : 1,
+                version: segments.some(s => s.media) ? 3 : messageMetadata.length ? 2 : 1,
                 ...(messageMetadata.length ? { messageMetadata } : {}),
             }),
         role: "user",

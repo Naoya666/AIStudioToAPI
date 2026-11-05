@@ -5,9 +5,11 @@ const { randomUUID } = require("node:crypto");
 const fail = message => buildError({ message, phase: "decode", source: "local", status: 502 });
 function encode(identity, context, app) {
     const parts = context.files.map(f =>
-        Buffer.byteLength(f.text) > 200 * 1024
-            ? { __upload: ["text/plain", Buffer.from(f.text).toString("base64"), f.name] }
-            : [null, null, ["text/plain", Buffer.from(f.text).toString("base64")]]
+        f.data !== undefined
+            ? { __upload: [f.type, f.data, f.name] }
+            : Buffer.byteLength(f.text) > 200 * 1024
+              ? { __upload: ["text/plain", Buffer.from(f.text).toString("base64"), f.name] }
+              : [null, null, ["text/plain", Buffer.from(f.text).toString("base64")]]
     );
     parts.push([null, context.prompt]);
     const body = Array(29).fill(null);
