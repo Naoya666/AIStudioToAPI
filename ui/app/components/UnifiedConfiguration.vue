@@ -54,6 +54,23 @@
                     :class="{ 'allowlist-group': group.fields.some(d => d.type === 'modelAllowlist') }"
                 >
                     <legend>{{ group.name }}</legend>
+                    <div v-if="group.name === '浏览器定时重启' && snapshot.browserRestart" role="status">
+                        <p>
+                            状态：{{ restartStatus(snapshot.browserRestart.status) }}； 在途请求：{{
+                                snapshot.browserRestart.activeRequests
+                            }}； 下次计划：{{ restartDate(snapshot.browserRestart.nextAt) }}
+                        </p>
+                        <p v-if="snapshot.browserRestart.lastCompletedAt">
+                            上次完成：{{ restartDate(snapshot.browserRestart.lastCompletedAt) }}
+                        </p>
+                        <p v-if="snapshot.browserRestart.error" role="alert">{{ snapshot.browserRestart.error }}</p>
+                        <ElButton
+                            v-if="snapshot.browserRestart.status === 'failed'"
+                            :disabled="busy"
+                            @click="retryBrowserRestart"
+                            >重试浏览器重启</ElButton
+                        >
+                    </div>
                     <div v-for="d in group.fields" :key="d.name" class="configuration-field">
                         <div class="configuration-label">
                             <label :for="`config-${d.name}`" :title="`${d.name}：${d.description}`">{{
@@ -115,7 +132,9 @@
                             v-else-if="d.type === 'time'"
                             :id="`config-${d.name}`"
                             v-model="draft[d.name]"
-                            placeholder="HH:mm（洛杉矶时区）"
+                            :placeholder="
+                                d.name === 'BROWSER_RESTART_TIME' ? 'HH:mm（使用重启时区）' : 'HH:mm（洛杉矶时区）'
+                            "
                             :disabled="busy"
                         />
                         <template v-else-if="d.type === 'keys'">
@@ -419,6 +438,36 @@ function accept(value) {
     conflict.value = false;
     secretsVisible.value = false;
 }
+const restartStatus = status =>
+    ({
+        disabled: "未启用 / 本地后端不适用",
+        draining: "等待在途请求结束 / 等待重试",
+        failed: "恢复失败",
+        idle: "正常",
+        restarting: "重启中",
+    })[status] || status;
+const restartDate = timestamp =>
+    timestamp
+        ? new Intl.DateTimeFormat("zh-CN", {
+              dateStyle: "medium",
+              timeStyle: "short",
+              timeZone: snapshot.value.browserRestart.timeZone,
+          }).format(timestamp) +
+          "（" +
+          snapshot.value.browserRestart.timeZone +
+          "）"
+        : "—";
+async function retryBrowserRestart() {
+    busy.value = true;
+    try {
+        await api("/api/configuration/browser-restart/retry", "POST", {});
+        await readLatest();
+    } catch (cause) {
+        error.value = cause.message;
+    } finally {
+        busy.value = false;
+    }
+}
 async function readLatest() {
     const value = await api();
     if (!Array.isArray(value.definitions) || !Array.isArray(value.pending) || !value.saved || !value.running)
@@ -426,6 +475,7 @@ async function readLatest() {
     if (disposed) return;
     if (!snapshot.value || !dirtyNames.value.length) accept(value);
     else {
+        snapshot.value.browserRestart = value.browserRestart;
         snapshot.value.hiddenModels = value.hiddenModels || [];
         snapshot.value.modelVisibilityAvailable = value.modelVisibilityAvailable;
         if (value.version !== snapshot.value.version) conflict.value = true;

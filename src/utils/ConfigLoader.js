@@ -63,6 +63,22 @@ class ConfigLoader {
 
         config.callBackend = env.CALL_BACKEND || "browser";
         if (!["browser", "local"].includes(config.callBackend)) throw new Error("Invalid CALL_BACKEND");
+        const restartEnabled = env.BROWSER_RESTART_ENABLED || "false";
+        const restartTime = env.BROWSER_RESTART_TIME || "04:00";
+        const restartDays = Number(env.BROWSER_RESTART_INTERVAL_DAYS ?? 1);
+        const restartZone = env.BROWSER_RESTART_TIMEZONE || "Asia/Shanghai";
+        if (!["true", "false"].includes(restartEnabled)) throw new Error("Invalid BROWSER_RESTART_ENABLED");
+        if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(restartTime)) throw new Error("Invalid BROWSER_RESTART_TIME");
+        if (!Number.isSafeInteger(restartDays) || restartDays < 1 || restartDays > 3650)
+            throw new Error("Invalid BROWSER_RESTART_INTERVAL_DAYS");
+        if (!["Asia/Shanghai", "UTC", "America/Los_Angeles"].includes(restartZone))
+            throw new Error("Invalid BROWSER_RESTART_TIMEZONE");
+        config.browserRestart = {
+            enabled: restartEnabled === "true",
+            intervalDays: restartDays,
+            time: restartTime,
+            timeZone: restartZone,
+        };
         config.buildEnabled = env.BUILD_ENABLED === "true";
         config.buildPresetMatching = env.BUILD_PRESET_MATCHING === "true";
         config.pgToolCallingMode = env.PG_TOOL_CALLING_MODE || "auto_fallback";

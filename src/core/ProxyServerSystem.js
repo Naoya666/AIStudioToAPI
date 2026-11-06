@@ -133,6 +133,10 @@ class ProxyServerSystem extends EventEmitter {
             logger: this.logger,
         });
 
+        this.browserRestartSchedule = new (require("./BrowserRestartSchedule").BrowserRestartSchedule)(this);
+        this.browserManager.browserRestartSchedule = this.browserRestartSchedule;
+        if (this.scheduler) this.scheduler.browserRestartSchedule = this.browserRestartSchedule;
+
         this.httpServer = null;
         this.accountLoginService = new AccountLoginService(this);
         this.authSource.accountLoginService = this.accountLoginService;
@@ -146,6 +150,7 @@ class ProxyServerSystem extends EventEmitter {
         await this.accountLoginService.initialize();
         await this.usageStatsService.ready;
         await this._startHttpServer();
+        this.browserRestartSchedule.start();
         try {
             // Playground requests use the in-process Playwright transport.
             if (this.config.publicDashboard.enabled) {
@@ -541,8 +546,12 @@ class ProxyServerSystem extends EventEmitter {
         // Setup session and all routes (auth, status, and auth creation)
         this.webRoutes.setupSession(app);
 
+        const tracked = handler => (req, res, next) =>
+            this.browserRestartSchedule.track(() => handler(req, res, next)).catch(next);
+
         // API authentication middleware
         app.use(this._createAuthMiddleware());
+        app.use((req, res, next) => this.browserRestartSchedule.middleware(req, res, next));
         app.use((req, res, next) => {
             if (this.restarting) return res.status(503).json({ error: "Service restarting" });
             this.activeBusinessRequests++;
@@ -571,7 +580,7 @@ class ProxyServerSystem extends EventEmitter {
             next();
         });
         // Resource compatibility routes run after API authentication and admission.
-        app.use((req, res, next) => this.playgroundResources?.handle(req, res, next) || next());
+        app.use(tracked((req, res, next) => this.playgroundResources?.handle(req, res, next) || next()));
 
         // API routes
         app.get(["/v1/models"], (req, res) => {
@@ -599,33 +608,39 @@ class ProxyServerSystem extends EventEmitter {
             });
         });
 
-        app.post("/v1/chat/completions", (req, res) => {
-            this.requestHandler.processOpenAIRequest(req, res);
-        });
+        app.post(
+            "/v1/chat/completions",
+            tracked((req, res) => this.requestHandler.processOpenAIRequest(req, res))
+        );
 
-        app.post(["/v1/embeddings", "/v1/openai/embeddings"], (req, res) => {
-            this.requestHandler.processOpenAIEmbeddingsRequest(req, res);
-        });
+        app.post(
+            ["/v1/embeddings", "/v1/openai/embeddings"],
+            tracked((req, res) => this.requestHandler.processOpenAIEmbeddingsRequest(req, res))
+        );
 
         // OpenAI Response API compatible endpoint
-        app.post("/v1/responses", (req, res) => {
-            this.requestHandler.processOpenAIResponseRequest(req, res);
-        });
+        app.post(
+            "/v1/responses",
+            tracked((req, res) => this.requestHandler.processOpenAIResponseRequest(req, res))
+        );
 
         // OpenAI Response API count input tokens endpoint
-        app.post(["/v1/responses/input_tokens", "/responses/input_tokens"], (req, res) => {
-            this.requestHandler.processOpenAIResponseInputTokens(req, res);
-        });
+        app.post(
+            ["/v1/responses/input_tokens", "/responses/input_tokens"],
+            tracked((req, res) => this.requestHandler.processOpenAIResponseInputTokens(req, res))
+        );
 
         // Claude API compatible endpoint
-        app.post("/v1/messages", (req, res) => {
-            this.requestHandler.processClaudeRequest(req, res);
-        });
+        app.post(
+            "/v1/messages",
+            tracked((req, res) => this.requestHandler.processClaudeRequest(req, res))
+        );
 
         // Claude API count tokens endpoint
-        app.post("/v1/messages/count_tokens", (req, res) => {
-            this.requestHandler.processClaudeCountTokens(req, res);
-        });
+        app.post(
+            "/v1/messages/count_tokens",
+            tracked((req, res) => this.requestHandler.processClaudeCountTokens(req, res))
+        );
 
         // VNC WebSocket downgrade / missing headers handler
         // If Nginx or another proxy strips "Upgrade: websocket" headers, the request appears as a normal GET.
@@ -639,13 +654,15 @@ class ProxyServerSystem extends EventEmitter {
 
         // File Upload Routes
         // Intercept upload requests to use specialized handler
-        app.all(/\/upload\/.*/, (req, res) => {
-            this.requestHandler.processUploadRequest(req, res);
-        });
+        app.all(
+            /\/upload\/.*/,
+            tracked((req, res) => this.requestHandler.processUploadRequest(req, res))
+        );
 
-        app.all(/(.*)/, (req, res) => {
-            this.requestHandler.processRequest(req, res);
-        });
+        app.all(
+            /(.*)/,
+            tracked((req, res) => this.requestHandler.processRequest(req, res))
+        );
 
         return app;
     }
@@ -663,6 +680,7 @@ class ProxyServerSystem extends EventEmitter {
             this.logger.info("[System] Stopped stale queue cleanup interval");
         }
 
+        await this.browserRestartSchedule?.close();
         this.scheduler?.close();
         await this.accountLoginService?.close();
 

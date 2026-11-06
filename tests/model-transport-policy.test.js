@@ -115,6 +115,7 @@ test("downstream OpenAI and Gemini model catalogues include the accepted Argon m
     system.logger = logger;
     system.webRoutes = { authRoutes: { getClientIP: () => "fixture" }, setupSession() {} };
     system.requestHandler = { withConfigurationSnapshot: next => next() };
+    system.browserRestartSchedule = new (require("../src/core/BrowserRestartSchedule").BrowserRestartSchedule)(system);
     const app = system._createExpressApp();
     const server = await new Promise(resolve => {
         const instance = app.listen(0, "127.0.0.1", () => resolve(instance));

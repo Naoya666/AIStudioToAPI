@@ -44,6 +44,10 @@ class ConfigurationRoutes {
             })
         );
         route("get", "/api/configuration", (req, res) => res.json(service.snapshot()));
+        route("post", "/api/configuration/browser-restart/retry", (req, res) => {
+            this.system.browserRestartSchedule.retry();
+            res.status(202).json(service.snapshot());
+        });
         route("post", "/api/configuration/secrets", (req, res) =>
             res.json({
                 apiKeys: [...this.system.config.apiKeys],

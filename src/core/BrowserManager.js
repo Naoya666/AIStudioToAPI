@@ -341,6 +341,11 @@ class BrowserManager {
     }
 
     _requestApplicationRecovery(reason) {
+        if (this._scheduledMaintenance || this.browserRestartSchedule?.blocked) {
+            this._scheduledMaintenanceError = new Error(`Request browser maintenance failed: ${reason}`);
+            this.browserState = "MAINTENANCE_FAILED";
+            return;
+        }
         this.browserState = "FAILED";
         this._recovering = true;
         this.scheduler?.beginRecovery?.(reason);
@@ -351,6 +356,10 @@ class BrowserManager {
     }
 
     _triggerBrowserRecovery(reason) {
+        if (this._scheduledMaintenance || this.browserRestartSchedule?.blocked) {
+            this._scheduledMaintenanceError = new Error(`Browser fault during maintenance: ${reason}`);
+            return;
+        }
         if (this._browserRecoveryTask) return this._browserRecoveryTask;
         if (this.scheduler?.closed) return;
         const policy = this.config?.scheduler || this.scheduler?.config || {};
@@ -4774,6 +4783,48 @@ class BrowserManager {
         // DO NOT reset backgroundWakeupRunning here!
         // If a BackgroundWakeup was running, it will detect this.page === null and exit on its own.
         // Resetting the flag here could allow a new instance to start before the old one exits.
+    }
+
+    // Scheduled maintenance deliberately preserves scheduler queues and never
+    // escalates to an application restart (the login workers must survive).
+    async restartForSchedule() {
+        if (this._browserRecoveryTask) await this._browserRecoveryTask;
+        this._scheduledMaintenance = true;
+        this._scheduledMaintenanceError = null;
+        this._recovering = true;
+        try {
+            await this.abortBackgroundPreload();
+            await this.closeBrowser();
+            if (this.scheduler?.closed) throw new Error("Scheduler is shutting down");
+            await this._ensureBrowser({ recovery: true });
+            const indices = this.authSource.getRotationIndices();
+            const index = indices.find(id => this.scheduler?.isAccountPoolResident?.(id) !== false) ?? indices[0];
+            if (index !== undefined) {
+                this.contextUnavailable.delete(index);
+                this._recoveryAuthIndex = index;
+                try {
+                    await this._getOrStartContextInit(index);
+                } finally {
+                    this._recoveryAuthIndex = undefined;
+                }
+                if (!this.isContextReady(index)) throw new Error("Restart context did not become ready");
+                this.currentAuthIndex = index;
+            }
+            if (this._scheduledMaintenanceError) throw this._scheduledMaintenanceError;
+            if (!this.browser?.isConnected()) throw new Error("Restart browser disconnected before readiness");
+            this._recovering = false;
+            this._scheduledMaintenance = false;
+            this.browserState = "RUNNING";
+            this._browserRpcFailures = [];
+            this._contextCleanupTimeoutCount = 0;
+            this._pumpContextPool();
+        } catch (error) {
+            // Keep background work paused until the next isolated retry succeeds.
+            this._scheduledMaintenance = true;
+            this._recovering = true;
+            this.browserState = "MAINTENANCE_FAILED";
+            throw error;
+        }
     }
 
     /**

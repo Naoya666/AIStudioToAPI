@@ -136,6 +136,7 @@ class BenefitCheckQueue {
     }
     async run() {
         while (!this.stopped) {
+            if (this.service.system.browserRestartSchedule?.blocked) return;
             const task = this.service.state.benefitTasks.find(item => item.status === "queued");
             if (!task) return;
             const controller = new AbortController();
@@ -174,6 +175,7 @@ class BenefitCheckQueue {
                             existingContext.draining ||
                             existingContext.monitorRunning);
                     if (
+                        !this.service.system.browserRestartSchedule?.blocked &&
                         !contextBusy &&
                         (!this.resourceBarrier || this.resourceGeneration !== browserManager.browserGeneration) &&
                         this.resourceFaultGeneration !== browserManager.browserGeneration &&

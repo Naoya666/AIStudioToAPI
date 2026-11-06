@@ -28,6 +28,15 @@ test(
             logger
         );
         system.scheduler = scheduler;
+        system.browserRestartSchedule = new (require("../src/core/BrowserRestartSchedule").BrowserRestartSchedule)(
+            system,
+            {
+                file: path.join(directory, "browser-restart-schedule.json"),
+                now: () => Date.parse("2026-11-06T00:00:00Z"),
+            }
+        );
+        system.browserRestartSchedule.start();
+        t.after(() => system.browserRestartSchedule.close());
         t.after(() => scheduler.close());
         let visibilityFailure = "";
         const visibilityWrites = [];
@@ -123,6 +132,21 @@ test(
         await page.reload();
         await page.getByRole("navigation").getByRole("button", { exact: true, name: "设置" }).click();
         assert.equal(await tailSwitch.getAttribute("aria-checked"), "true");
+        const restartSwitch = panel.locator("#config-BROWSER_RESTART_ENABLED");
+        assert.equal(await restartSwitch.getAttribute("aria-checked"), "false");
+        await restartSwitch.locator("..").click();
+        await panel.locator("#config-BROWSER_RESTART_TIME").fill("05:15");
+        await panel.locator("#config-BROWSER_RESTART_INTERVAL_DAYS").fill("3");
+        await panel.locator("#config-BROWSER_RESTART_INTERVAL_DAYS").blur();
+        await panel.getByRole("button", { exact: true, name: "保存" }).click();
+        await page.waitForFunction(() =>
+            document.querySelector(".configuration-panel")?.textContent.includes("立即生效：启用浏览器定时重启")
+        );
+        assert.equal(service.running.browserRestart.enabled, true);
+        assert.equal(service.running.browserRestart.time, "05:15");
+        assert.equal(service.running.browserRestart.intervalDays, 3);
+        await panel.getByText(/状态：正常；/).waitFor();
+        assert.match(await panel.textContent(), /Asia\/Shanghai/);
         const permissions = panel.locator(".allowlist-editor");
         const collapse = panel.locator(".model-settings-collapse");
         assert.equal(await collapse.getAttribute("open"), null);

@@ -272,6 +272,7 @@ class ConfigurationService {
                 reason: d.application === "restart" ? "资源配置需要重启" : "关联的运行模式或资源配置尚未生效",
             }));
         return {
+            browserRestart: this.system.browserRestartSchedule?.snapshot() || null,
             defaults: values(this.baseline),
             definitions: definitions
                 .filter(d => !d.hidden)
@@ -336,6 +337,7 @@ class ConfigurationService {
             for (const d of definitions.filter(item => item.path.startsWith("login.")))
                 system.accountLoginService.state.config[d.path.slice(6)] = read(this.running, d.path);
         }
+        system.browserRestartSchedule?.configure();
         system.logger.setDisplayLimit?.(this.running.displayLimit);
         LoggingService.setLevel(this.running.debugMode ? "DEBUG" : "INFO");
         if (debugChanged) system.requestHandler?.setBrowserLogLevel?.(this.running.debugMode ? "DEBUG" : "INFO");

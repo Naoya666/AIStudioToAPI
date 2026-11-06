@@ -741,6 +741,7 @@ class ModelScheduler {
             const item = {
                 createdAt: Date.now(),
                 excluded,
+                maintenanceToken: this.browserRestartSchedule?.queued(),
                 model,
                 order: ++this.sequence,
                 reject,
@@ -920,6 +921,7 @@ class ModelScheduler {
                 slot,
                 worker,
             };
+            this.browserRestartSchedule?.dispatched(item.maintenanceToken);
             worker.lease = lease;
             this.remove(item);
             this.observe("context_wait_ms", Date.now() - item.createdAt);
@@ -932,6 +934,8 @@ class ModelScheduler {
     }
 
     _canDispatchItem(item) {
+        if (this.browserRestartSchedule && !this.browserRestartSchedule.canDispatch(item.maintenanceToken))
+            return false;
         if (item.signal?.aborted || this.hiddenModels.has(item.model)) return false;
         const active = this.active(item.model);
         const allocation = this.config.allocation[item.model];

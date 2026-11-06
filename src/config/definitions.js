@@ -1,6 +1,46 @@
 const { MAX_GENERATION_TIMEOUT_MS } = require("./TransportConfig");
 
 module.exports = [
+    ...[
+        {
+            description: "仅 Camoufox 请求浏览器生效。维护时拒绝新 API 请求，等待在途请求结束；登录队列继续运行。",
+            label: "启用浏览器定时重启",
+            name: "BROWSER_RESTART_ENABLED",
+            path: "enabled",
+            type: "boolean",
+        },
+        {
+            description: "按下方时区的 HH:mm 执行。延后重启不会改变下一次计划时间。",
+            label: "重启时间",
+            name: "BROWSER_RESTART_TIME",
+            path: "time",
+            type: "time",
+        },
+        {
+            description: "首次在下一个执行时间触发，之后每隔指定天数执行。",
+            label: "重启间隔",
+            maximum: 3650,
+            minimum: 1,
+            name: "BROWSER_RESTART_INTERVAL_DAYS",
+            path: "intervalDays",
+            type: "integer",
+            unit: "天",
+        },
+        {
+            choices: ["Asia/Shanghai", "UTC", "America/Los_Angeles"],
+            description: "默认北京时间；不受服务器时区影响。",
+            label: "重启时区",
+            name: "BROWSER_RESTART_TIMEZONE",
+            path: "timeZone",
+            type: "enum",
+        },
+    ].map(field => ({
+        application: "hot",
+        group: "浏览器定时重启",
+        mode: "all",
+        ...field,
+        path: `browserRestart.${field.path}`,
+    })),
     {
         application: "restart",
         choices: ["browser", "local"],
