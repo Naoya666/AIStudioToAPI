@@ -1,47 +1,37 @@
 # AIStudioToAPI（二次开发版）
 
-中文文档 | [English](README_EN.md)
+中文 | [English](README_EN.md)
 
-将 Google AI Studio Playground 封装为兼容 OpenAI、Gemini 和 Anthropic 格式的 API，通过 Camoufox 页面直连生成接口，并提供账号、模型调度、代理节点及用量管理界面。
+将 Google AI Studio 的 Gemini 模型封装为兼容 OpenAI、Gemini 和 Anthropic 格式的 API，提供账号、模型调度、代理节点与用量管理控制台。
 
-本仓库是基于 [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI) 二次开发的独立维护版本，非上游官方版本。上游进一步基于 [Ellinav/ais2api](https://github.com/Ellinav/ais2api) 开发。本版本保留上游署名和许可说明，沿用 **CC BY-NC 4.0**，仅限符合许可证的非商业用途。
+本仓库基于 [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI) 独立维护，沿用 **CC BY-NC 4.0** 许可证，仅限符合许可证的非商业用途。
 
-抗截断文本传输：支持 `anti-` 模型前缀、请求级覆盖及独立全局策略，兼容非流式和 real/fake/early 三种流式模式。默认 off，范围及限制见 [使用说明](docs/zh/anti-truncation.md) 和 [实施验证记录](docs/zh/anti-truncation-implementation.md)。
+## 功能
 
-新增可选 **Build 代码助手双通道**：`build/` 免插件完整上下文附件、`build-st/` 酒馆精准分段；复用现有账号 context / 页面 / 代理。默认关闭，仅 OpenAI Chat Completions 实验入口；已接入并验证合成函数抗截断，支持真实工具共存，anti 流式响应会先缓冲校验。配置、工具模式、扩展安装和验收边界见 [实施与使用说明](docs/zh/build-dual-channel.md)。
+- **多协议接入**：OpenAI Chat Completions / Responses、Gemini 原生格式、Anthropic Messages；支持流式响应。
+- **双调用后端**：默认通过 Camoufox 直连 Playground；可切换本机 Go / SpiderMonkey 后端。
+- **账号管理**：凭据登录、Cookie / CSV / 验证器导入、批量操作、登录队列、会话恢复与付费权益检测。
+- **模型调度**：按账号和模型管理并发、排队、额度、冷却及重试，支持 Context 预热和出口分散。
+- **代理节点池**：集成 Mihomo，支持节点管理及账号出口绑定。
+- **用量与运维**：SQLite 请求记录、Token 统计、运行状态、可视化配置和可选的独立公开看板。
+- **可选生成增强**：抗截断文本传输、尾部修复，以及实验性 Build / SillyTavern 通道。
 
-PG / Build 已补充按尝试采集与持久化的 Token 统计，以及次数 / Token 双重预算展示。Pro Build 按账号共享 2000 万池；Ultra 与 Free Build 未知额度不会伪装成零或无限。详见 [Token 统计与预算口径](docs/zh/token-statistics.md)。
-
-## 功能与本版本改动
-
-继承上游的多协议 API、浏览器自动化、多账号会话、工具调用、图片及语音模型支持，具体可用能力取决于账号权限和上游模型。
-
-本版本的主要扩展：
-
-- **账号管理**：独立账号页面，支持账号凭据、Cookie、CSV 和验证器导入，筛选、批量选择、登录队列、失败诊断及过期会话恢复。
-- **模型感知调度**：按账号 × 模型维护额度与冷却，支持并发控制、排队、资源分配、错误重试和每日冷却重置。
-- **代理节点池**：集成 Mihomo，管理节点及账号出口绑定，支持在首次登录前指定出口。
-- **实时用量统计**：记录请求成功率、模型用量、延迟和调度状态，统计存储于 SQLite。
-- **匿名公开看板**：可选的独立端口只读页面，展示聚合用量及分模型时间窗口统计。
-- **流式模式**：保留 Camoufox；real 直接读取 Playground 增量消息，fake 缓冲后输出 SSE，early 保留 Chat 空首块及等待心跳。
-- **可视化配置**：控制台保存管理配置，显示生效状态及待重启项，配置随数据目录持久化。
-- **界面改进**：账号、节点及状态页面的移动端布局与批量操作体验优化。
+具体模型、工具、图片和音频能力取决于账号权限、模型及调用通道；模型目录不代表账号一定可用。
 
 ## 快速开始
 
-推荐使用 Docker Compose 拉取本仓库发布的预构建镜像，服务器无需安装 Node.js 或编译源码。也可以继续使用仓库自带的 Compose 在本地构建。
+推荐 Docker Compose v2。镜像构建面向 Linux amd64 / arm64，包含 Camoufox、Mihomo 和本地调用引擎。
 
-### Docker Compose 拉取预构建镜像（推荐）
-
-需要 Docker Engine / Docker Desktop 和 Docker Compose v2。公开镜像 [`ghcr.io/naoya666/aistudiotoapi`](https://github.com/Naoya666/AIStudioToAPI/pkgs/container/aistudiotoapi) 支持 Linux amd64、arm64，可直接拉取。
+### 1. 准备配置
 
 ```bash
 git clone https://github.com/Naoya666/AIStudioToAPI.git
 cd AIStudioToAPI
 cp .env.example .env
+mkdir -p configs/auth data
 ```
 
-编辑 `.env`，设置自己的 API 密钥和控制台密码：
+编辑 `.env`，至少设置：
 
 ```dotenv
 API_KEYS=replace-with-your-api-key
@@ -51,9 +41,11 @@ TZ=Asia/Shanghai
 CHECK_UPDATE=false
 ```
 
-`CHECK_UPDATE=false` 用于关闭继承自上游的版本检查。本仓库通过 GitHub Actions 发布镜像，更新方式见下文。
+`API_KEYS` 支持逗号分隔的多个密钥。请显式设置：留空会使用默认密钥 `123456`。控制台用户名和密码均未设置时，使用 API 密钥登录。
 
-在同一目录新建 `compose.image.yaml`：
+### 2. 启动服务
+
+**使用预构建镜像**：在仓库根目录新建 `compose.image.yaml`：
 
 ```yaml
 services:
@@ -71,115 +63,50 @@ services:
 ```
 
 ```bash
-mkdir -p configs/auth data
 docker compose -f compose.image.yaml pull app
 docker compose -f compose.image.yaml up -d --no-build app
 docker compose -f compose.image.yaml logs -f app
 ```
 
-浏览器访问 `http://localhost:7860`，使用控制台用户名和密码登录，然后添加 Google 账号。远程访问方式见下文的反向代理说明。
+`main` 跟随主分支成功发布的镜像；也可使用 `sha-<完整提交号>` 或已发布的 `v*` 标签。需要固定部署版本时，使用 Actions 发布摘要中的镜像 digest。发布流程见 [容器镜像发布指南（英文）](docs/en/container-publishing.md)。
 
-`main` 指向主分支最近一次成功发布。指定版本使用 `:sha-<完整提交号>`，发布的 `v*` 标签也有同名镜像；生产部署建议将 `image` 固定为 Actions 成功运行摘要中的 `ghcr.io/naoya666/aistudiotoapi@sha256:...`，便于确认版本和回退。
-
-已有部署应在原 Compose 中修改 Build 服务的 `image`，移除该服务的 `build` 和 `pull_policy: never`，沿用原服务名、端口、环境、网络及全部挂载；不要直接用上述新实例示例覆盖生产配置。仓库自带的 `docker-compose.yml` 仍用于本地构建，不会自动改用 GHCR 镜像。
-
-### Docker Compose 本地构建
-
-准备好上述源码和 `.env` 后，使用仓库自带的 [docker-compose.yml](docker-compose.yml)。Dockerfile 会下载 Node.js 基础镜像、系统依赖、Camoufox 和 Mihomo，首次构建需要访问对应下载源；后续构建可复用缓存。
+**从当前源码构建**：完成第一步后，直接使用仓库自带的 [docker-compose.yml](docker-compose.yml)：
 
 ```bash
 docker compose up -d --build
 docker compose logs -f app
 ```
 
-浏览器访问 `http://localhost:7860`，使用配置的控制台用户名和密码登录，然后添加 Google 账号。
+首次构建需要下载基础镜像、浏览器和原生编译依赖。仓库自带 Compose 使用本地构建，不会自动拉取 GHCR 镜像。
 
-仓库中的 [docker-compose.yml](docker-compose.yml) 会：
+### 3. 登录控制台并添加账号
 
-- 通过 `build: .` 构建当前源码，使用本地镜像标签。
-- 从 `.env` 注入配置，并使用 `init: true` 回收子进程。
-- 将 `./configs/auth` 挂载到 `/app/configs/auth`，保存登录会话。
-- 将 `./data` 挂载到 `/app/data`，保存账号数据库、统计、调度、节点和管理配置。
-- 默认仅将管理/API 端口映射到宿主机 `127.0.0.1:7860`。
+访问 `http://localhost:7860`，使用配置的控制台凭据登录。在 `/accounts` 页面添加账号：
 
-远程部署可通过 SSH 隧道访问，或配置 [Nginx 反向代理与 HTTPS](docs/zh/nginx-setup.md)。需要直接通过服务器 IP 访问时，将 Compose 端口映射改为 `7860:7860`。如果修改容器内 `PORT`，需同步修改映射的容器端口。
+- **凭据登录**：保存 Google 邮箱、密码和可选 TOTP 密钥，通过后台队列登录；支持 CSV 导入。
+- **Cookie 导入**：上传认证 JSON，或将已有认证文件放入 `configs/auth/`。
+- **人工登录**：Docker 部署可通过 `/auth` 的 VNC 入口处理人工验证并保存会话。
 
-### 使用 Docker 命令构建
+需要固定代理出口时，先在节点池绑定账号，再发起登录。遇到 Google 验证码或其他挑战时，按控制台提示人工处理。操作说明见 [账号登录与会话恢复](docs/zh/account-auto-login-operations.md)。
 
-在仓库根目录准备好 `.env` 后执行：
+默认端口仅绑定宿主机回环地址。远程访问可使用 SSH 隧道，或配置 [Nginx 与 HTTPS](docs/zh/nginx-setup.md)。修改容器内 `PORT` 时，同步调整 Compose 端口映射。
 
-```bash
-docker build -t aistudio-to-api:local .
-mkdir -p configs/auth data
-docker run -d \
-  --name aistudio-to-api \
-  --init \
-  --env-file .env \
-  -p 127.0.0.1:7860:7860 \
-  -v "$(pwd)/configs/auth:/app/configs/auth" \
-  -v "$(pwd)/data:/app/data" \
-  --restart unless-stopped \
-  aistudio-to-api:local
-```
+## API 使用
 
-以上多行命令适用于 Bash；Windows 用户建议使用 Docker Compose。
+| 协议            | Base URL                       | 常用接口                                                                                                             |
+| --------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| OpenAI 兼容     | `http://localhost:7860/v1`     | `/models`、`/chat/completions`、`/responses`                                                                         |
+| Gemini 原生格式 | `http://localhost:7860/v1beta` | `/models`、`/models/{model}:generateContent`、`/models/{model}:streamGenerateContent`、`/models/{model}:countTokens` |
+| Anthropic 兼容  | `http://localhost:7860/v1`     | `/messages`、`/messages/count_tokens`                                                                                |
 
-### 本地源码运行
-
-需要 Node.js **22.13.0 或以上**，建议使用与 Dockerfile 一致的 Node.js 24。完整的自动登录队列依赖 Linux `/proc` 和 POSIX 进程组，建议在 Linux 或 Docker 中运行。
-
-```bash
-git clone https://github.com/Naoya666/AIStudioToAPI.git
-cd AIStudioToAPI
-npm ci
-cp .env.example .env
-```
-
-编辑 `.env` 设置密钥和控制台密码，然后运行认证设置脚本：
-
-```bash
-npm run setup-auth
-npm start
-```
-
-设置脚本会检查依赖、下载 Camoufox，并引导登录，认证文件保存到 `configs/auth/`。已有 Camoufox 时，可通过 `CAMOUFOX_EXECUTABLE_PATH` 指定程序路径。本地源码运行不提供容器内的 VNC 环境；节点池需要自行安装 Mihomo 并设置 `MIHOMO_PATH`，Docker 镜像已包含该程序。
-
-`npm start` 会构建管理界面及公开看板。前端已经构建且源码未变化时，可用 `npm run quick-start` 启动服务。源码运行的数据位于仓库的 `data/`，不是宿主机根目录 `/data`。
-
-## Playground 直连
-
-服务保留 Camoufox，但不再需要创建或维护 Build App，也不再启动用于 Build 客户端的 9998 WebSocket 服务。账号登录后打开 Playground 临时对话页，初始化官方 WAA 服务；初始化生成在出站前中止。业务请求由服务端直接通过对应页面发送 `GenerateContent`，返回结果直接进入现有账号调度和协议适配流程。
-
-旧自建 Build App 和 `scripts/client/build.js` 不参与当前请求链路。升级只需部署服务端新版本并重启。实现、验收及接口范围见 [改造记录](docs/zh/playground-direct-20261029.md)。
-
-## 添加账号
-
-访问控制台的 `/accounts` 页面，可选择：
-
-- **凭据登录**：保存邮箱、密码及可选 TOTP 验证器密钥，通过后台队列登录；支持 CSV 导入和批量重新登录。
-- **Cookie 导入**：上传已有的认证 JSON，或将认证文件放入挂载的 `configs/auth/` 目录。
-- **VNC 人工登录**：Docker 部署可使用 `/auth` 登录入口，完成人工验证并保存会话。
-
-自动登录不能保证通过 Google 的所有验证；出现验证码或其他人工挑战时，需按控制台提示处理。需要固定出口的账号，可先在节点池保存绑定，再发起登录。
-
-账号密码、TOTP 和 Cookie 属于敏感信息；本版本的凭据采用受限本地明文存储。不要提交或分享 `.env`、`configs/auth/`、`data/`、账号导出文件或登录截图。完整说明见 [账号自动登录与会话恢复](docs/zh/account-auto-login-operations.md)。
-
-## 使用 API
-
-| 协议            | Base URL                       | 常用接口                                                                              |
-| --------------- | ------------------------------ | ------------------------------------------------------------------------------------- |
-| OpenAI 兼容     | `http://localhost:7860/v1`     | `/chat/completions`、`/responses`、`/embeddings`、`/models`                           |
-| Gemini 原生格式 | `http://localhost:7860/v1beta` | `/models`、`/models/{model}:generateContent`、`/models/{model}:streamGenerateContent` |
-| Anthropic 兼容  | `http://localhost:7860/v1`     | `/messages`、`/messages/count_tokens`                                                 |
-
-先查询当前模型列表：
+先查询模型列表：
 
 ```bash
 curl http://localhost:7860/v1/models \
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-将下面的 `MODEL_ID` 替换为列表中的模型名：
+将 `MODEL_ID` 替换为列表中的模型 ID：
 
 ```bash
 curl http://localhost:7860/v1/chat/completions \
@@ -188,70 +115,99 @@ curl http://localhost:7860/v1/chat/completions \
   -d '{"model":"MODEL_ID","messages":[{"role":"user","content":"你好"}],"stream":false}'
 ```
 
-更多协议、流式请求、图片、语音和工具调用示例见 [API 使用示例](docs/zh/api-examples.md)。
+将 `stream` 改为 `true` 可请求 SSE 流。`STREAMING_MODE` 支持：
 
-## 配置
+| 模式    | 行为                                                                            |
+| ------- | ------------------------------------------------------------------------------- |
+| `real`  | 增量转发上游生成内容，默认模式                                                  |
+| `fake`  | 缓冲生成结果后输出 SSE                                                          |
+| `early` | Chat Completions 提前发送空首块及等待心跳，再输出缓冲内容；其他协议按 fake 处理 |
 
-完整环境变量见 [.env.example](.env.example)。常用配置：
+支持模型能力范围内的内置搜索、代码执行、URL context、函数工具及结构化输出。Playground 会将强制或指定函数选择降级为 `AUTO`，不能保证指定工具执行。Embeddings（包括 `embedContent` / `batchEmbedContents`）当前返回 **501**。
 
-| 配置                                                 | 用途                                                                                    |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `API_KEYS`                                           | 客户端访问密钥，多个值用逗号分隔；未设置时会使用上游默认密钥 `123456`，部署时应显式设置 |
-| `WEB_CONSOLE_USERNAME` / `WEB_CONSOLE_PASSWORD`      | 控制台登录；均未设置时回退到 API 密钥鉴权                                               |
-| `PORT` / `HOST`                                      | 服务监听端口与地址，默认 `7860` / `0.0.0.0`                                             |
-| `TZ`                                                 | 日志和显示时区                                                                          |
-| `SECURE_COOKIES`                                     | HTTPS 部署时可设为 `true`                                                               |
-| `CHECK_UPDATE`                                       | 继承自上游的版本检查，本地构建部署保持 `false`                                          |
-| `PUBLIC_DASHBOARD_ENABLED` / `PUBLIC_DASHBOARD_PORT` | 启用独立匿名看板及其端口，默认关闭 / `7861`                                             |
-| `CAMOUFOX_EXECUTABLE_PATH` / `MIHOMO_PATH`           | 本地源码运行时的浏览器和代理程序路径                                                    |
+文件 API 支持上传、查询、下载和删除；Playground 文件绑定上传账号，不能跨账号组合使用。Gemini `cachedContents` 是进程内兼容缓存，重启后清空。接口细节见 [Playground 能力与限制](docs/zh/playground-capabilities.md)，其他请求示例见 [API 使用示例](docs/zh/api-examples.md)。
 
-控制台已保存的管理配置优先于对应环境值。修改 `.env` 后，如对应设置已在控制台保存，需要在控制台修改或恢复环境值；Compose 环境配置变更需要重新创建容器。管理配置存于 `data/managed-config.json`。
+## 配置与后端
 
-账号层级模型权限可在控制台统一配置中编辑，保存后立即生效。首次初始化仅限制 Free 调用 `gemini-3-flash-preview`、`gemini-3.6-flash` 和 `gemini-4-argon`，其他现有模型默认开放；后续新增目录模型需手动授权。详见 [账号层级模型白名单说明](docs/zh/account-tier-model-allowlist-design.md#11-实现与使用说明)。
+完整环境变量参考 [.env.example](.env.example)。日常管理可在控制台配置页完成；已保存的配置覆盖对应环境变量。界面会显示运行值、保存值及待重启项。
 
-模型并发、排队和冷却参数见 [模型感知调度说明](docs/zh/model-aware-scheduling.md)。每日调度冷却重置使用固定的 `America/Los_Angeles` 时区，不随 `TZ` 改变。
+| 配置                                            | 用途                                        |
+| ----------------------------------------------- | ------------------------------------------- |
+| `API_KEYS`                                      | 客户端访问密钥，多个值以逗号分隔            |
+| `WEB_CONSOLE_USERNAME` / `WEB_CONSOLE_PASSWORD` | 控制台登录凭据                              |
+| `HOST` / `PORT`                                 | 默认 `0.0.0.0` / `7860`                     |
+| `CALL_BACKEND`                                  | `browser`（默认）或 `local`，切换后重启生效 |
+| `CAMOUFOX_EXECUTABLE_PATH` / `MIHOMO_PATH`      | 自定义浏览器与代理程序路径                  |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`       | 出站代理与绕过规则                          |
+| `STREAMING_MODE`                                | `real` / `fake` / `early`                   |
+| `TZ` / `SECURE_COOKIES`                         | 显示时区 / HTTPS Cookie 设置                |
+| `PUBLIC_DASHBOARD_ENABLED`                      | 启用独立匿名看板，默认关闭                  |
 
-### 可选公开看板
+管理配置保存在 `data/managed-config.json`。若环境变量修改后未生效，检查是否存在控制台覆盖；Compose 环境配置变更需要重新创建容器。
 
-在 `.env` 中启用：
+### 调用后端
 
-```dotenv
-PUBLIC_DASHBOARD_ENABLED=true
-PUBLIC_DASHBOARD_PORT=7861
+- **browser**：使用 Camoufox 的账号会话直接调用 Playground，适用于默认部署。
+- **local**：使用 Node 管理的本机 Go / SpiderMonkey 子进程发送请求；支持 Linux amd64 / arm64，Docker 镜像已内置。本地源码运行需先执行 `npm run build:engine`，要求 Go 1.27.0，其他编译依赖由脚本下载。
+
+在设置页保存调用后端并重启服务后生效。两种后端复用账号、代理、调度和统计，不自动互相回退。local 模式下按需登录仍可使用浏览器。操作及支持范围见 [双后端说明](docs/zh/local-browserless-backend.md)，已完成的真实调用验证及剩余限制见 [验证记录](docs/zh/local-browserless-validation-20261105.md)；长期 Cookie 续期仍待验证。
+
+### 账号权限与调度
+
+账号可设置 Free、Pro、Ultra 5x 或 Ultra 20x 层级，也可跟随当前会话的成功权益检测。手动层级影响本地准入和额度估算，实际调用仍受 Google 权限与限流约束。
+
+模型权限在控制台层级白名单中管理；新增模型后应检查是否已授权。用量和额度展示属于本地统计或估算，不是实时上游余额。调度每日冷却重置固定使用 `America/Los_Angeles` 时区，不随 `TZ` 改变。
+
+详见 [模型调度](docs/zh/model-aware-scheduling.md)、[层级与权益](docs/zh/account-tiers-and-argon-eligibility-design.md)、[模型白名单](docs/zh/account-tier-model-allowlist-design.md) 和 [Token 统计口径](docs/zh/token-statistics.md)。
+
+### 可选功能
+
+- **抗截断**：默认策略为 `off`。OpenAI Chat Completions 可通过 `anti-` 模型前缀或 `anti_truncation` 请求字段启用；仅支持已适配的模型和组合，见 [使用说明](docs/zh/anti-truncation.md)。
+- **Build 通道（实验性）**：默认关闭，仅开放 Chat Completions。`build/` 打包完整上下文，`build-st/` 使用配套 SillyTavern 适配器分段；启用后需检查模型权限。配置、媒体输入、工具和清理行为见 [Build 双通道说明](docs/zh/build-dual-channel.md)。
+- **尾部修复**：`TAIL_REPAIR_ENABLED` 默认关闭，在最后一轮为模型消息时追加用户续写指令，可在设置页调整。
+- **公开看板**：启用 `PUBLIC_DASHBOARD_ENABLED=true` 后，在 Compose 增加 `127.0.0.1:7861:7861` 端口映射并重建容器。提供独立只读聚合数据；集群可使用 master / agent 角色，各节点使用独立账号池。见 [公开看板](docs/zh/public-dashboard-design.md) 和 [多节点部署](docs/zh/public-dashboard-multi-node-design.md)。
+
+## 本地源码运行
+
+要求 **Node.js ≥ 22.13.0**；Node.js 24 与 Docker 镜像一致。完整后台登录功能依赖 Linux `/proc` 和 POSIX 进程组，建议使用 Linux 或 Docker。
+
+```bash
+git clone https://github.com/Naoya666/AIStudioToAPI.git
+cd AIStudioToAPI
+npm ci
+cp .env.example .env
+# 编辑 .env，设置 API 密钥和控制台密码
+npm run setup-auth
+npm start
 ```
 
-在 Compose 的 `ports` 中增加：
+认证脚本会下载 Camoufox 并引导登录，会话保存到 `configs/auth/`。已有浏览器可设置 `CAMOUFOX_EXECUTABLE_PATH`。需要节点池时，自行安装 Mihomo 并设置 `MIHOMO_PATH`。
 
-```yaml
-- "127.0.0.1:7861:7861"
-```
+`npm start` 会先构建管理界面和公开看板；前端已构建且未变更时，可用 `npm run quick-start`。源码部署不包含容器内的 VNC 环境。
 
-执行 `docker compose up -d` 重新创建容器，通过 `http://localhost:7861` 访问。此端口提供匿名聚合数据；管理端仍使用 `7860`。部署说明和指标定义见 [公开用量看板说明](docs/zh/public-dashboard-design.md)。
+## 更新与数据
 
-多服务器部署可将公示角色设为 `master`（主控）和 `agent`。Agent 定时生成本机快照，主控定时读取并缓存汇总；公众访问不会触发节点统计或远程采集。各节点必须使用独立账号池，agent 查询接口使用独立 Token。配置方法见 [多节点公示部署与实现说明](docs/zh/public-dashboard-multi-node-design.md#12-部署示例)。默认 `standalone` 保留原有独立公示功能。
+需要持久保存：
 
-公示面板将正常等待额度与数据异常区分：在账号健康、认证有效，且没有初始化、清理或恢复异常时，日额度全部耗尽显示“额度已耗尽，等待恢复”，可用账号及剩余额度为 0；临时限流显示“暂时限流，等待恢复”。公示快照通过可选 `quota_status`（`exhausted` / `cooldown`）传递该状态，master 会纳入这些节点的新鲜实时数据，不因额度等待而显示统计缺失。数据过期或真实故障仍按异常处理。该展示状态不改变启动验收、机器健康接口的 HTTP 状态或渠道控制器策略。集群部署需更新 master 和相关 agent 才能完整展示。
+| 路径            | 内容                                             |
+| --------------- | ------------------------------------------------ |
+| `.env`          | 初始环境配置与密钥                               |
+| `configs/auth/` | 账号登录会话                                     |
+| `data/`         | 账号数据库、请求统计、调度状态、节点池及管理配置 |
 
-渠道控制器应读取 master 和 agent 统一的 `GET /api/internal/model-health`，并发送 `Authorization: Bearer <PUBLIC_DASHBOARD_HEALTH_TOKEN>`。在目标节点配置独立的 `PUBLIC_DASHBOARD_HEALTH_TOKEN` 后重启；留空时拒绝所有查询。该接口与公示服务共用监听地址和端口，只读取已生成的本机缓存，master 不含远程节点汇总。响应仅含 `schema_version: 1`、原始 `generated_at`、持久化 `node_id`、`snapshot_sequence`、`service_status`、`usage_window` 和各模型的 `realtime.available_accounts`，不含账号明细。缺少或错误令牌返回 401；缓存缺失、超过 `PUBLIC_DASHBOARD_STALE_AFTER_MS` 或服务未就绪时返回 503，已有缓存仍保留原始时间戳和身份。原公示与 Agent 采集接口用途保持不变；standalone 不提供该机器接口。
+账号密码、TOTP 和 Cookie 使用受限本地明文存储。这些目录以及账号导出、登录截图均含敏感信息，请勿提交到公开仓库。数据库备份前停止服务，完整复制并验证备份；多个实例使用独立数据目录和账号池。
 
-配套控制器设置 `aistudio.status_url: "http://aistudio:7861/api/internal/model-health"` 和 `aistudio.token_env: "AISTUDIO_HEALTH_TOKEN"`，通过环境变量注入与目标节点相同的只读令牌，dry-run 下也需提供。渠道连续两次不可用后禁用、当日锁存和太平洋日期切换时启用的策略保持不变。
-
-## 更新与维护
-
-### Docker Compose 预构建镜像
-
-更新前记录当前镜像引用，检查并备份 `.env`、`configs/auth/`、`data/` 及自己增加的挂载。复制数据库前应停止对应服务并验证备份。固定 digest 部署时，先将原 Compose 中的 `image` 改为新发布的 digest；使用 `main` 标签时，拉取后重建容器即可更新：
+**预构建镜像部署**：备份后执行：
 
 ```bash
 docker compose -f compose.image.yaml pull app
-# 按现有备份流程停止服务、完成并验证备份后，再切换镜像。
-docker compose -f compose.image.yaml up -d --no-deps --no-build --pull never app
+docker compose -f compose.image.yaml up -d --no-deps --no-build app
 docker compose -f compose.image.yaml logs --tail=100 app
 ```
 
-使用自己现有的 Compose 文件和服务名时，请替换命令中的文件名与 `app`。升级后检查启动、账号、配置及接口；保留旧镜像用于回退。代码回退时切回旧镜像引用，保留当前账号和用量数据库。
+固定 digest 时，先更新 Compose 中的镜像引用。已有部署应沿用原服务名、网络及全部挂载；从本地构建切换镜像时，移除对应服务的 `build` 和 `pull_policy: never`。
 
-### Docker Compose 本地构建
+**本地构建部署**：备份后执行：
 
 ```bash
 git pull --ff-only
@@ -259,107 +215,29 @@ docker compose up -d --build
 docker compose logs --tail=100 app
 ```
 
-本地构建方式每次更新重新构建当前源码，使用上述预构建镜像方式时则直接拉取镜像。更新前备份 `.env`、`configs/auth/` 和 `data/`，备份数据库时先停止服务。
+**源码部署**：停止服务并备份后，执行 `git pull --ff-only`、`npm ci`、`npm start`；使用 local 后端时按需重新构建引擎。
+
+更新后检查启动日志、账号和 API 调用。保留旧镜像引用和升级前数据备份用于回退。
+
+## 开发
 
 ```bash
-docker compose stop
-# 将 .env、configs/auth/ 和 data/ 复制到安全的备份位置
-docker compose up -d
-```
-
-停止并移除容器可用 `docker compose down`，宿主机绑定目录仍保留。不要删除这些目录；多个实例不能共享同一套账号、数据库和调度状态。
-
-### 本地源码
-
-```bash
-git pull --ff-only
-npm ci
-npm start
-```
-
-如使用 `docker run`，更新时重新执行 `docker build`，停止并移除旧容器，再按原启动命令创建新容器，继续挂载原数据目录。
-
-## 开发与文档
-
-```bash
+cp .env.example .env.development
+# 编辑 .env.development 后启动开发模式
 npm run dev
 npm test
 npm run lint
 npm run build:ui
 ```
 
-### 云端构建与浏览器验证
+生产模式读取 `.env`，开发模式读取 `.env.development`。浏览器集成测试需要 Playwright Firefox / Chromium，部分本地 TLS 测试需要 OpenSSL；local 引擎相关测试需先构建引擎。专项命令见 [package.json](package.json)。
 
-[Build and publish Docker image](https://github.com/Naoya666/AIStudioToAPI/actions/workflows/docker.yml) 工作流在推送 `main` 或 `v*` 标签后自动测试、构建并发布 GHCR 镜像；其他分支和 PR 运行验证但不发布。需要重试时，可在 Actions 页面选择该工作流，点击 **Run workflow** 并选择 `main`。发布使用 GitHub 自带的 `GITHUB_TOKEN`，无需另配个人令牌或仓库 Secrets；工作流只发布镜像，生产服务的备份和切换另行执行。
+[镜像构建工作流](.github/workflows/docker.yml) 在推送和 PR 时验证，仅在主分支或 `v*` 标签上发布镜像。自动化离线测试不等同于真实 Google 账号或所有模型组合的可用性验收。
 
-镜像通过多阶段构建生成，每版从固定 digest 的 Node.js 基础镜像构建，使用 `npm ci` 安装锁定依赖，不继承上一版应用镜像；BuildKit 缓存可复用未变化的依赖和浏览器层，层数不会随发布次数累积。
+## 来源与许可证
 
-- **源码测试**：CI 在测试 runner 安装标准 Firefox 和 Chromium，运行协议、调度、界面等集成测试；这些测试浏览器不会因 CI 安装而进入生产镜像。
-- **镜像验收**：AMD64、ARM64 候选镜像分别执行 [离线验收脚本](scripts/ci/image-smoke.sh)，实际启动镜像内的 Camoufox 加载合成页面，并检查服务启动、API 鉴权、前端产物及 SQLite。
-- **生产浏览器**：镜像仍使用 `/app/camoufox-linux/camoufox`，由 `CAMOUFOX_EXECUTABLE_PATH` 指定。Playwright 的 `firefox.launch()` 在指定该路径时启动的是 Camoufox；源码测试使用标准 Firefox 不会替换生产浏览器。
+本项目基于 [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI)，上游源于 [Ellinav/ais2api](https://github.com/Ellinav/ais2api)。感谢原作者、上游维护者及贡献者，保留原有署名。
 
-自动化测试及镜像离线验收不访问真实 Google 账号，不替代生产账号登录、上游生成和实际业务兼容性验收。完整发布说明见 [云端镜像发布指南（英文）](docs/en/container-publishing.md)。
+项目沿用 **CC BY-NC 4.0（署名－非商业性使用 4.0 国际）**，完整条款见 [LICENSE](LICENSE)。本版本独立维护，不代表上游背书。
 
-- [API 示例](docs/zh/api-examples.md)
-- [账号登录与恢复](docs/zh/account-auto-login-operations.md)
-- [模型调度](docs/zh/model-aware-scheduling.md)
-- [Nginx 反向代理](docs/zh/nginx-setup.md)
-- [公开用量看板](docs/zh/public-dashboard-design.md)
-- [管理端前端统一改造方案（待实施）](docs/zh/frontend-unification-plan.md)
-
-## 来源、致谢与许可证
-
-本项目基于 [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI) 二次开发；该上游项目基于 [ais2api](https://github.com/Ellinav/ais2api)（作者：[Ellinav](https://github.com/Ellinav)）分支开发。感谢原作者、上游维护者及贡献者；源码中的既有作者署名予以保留。
-
-本版本沿用上游 **CC BY-NC 4.0（署名－非商业性使用 4.0 国际）** 许可证。使用、分发与修改均需遵守原有许可证全部条款，完整内容见 [LICENSE](LICENSE) 与 [许可说明](https://creativecommons.org/licenses/by-nc/4.0/)。本仓库已说明二次开发及主要修改，不代表上游作者对本版本的背书。
-
-Docker 中包含的 Node.js、Camoufox、Mihomo 等第三方组件遵循各自许可证。Mihomo 的许可证及源码链接保存在镜像 `/usr/share/licenses/mihomo/` 中。
-
-### Gemini 4 Argon 账号资格
-
-`gemini-4-argon` 默认使用宿主页的 MakerSuite GenerateContent 桥接。账号管理中可设置 Free、Pro、Ultra 5x 或 Ultra 20x；未设置时跟随当前会话的成功权益检测（TIER1/TIER2 均按 Pro 回退）。有效层级为 Pro 或 Ultra 时通过本地层级准入，Free 和未知不准入。`ARGON_VERIFIED_ACCOUNTS` 已废弃，旧值会被忽略，无须迁移白名单。
-
-在账号操作栏点击“检测付费权限”，或跨分页选择账号后批量检测。任务串行执行，可查看逐账号进度并取消；只调用 `GetAiStudioBenefitTier`，不生成内容、不消耗本地模型计数，也不会自动登录。普通浏览器容量满时最多使用一个额外的检测 context。上游没有公开此内部接口的限流承诺。账号新增、导入、轮换和首次 Argon 请求不会强制查询。替换 Cookie 或重新登录后，旧检测保留为历史并标记待复检；查询失败保留同会话最近成功观察。
-
-手动层级优先，仅控制本地准入及额度估算，不授予上游权限、不伪造权益头。手动付费与检测 Free 冲突时提示管理员，但仍允许真实请求；手动 Free 不会被检测付费自动升级。层级修改、检测及恢复模型均保留历史用量；真实模型权限错误和 429 继续按账号 × 模型处理。普通 Cookie 下载与现有 CSV/ZIP 导出格式不包含新增层级或检测元数据；完整元数据由账号 SQLite 数据库保存，兼容缺少字段的旧记录。
-
-本地每模型日额度基数（Flash / Pro / Argon）：未知或 Free 为 100 / 10 / 不准入，Pro 为 100 / 50 / 50，Ultra 5x 为 500 / 100 / 100，Ultra 20x 为 500 / 200 / 200。按各账号当日上游尝试数扣减，失败尝试也计数；采用 America/Los_Angeles 自然日。公开及管理看板逐账号聚合，属于本地预估，并非实时上游余额，估算归零不会新增调度拦截。
-
-Chat Completions、Responses、Anthropic 和 Gemini native 均支持 JSON 和实时增量 SSE。Camoufox 使用当前页面真实认证及权益信息，为每次请求生成 WAA；Argon 额度按上述层级预估，上游 429 仍按限流处理。
-
-离线测试包含真实 Firefox 与本地 TLS/CONNECT fixture，运行 `node --test tests/build-benefit.test.js`（需安装 Playwright Firefox 和 OpenSSL）；测试不访问 Google。代码及 fixture 通过不等同于真实账号已通过上游验收，具体记录见 [适配方案](docs/zh/gemini-4-argon-legacy-build-adaptation-plan-20261017.md)。
-
-Camoufox 生产差异及后续修复见 [生产问题定位](docs/zh/gemini-4-argon-production-diagnosis-20261017.md)。可通过 `BUILD_BENEFIT_BROWSER_EXECUTABLE_PATH=/path/to/camoufox node --test tests/build-benefit.test.js` 运行同一套本地 fixture；Camoufox 使用 BrowserManager 的导航方式验证文档失效，标准 Firefox 保留原生 reload 测试。
-
-### 模型传输兼容
-
-所有模型统一通过 Camoufox 直连 Playground GenerateContent，保留原始模型 ID。Build App、中转 WebSocket 和 `legacy` 传输配置已退出生成路径；`MODEL_TRANSPORT_POLICY` 已移除，旧值在启动时忽略。`STREAMING_MODE=real|fake|early`、配置页模式选择和模型后缀覆盖均继续支持。账号轮换策略中的 `legacy` 属于独立调度功能，不受本次改造影响。
-
-Argon 使用统一账号层级准入，并使用当前页面真实权益头；手动层级不授予真实上游权限。
-
-桥接模式将强制或指定函数调用降级为 AUTO，兼容酒馆预设及插件中的 `tool_choice` 配置：OpenAI `required` / 指定函数、Anthropic `any` / 指定工具、Gemini `ANY` / `allowedFunctionNames` 均保留工具声明，由模型自主决定是否调用及调用哪个工具，不再因这些选择配置返回 400。此行为不保证工具一定执行，也不保证一定返回文本；JSON 和实时 SSE 使用相同规则。禁止调用（`none` / `NONE`）通过不发送工具实现。
-
-real 流式请求通过浏览器 `ReadableStream` 逐段读取并增量解析 JSON+protobuf 消息，再转换为客户端协议；不等待完整响应。只有明确结束且上游正文校验通过后才提交成功结束事件。尾部错误、截断和取消不会伪造成功完成，正文输出后不自动重放生成。fake 等待完整结果后输出 SSE；early 在 Chat 入口提前发送空正文首块及等待心跳，其他入口沿用 fake 行为。非流式请求仍汇总为完整 JSON。
-
-`MAKERSUITE_TIMEOUT_MS`（默认 295000 毫秒）是含认证、WAA 和正文读取的固定生成总预算，支持 1–2147478647 毫秒；另预留最多 5000 毫秒结算时间。`STREAM_TIMEOUT_MS` 限制 real 首段正文后的增量等待时间；`FAKE_STREAM_TIMEOUT_MS` 保留缓冲队列等待设置，Playground 的固定总预算优先。排队期限独立，重试、正文块和保活均不续期。保存预算只影响新请求。
-
-例如，将 `MAKERSUITE_TIMEOUT_MS` 设为 `600000` 可等待十分钟。预算在服务端和页面 fetch 两侧固定执行，重试和正文读取不续期，无需更新 Build App。认证、Cookie、WAA proof 和请求正文不会写入传输日志。
-
-离线回归使用 `npm test`；浏览器验证使用 `npm run test:transport:browser`；真实超过 60 秒的本地 TLS 验证使用 `npm run test:transport:long`。可用 `BUILD_BENEFIT_BROWSER_EXECUTABLE_PATH` 指向生产 Camoufox 执行同一 TLS fixture；fixture 限制 CONNECT 目的地，不访问 Google 或生产 9998。离线通过不代表真实账号生成验收通过，部署与单账号切换须另行授权。实施记录见 [双通道修复记录](docs/zh/model-transport-compatibility-implementation-20261017.md)。
-
-实时流式实现及 bero 真实账号验收见 [改造记录](docs/zh/playground-streaming-20261029.md)。
-
-三种模式的最终行为及修正验收见 [模式保留修正记录](docs/zh/playground-stream-modes-20261029.md)。
-
-Playground 的工具、结构化输出、文件与本地缓存支持范围及迁移说明见 [能力补全说明](docs/zh/playground-capabilities.md)。embeddings 继续不支持。
-
-### 尾部修复
-
-设置 → 请求处理与模型功能 → 尾部修复（`TAIL_REPAIR_ENABLED`），默认关闭。
-保存后对新请求立即生效，状态持久化在 `data/managed-config.json`，已保存的面板值优先于环境变量；恢复默认后采用环境变量或内置默认值。
-开启后，OpenAI Chat Completions、Responses、Claude Messages 和原生 Gemini `/proxy` 的 Google 生成请求在最终消息为 model 时追加一条非空 user 继续响应指令。适用于非流式、real、fake 和 early；抗截断已补 user 时不会重复追加，重试复用已构造的正文。
-补充指令可能影响续写效果并增加少量输入 Token。计数接口、embeddings、上传和 Build/酒馆 Build 附件通道不补尾，因此独立计数与生成实际 usage 可能相差这部分 Token；真实 usage 原样计入。
-
-## 浏览器 / 本地无浏览器后端
-
-默认仍使用 Camoufox。可在受保护的设置页「调用后端」保存后重启，切换到本机 Go / SpiderMonkey；不自动回退。支持范围、固定依赖、本地/Docker 构建、回退和未验收项见 [双后端说明](docs/zh/local-browserless-backend.md)。真实 Google 上游与长期 Cookie 续期尚待授权环境验收。
+第三方组件与适配代码遵循各自许可证，来源及修改说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；本地引擎相关 MIT 许可见 [local-engine/LICENSE.MIT](local-engine/LICENSE.MIT)。
