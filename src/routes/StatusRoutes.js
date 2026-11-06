@@ -6,6 +6,7 @@
  */
 
 const fs = require("fs");
+const { runtimeStatus } = require("../utils/RuntimeStatus");
 const path = require("path");
 const crypto = require("crypto");
 const archiver = require("archiver");
@@ -434,6 +435,15 @@ class StatusRoutes {
                 res.json(this.logger.getLogsAfter(req.query.after));
             } catch (error) {
                 res.status(error.status || 500).json({ error: error.message });
+            }
+        });
+
+        app.get("/api/status/runtime", isAuthenticated, async (req, res) => {
+            res.setHeader("Cache-Control", "no-store");
+            try {
+                res.json(await runtimeStatus(this.serverSystem));
+            } catch {
+                res.status(500).json({ error: "Runtime status unavailable" });
             }
         });
 

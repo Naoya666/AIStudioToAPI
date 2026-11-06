@@ -36,6 +36,13 @@
                 @refresh="updateContent"
             />
 
+            <RuntimeStatus
+                :data="runtimeData"
+                :unavailable="runtimeError || refreshError"
+                :t="t"
+                @refresh="updateContent"
+            />
+
             <div class="dashboard-grid">
                 <!-- Service Status Card -->
                 <div class="status-card">
@@ -606,11 +613,14 @@ import I18n from "../utils/i18n";
 import { useTheme } from "../utils/useTheme";
 import EnvVarTooltip from "../components/EnvVarTooltip.vue";
 
+import RuntimeStatus from "../components/RuntimeStatus.vue";
 import SchedulerStatus from "../components/SchedulerStatus.vue";
 import ProxyPoolPanel from "../components/proxy/ProxyPoolPanel.vue";
 import AccountsPage from "./AccountsPage.vue";
 import UnifiedConfiguration from "../components/UnifiedConfiguration.vue";
 
+const runtimeData = ref(null);
+const runtimeError = ref(false);
 const schedulerData = ref(null);
 const schedulerError = ref(false);
 const modeNotice = ref("loading");
@@ -1138,6 +1148,19 @@ const updateContent = async signal => {
         if (dot) {
             if (state.serviceConnected) dot.classList.add("status-running");
             else dot.classList.remove("status-running");
+        }
+        if (activeTab.value === "home") {
+            try {
+                const response = await fetch("/api/status/runtime", { cache: "no-store", signal });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const runtime = await response.json();
+                if (!runtime.application || !runtime.backend) throw new Error("Runtime data unavailable");
+                runtimeData.value = runtime;
+                runtimeError.value = false;
+            } catch (error) {
+                if (error.name === "AbortError") throw error;
+                runtimeError.value = true;
+            }
         }
         if (activeTab.value === "home" && isModelAware.value) {
             try {
