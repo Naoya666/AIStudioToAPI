@@ -1199,6 +1199,120 @@ test("real Build RPC auth expiry retains sessionVersion protection", async t => 
         scheduler.release(lease, false);
     }
 });
+for (const source of ["google_rpc", "google_http"])
+    for (const stream of [false, true])
+        for (const replace of [false, true])
+            test(`Build ${source} 401 ${stream ? "stream" : "nonstream"} ${replace ? "retired" : "current"} session reaches recovery through tracked failure`, async t => {
+                const AccountLoginService = require("../src/accounts/AccountLoginService");
+                const AuthSource = require("../src/auth/AuthSource");
+                const { ScheduledRequestHandler } = require("../src/core/ScheduledRequestHandler");
+                const directory = fs.mkdtempSync(path.join(os.tmpdir(), "build-auth-recovery-"));
+                const authDir = path.join(directory, "auth");
+                fs.mkdirSync(authDir);
+                fs.writeFileSync(
+                    path.join(authDir, "auth-0.json"),
+                    JSON.stringify({
+                        _accountSessionVersion: 7,
+                        accountName: "fixture@example.com",
+                        cookies: [],
+                        expired: false,
+                        origins: [],
+                    })
+                );
+                const logger = { debug() {}, error() {}, info() {}, warn() {} };
+                const expirations = [];
+                const auth = {
+                    accountNameMap: new Map(),
+                    availableIndices: [0],
+                    getRotationIndices: () => [0],
+                    markAsExpired(...args) {
+                        expirations.push(args);
+                        return AuthSource.prototype.markAsExpired.apply(this, args);
+                    },
+                    reloadAuthSources() {},
+                };
+                const system = { authSource: auth, logger };
+                const service = new AccountLoginService(system, {
+                    artifactDir: path.join(directory, "artifacts"),
+                    authDir,
+                    storePath: path.join(directory, "accounts.sqlite"),
+                });
+                t.after(async () => {
+                    system.scheduler?.close();
+                    await service.close();
+                    fs.rmSync(directory, { force: true, recursive: true });
+                });
+                // Leave login workers stopped: verify durable recovery admission without network access.
+                await service.initialize({ startQueue: false });
+                auth.accountLoginService = service;
+                service.state.config.autoRecovery = true;
+                const session = service.state.accounts[0];
+                Object.assign(session, {
+                    autoRecovery: true,
+                    password: "synthetic",
+                    recoveryState: "idle",
+                    sessionVersion: 7,
+                });
+                const scheduler = new ModelScheduler({ ...loadConfig({}), statePath: null }, auth, logger);
+                system.scheduler = scheduler;
+                const f = handlerFixture(t);
+                f.h.authSource = auth;
+                f.h.scheduler = scheduler;
+                f.h.serverSystem = system;
+                f.h._markTrackedResponseError = ScheduledRequestHandler.prototype._markTrackedResponseError;
+                f.h.browserManager.isContextReady = () => true;
+                scheduler.browserManager = f.h.browserManager;
+                const page = f.h.browserManager.contexts.get(0).page;
+                page.accountSessionVersion = 7;
+                let lease;
+                const failureErrors = [];
+                f.h.scheduler.failure = (attempt, error) => {
+                    lease = attempt;
+                    failureErrors.push(error);
+                    return ModelScheduler.prototype.failure.call(scheduler, attempt, error);
+                };
+                const error = BuildErrors.buildError({
+                    httpStatus: 401,
+                    message: "Request had invalid authentication credentials.",
+                    phase: "create",
+                    rpcCode: source === "google_rpc" ? 16 : null,
+                    source,
+                });
+                page.codeAssistantRuntime.generate = async () => {
+                    if (replace) {
+                        session.sessionVersion++;
+                        await service.atomicAuth(0, {
+                            ...(await service.readAuth(0)),
+                            _accountSessionVersion: session.sessionVersion,
+                        });
+                    }
+                    throw error;
+                };
+                await processBuild(f.h, { body: { ...base, stream }, method: "POST" }, f.res);
+                assert.equal(failureErrors.length, 2);
+                assert.equal(failureErrors[0].source, source);
+                assert.deepEqual(failureErrors[0].upstreamError, error.upstreamError);
+                assert.deepEqual(expirations, replace ? [] : [[0, 7]]);
+                assert.equal(lease.account.healthy, replace);
+                assert.equal(lease.slot.failure_count, replace ? 0 : 1);
+                assert.equal(lease.slot.daily_failure_count, replace ? 0 : 1);
+                assert.equal(scheduler.metrics.upstream_error, replace ? 0 : 1);
+                assert.equal(lease.released, true);
+                assert.equal((await service.readAuth(0)).expired, !replace);
+                assert.equal(session.sessionState, replace ? "valid" : "expired");
+                assert.equal(session.recoveryState, replace ? "idle" : "queued");
+                assert.equal(service.state.tasks.length, replace ? 0 : 1);
+                if (!replace) {
+                    const [task] = service.state.tasks;
+                    assert.equal(task.accountId, session.accountId);
+                    assert.equal(task.sessionVersion, 7);
+                    assert.equal(task.source, "expired");
+                    assert.equal(task.status, "queued");
+                    const saved = await service.store.call("load");
+                    assert.equal(saved.accounts[0].sessionState, "expired");
+                    assert.equal(saved.tasks[0].taskId, task.taskId);
+                }
+            });
 test("SSE partial content failure remains error and disconnect writes nothing or penalizes no account", async t => {
     for (const abort of [false, true]) {
         const f = handlerFixture(t);

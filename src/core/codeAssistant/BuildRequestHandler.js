@@ -320,11 +320,13 @@ async function process(handler, req, res) {
         usage ||= error.usage;
         error.usage ||= usage;
         const info = errorInfo(error);
+        // Tracking records the scheduled lease first; retain auth semantics before it becomes recorded.
         handler._markTrackedResponseError(
             res,
             info.message,
             info.status,
-            controller.signal.aborted ? "aborted" : "error"
+            controller.signal.aborted ? "aborted" : "error",
+            error
         );
         res.__usageTrackingError = info;
         if (lease && !controller.signal.aborted) {
