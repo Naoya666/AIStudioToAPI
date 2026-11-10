@@ -36,11 +36,13 @@ class AccountRoutes {
                                 .toLowerCase()
                                 .includes(search)) &&
                         (!filter ||
-                            (filter === "duplicate"
-                                ? account.isDuplicate
-                                : filter === "not_logged_in"
-                                  ? account.sessionState === "missing" && !!account.email && account.hasPassword
-                                  : account.sessionState === filter || account.recoveryState === filter))
+                            (filter === "verification_required"
+                                ? account.verificationRequired
+                                : filter === "duplicate"
+                                  ? account.isDuplicate
+                                  : filter === "not_logged_in"
+                                    ? account.sessionState === "missing" && !!account.email && account.hasPassword
+                                    : account.sessionState === filter || account.recoveryState === filter))
                 );
         };
         route("get", "/accounts/selection", (service, req) => {

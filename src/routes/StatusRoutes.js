@@ -174,6 +174,37 @@ class StatusRoutes {
             );
             res.json({ success: true, ...result });
         });
+        app.post("/api/scheduler/accounts/batch", isAuthenticated, (req, res) => {
+            const scheduler = this.serverSystem.scheduler;
+            if (!scheduler) return res.status(409).json({ error: "Scheduler is in legacy mode" });
+            const { account_ids: ids, account_keys: keys, action } = req.body || {};
+            if (
+                !Array.isArray(ids) ||
+                !ids.length ||
+                ids.length > 10000 ||
+                !ids.every(Number.isInteger) ||
+                !["disable", "enable"].includes(action) ||
+                (keys !== undefined && (!keys || typeof keys !== "object" || Array.isArray(keys)))
+            )
+                return res.status(400).json({ error: "Valid account_ids and action are required" });
+            const results = [...new Set(ids)].map(index => {
+                if (!this.serverSystem.authSource.availableIndices.includes(index))
+                    return { account_id: index, error: "Account unavailable", success: false };
+                if (keys && keys[index] !== scheduler.account(index).key)
+                    return {
+                        account_id: index,
+                        error: "Account identity changed; refresh and select again",
+                        success: false,
+                    };
+                try {
+                    const result = action === "disable" ? scheduler.disable(index) : scheduler.reset(index);
+                    return { ...result, success: true };
+                } catch (error) {
+                    return { account_id: index, error: error.message, success: false };
+                }
+            });
+            res.json({ results, success: true });
+        });
         app.post("/api/scheduler/reset-all", isAuthenticated, (req, res) => {
             const scheduler = this.serverSystem.scheduler;
             if (!scheduler) return res.status(409).json({ error: "Scheduler is in legacy mode" });

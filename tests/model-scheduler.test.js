@@ -592,14 +592,14 @@ test("model recovery invalidates account details only when observable state chan
     scheduler.close();
 });
 
-test("manual account disable survives version 7 persistence and bulk enable clears it", () => {
+test("manual account disable survives version 8 persistence and bulk enable clears it", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-disabled-"));
     const statePath = path.join(directory, "state.json");
     const first = setup({ statePath }, 1);
     first.disable(0);
     first.close();
     const persisted = JSON.parse(fs.readFileSync(statePath));
-    assert.equal(persisted.version, 7);
+    assert.equal(persisted.version, 8);
     assert.equal(persisted.accounts[0].disabled, true);
 
     const second = setup({ statePath }, 1);
@@ -776,12 +776,12 @@ test("hidden models preserve history and reject new leases until restored", asyn
     scheduler.close();
 });
 
-test("hidden models persist in version 7 state and legacy states default to visible", () => {
+test("hidden models persist in version 8 state and legacy states default to visible", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-hidden-"));
     const statePath = path.join(directory, "state.json");
     const first = setup({ allocation: { flash: { min: 0, preferred: 1 } }, statePath }, 1);
     first.hideModel("flash");
-    assert.equal(JSON.parse(fs.readFileSync(statePath)).version, 7);
+    assert.equal(JSON.parse(fs.readFileSync(statePath)).version, 8);
     const second = setup({ allocation: { flash: { min: 0, preferred: 1 } }, statePath }, 1);
     assert.deepEqual(second.hiddenModelsSnapshot(), ["flash"]);
     first.close();
@@ -928,6 +928,7 @@ test("account details expose one model list with aggregate 403 and 429 flags", (
         risk_controlled: 1,
         total: 1,
         unhealthy: 0,
+        verification_required: 0,
     });
     assert.deepEqual(
         details.models.map(slot => [slot.model, slot.status]),
@@ -1086,7 +1087,7 @@ test("version 6 starts continuous 403 tracking empty while version 7 preserves a
     const since = lease.account.continuous_403_since;
     first.release(lease);
     first.close();
-    assert.equal(JSON.parse(fs.readFileSync(statePath)).version, 7);
+    assert.equal(JSON.parse(fs.readFileSync(statePath)).version, 8);
 
     const second = setup({ statePath }, 1);
     assert.equal(second.account(0).continuous_403_since, since);
@@ -1118,7 +1119,7 @@ test("corrupt state is backed up and inflight reset does not persist a lock", ()
     assert.equal(scheduler.accounts.size, 0);
     assert.ok(fs.readdirSync(directory).some(name => name.includes(".corrupt-")));
     scheduler.close();
-    assert.equal(JSON.parse(fs.readFileSync(statePath)).version, 7);
+    assert.equal(JSON.parse(fs.readFileSync(statePath)).version, 8);
     fs.rmSync(directory, { recursive: true });
 });
 
@@ -1896,4 +1897,96 @@ test("Build rotation excludes other quota sources, phases, text, PG and secondar
     s.failure(lease, Object.assign(new Error("Network timeout"), { secondaryErrors: [buildError(base)], status: 504 }));
     assert.notEqual(lease.slot.rate_limit_type, "build_quota_rotation");
     s.release(lease);
+});
+
+const verification403 = {
+    message:
+        "Your account must be verified before it can continue using the Gemini API. Verify your account at https://aistudio.google.com/verify-account.",
+    status: 403,
+};
+
+test("verification 403 requires explicit evidence across HTTP and RPC envelopes", () => {
+    assert.equal(classifyError(verification403), "verification_required");
+    assert.equal(
+        classifyError({ message: "wrapper", status: 403, upstreamError: verification403 }),
+        "verification_required"
+    );
+    assert.equal(classifyError({ code: 7, message: verification403.message }), "verification_required");
+    for (const message of [
+        "PERMISSION_DENIED",
+        "Verify your request",
+        "temporary risk",
+        "The caller does not have permission",
+    ])
+        assert.equal(classifyError({ message, status: 403 }), "risk_controlled");
+    assert.equal(classifyError({ ...verification403, status: 500 }), "temporary");
+});
+
+test("verification isolates all Playground models, survives success and timers, and preserves Build", async t => {
+    const s = setup({ dailyResetEnabled: false }, 2);
+    t.after(() => s.close());
+    const lease = await s.acquire("flash", new Set(["auth-1"]));
+    const concurrent = await s.acquire("other-pg", new Set(["auth-1"]));
+    s.startAttempt(lease);
+    s.startAttempt(concurrent);
+    s.failure(lease, verification403);
+    s.release(lease);
+    s.release(concurrent, true);
+    const a = s.account(0);
+    assert.equal(a.healthy, true);
+    assert.equal(a.disabled, false);
+    assert.equal(s.isResourceEligible(a, "flash"), false);
+    assert.equal(s.isResourceEligible(a, "new-pg-model"), false);
+    assert.equal(s.isResourceEligible(a, "build/gemini-3.8-flash"), true);
+    assert.equal(s.isResourceEligible(s.account(1), "flash"), true);
+    const build = await s.acquire("build/gemini-3.8-flash", new Set(["auth-1"]));
+    s.startAttempt(build);
+    s.release(build, true);
+    s.resetAllRateLimits();
+    s.resetDailyCooldowns();
+    s.reset(0, "flash");
+    assert.equal(s.isVerificationRequired(0), true);
+    assert.equal(
+        s.accountsSnapshot([0]).accounts[0].models.find(m => m.model === "flash").status,
+        "VERIFICATION_REQUIRED"
+    );
+    assert.equal(s.accountsOverviewSnapshot().summary.verification_required, 1);
+    assert.equal(s.accountPoolRestriction(a, new Set(["flash"])), "verification_required");
+    assert.equal(s.accountPoolRestriction(a, new Set(["flash", "build/gemini-3.8-flash"])), null);
+    s.reset(0);
+    assert.equal(s.isVerificationRequired(0), false);
+    assert.equal(s.isResourceEligible(a, "flash"), true);
+    a.playground_verification = { detected_at: Date.now(), reason: "verification_required" };
+    s.resetAllAccounts();
+    assert.equal(s.isVerificationRequired(0), false);
+});
+
+test("verification persists by account identity and old explicit 403 records migrate without touching ordinary 403", async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-verify-"));
+    t.after(() => fs.rmSync(directory, { force: true, recursive: true }));
+    const statePath = path.join(directory, "state.json");
+    const s = setup({ dailyResetEnabled: false, statePath }, 2);
+    const lease = await s.acquire("flash", new Set(["auth-1"]));
+    s.startAttempt(lease);
+    s.failure(lease, verification403);
+    s.release(lease);
+    s.slot(s.account(1), "flash").last_error = "PERMISSION_DENIED";
+    s.close();
+    const restored = setup({ dailyResetEnabled: false, statePath }, 2);
+    assert.equal(restored.isVerificationRequired(0), true);
+    assert.equal(restored.isVerificationRequired(1), false);
+    restored.close();
+    const legacy = JSON.parse(fs.readFileSync(statePath));
+    legacy.version = 7;
+    for (const account of legacy.accounts) delete account.playground_verification;
+    legacy.accounts[0].models.flash.last_error_kind = "risk_controlled";
+    fs.writeFileSync(statePath, JSON.stringify(legacy));
+    const migrated = setup({ dailyResetEnabled: false, statePath }, 2);
+    assert.equal(migrated.isVerificationRequired(0), true);
+    assert.equal(migrated.isVerificationRequired(1), false);
+    assert.equal(migrated.account(0).models.flash.last_error_kind, "verification_required");
+    // The same saved account retains the restriction when auth files are renumbered.
+    migrated.authSource.accountNameMap.set(1, "auth-0");
+    assert.equal(migrated.isVerificationRequired(1), true);
+    migrated.close();
 });

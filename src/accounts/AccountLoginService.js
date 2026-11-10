@@ -237,6 +237,9 @@ class AccountLoginService {
             loginStopping: this.isLoginStopping(account.accountId),
             nextAttemptAt: task?.nextAttemptAt || null,
             tier: resolveTier(account),
+            verificationRequired:
+                account.authIndex !== null &&
+                this.system.scheduler?.isVerificationRequired?.(account.authIndex) === true,
         };
     }
     list() {

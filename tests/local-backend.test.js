@@ -267,3 +267,26 @@ test("local no-retry faults do not change the browser backend's existing retry p
     assert.equal(choose("browser"), true);
     assert.equal(choose("local"), false);
 });
+
+test("local Playground preserves explicit verification 403 for shared scheduler classification", async () => {
+    const calls = [];
+    const message =
+        "Your account must be verified before it can continue using the Gemini API. Verify your account at https://aistudio.google.com/verify-account.";
+    const local = transport(async function* (_id, args) {
+        calls.push(args.rpcMethod);
+        yield { result: { status: 403, text: JSON.stringify([7, message, []]) } };
+    });
+    await assert.rejects(
+        local.generate({
+            body: '{"contents":[{"parts":[{"text":"test"}]}]}',
+            method: "POST",
+            path: "/v1beta/models/gemini-3.8-flash:generateContent",
+        }),
+        error => {
+            assert.equal(error.status, 403);
+            assert.equal(classifyError(error), "verification_required");
+            return true;
+        }
+    );
+    assert.deepEqual(calls, ["GenerateContent"]);
+});

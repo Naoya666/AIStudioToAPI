@@ -497,3 +497,82 @@ test(
         assert.deepEqual(errors, []);
     }
 );
+
+test(
+    "scheduler verification filter and bulk selection recover only selected accounts",
+    {
+        skip: !fs.existsSync(chromium.executablePath()),
+    },
+    async t => {
+        const server = await createServer({
+            configFile: path.resolve(__dirname, "../vite.config.js"),
+            logLevel: "error",
+            server: { host: "127.0.0.1", port: 0, strictPort: false },
+        });
+        t.after(() => server.close());
+        await server.listen();
+        const component = await server.transformRequest("/components/SchedulerStatus.vue");
+        const vueImport = component.code.match(/from ["']([^"']*vue[^"']*)["']/)[1];
+        const browser = await chromium.launch({ args: ["--no-sandbox"] });
+        t.after(() => browser.close());
+        const page = await browser.newPage();
+        const errors = [];
+        page.on("pageerror", error => errors.push(error.message));
+        page.on("dialog", dialog => dialog.accept());
+        const accounts = [0, 1, 2].map(index => ({
+            disabled: false,
+            healthy: true,
+            index,
+            inflight: index === 1 ? 1 : 0,
+            key: `account-${index}`,
+            playground_verification: index < 2 ? { detected_at: 1, reason: "verification_required" } : null,
+        }));
+        const requests = [];
+        await page.route("**/api/**", async route => {
+            const url = new URL(route.request().url());
+            let result = { models: [] };
+            if (url.pathname === "/api/scheduler/accounts") result = { accounts };
+            if (url.pathname === "/api/scheduler/accounts/batch") {
+                const body = route.request().postDataJSON();
+                requests.push(body);
+                result = {
+                    results: body.account_ids.map(id => {
+                        if (id === 1) return { account_id: id, error: "Account has active requests", success: false };
+                        accounts[id].playground_verification = null;
+                        return { account_id: id, success: true };
+                    }),
+                    success: true,
+                };
+            }
+            await route.fulfill({ body: JSON.stringify(result), contentType: "application/json" });
+        });
+        const messages = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../ui/locales/zh.json"), "utf8"));
+        await page.route("**/__scheduler_batch_test", route =>
+            route.fulfill({
+                body: `<meta charset="utf-8"><div id="app"></div><script type="module">
+        import { createApp, h } from '${vueImport}';
+        import Panel from '/components/SchedulerStatus.vue';
+        const messages = ${JSON.stringify(messages)};
+        createApp({render: () => h(Panel, {data: {models: []}, t: (key, args = {}) =>
+            (messages[key] || key).replace(/\\{(\\w+)\\}/g, (_, key) => args[key] ?? key)})}).mount('#app');
+        </script>`,
+                contentType: "text/html",
+            })
+        );
+        await page.goto(`${server.resolvedUrls.local[0]}__scheduler_batch_test`);
+        await page.getByText(messages.schedulerAccounts, { exact: true }).click();
+        await page.waitForSelector(".account-row-card");
+        assert.equal(await page.locator(".account-row-card").count(), 3);
+        await page.getByRole("button", { name: /403验证/ }).click();
+        assert.equal(await page.locator(".account-row-card").count(), 2);
+        await page.locator(".accounts-batch-toolbar input").check();
+        await page.getByRole("button", { exact: true, name: messages.schedulerBatchEnable }).click();
+        await page.waitForFunction(() => document.querySelector("[role=status]")?.textContent.includes("失败 1"));
+        assert.deepEqual(requests[0].account_ids, [0, 1]);
+        assert.equal(requests[0].action, "enable");
+        assert.equal(await page.locator(".account-row-card").count(), 1);
+        assert.equal(await page.locator(".account-row-card input:checked").count(), 1);
+        assert.match(await page.locator("[role=status]").innerText(), /#1: Account has active requests/);
+        assert.deepEqual(errors, []);
+    }
+);

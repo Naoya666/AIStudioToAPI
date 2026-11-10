@@ -1255,6 +1255,10 @@ test("selection endpoint uses the list filters across every page and only return
     service.state.accounts = Array.from({ length: 250 }, (_, index) =>
         service.newAccount({ email: `selection${index}@example.com`, password: "private-password" })
     );
+    service.state.accounts.forEach((account, index) => {
+        account.authIndex = index;
+    });
+    system.scheduler.isVerificationRequired = index => index % 3 === 0;
     const handlers = new Map();
     const app = { use() {} };
     for (const method of ["get", "post", "patch", "delete"])
@@ -1282,12 +1286,17 @@ test("selection endpoint uses the list filters across every page and only return
         { state: "not_logged_in" },
         { search: "selection1", state: "not_logged_in" },
         { state: "valid" },
+        { state: "verification_required" },
+        { search: "selection1", state: "verification_required" },
     ]) {
         const selection = await read("accounts/selection", query);
         const list = await read("accounts", { ...query, pageSize: 100 });
         assert.equal(selection.total, list.total);
         assert.deepEqual(selection.accounts.slice(0, 100), list.accounts);
     }
+    const pending = await read("accounts/selection", { state: "verification_required" });
+    assert.equal(pending.total, 84);
+    assert.ok(pending.accounts.every(account => account.verificationRequired));
     const large = Array.from({ length: 1001 }, (_, index) =>
         service.newAccount({ email: `large${index}@example.com`, password: "synthetic" })
     );

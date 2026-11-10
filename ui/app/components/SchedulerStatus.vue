@@ -688,6 +688,13 @@
                             🛡️ {{ t("schedulerFilter403") }} ({{ summaryCounts.riskControlled }})
                         </button>
                         <button
+                            class="filter-tab tab-403"
+                            :class="{ active: accountFilter === 'verification' }"
+                            @click="accountFilter = 'verification'"
+                        >
+                            {{ t("schedulerVerification") }} ({{ summaryCounts.verification }})
+                        </button>
+                        <button
                             class="filter-tab tab-persistent-403"
                             :class="{ active: accountFilter === 'persistent-403' }"
                             @click="accountFilter = 'persistent-403'"
@@ -728,6 +735,39 @@
                     </div>
                 </div>
 
+                <div class="accounts-batch-toolbar">
+                    <label
+                        ><input
+                            type="checkbox"
+                            :checked="allFilteredSelected"
+                            :disabled="busy || !filteredAccounts.length"
+                            @change="selectFiltered($event.target.checked)"
+                        />
+                        {{ t("schedulerSelectFiltered") }} ({{ filteredAccounts.length }})</label
+                    >
+                    <span>{{ t("schedulerSelected", { count: selectedAccounts.size }) }}</span>
+                    <button
+                        class="btn btn-sm btn-default"
+                        :disabled="busy || !selectedAccounts.size"
+                        @click="batchAccounts('disable')"
+                    >
+                        {{ t("schedulerBatchDisable") }}
+                    </button>
+                    <button
+                        class="btn btn-sm btn-primary-soft"
+                        :disabled="busy || !selectedAccounts.size"
+                        @click="batchAccounts('enable')"
+                    >
+                        {{ t("schedulerBatchEnable") }}
+                    </button>
+                    <button
+                        class="btn btn-sm btn-default"
+                        :disabled="busy || !selectedAccounts.size"
+                        @click="selectedAccounts = new Map()"
+                    >
+                        {{ t("schedulerClearSelection") }}
+                    </button>
+                </div>
                 <!-- Account Cards List -->
                 <div class="accounts-card-list">
                     <div v-if="!filteredAccounts.length" class="scheduler-empty py-4 text-center">
@@ -743,6 +783,14 @@
                         <!-- Account Header Strip -->
                         <div class="account-card-header" @click="toggleAccountManual(account.index)">
                             <div class="acc-header-left">
+                                <input
+                                    type="checkbox"
+                                    :aria-label="t('schedulerSelectAccount', { index: account.index })"
+                                    :checked="selectedAccounts.get(account.index) === account.key"
+                                    :disabled="busy"
+                                    @click.stop
+                                    @change="selectAccount(account, $event.target.checked)"
+                                />
                                 <svg
                                     class="acc-chevron"
                                     :class="{ rotated: expandedAccounts.has(account.index) }"
@@ -770,6 +818,26 @@
                                 <span class="acc-badge" :class="'badge-' + getAccountState(account)">
                                     {{ getAccountStateLabel(account) }}
                                 </span>
+                                <span
+                                    v-if="account.playground_verification && account.disabled"
+                                    class="acc-badge badge-403"
+                                >
+                                    {{ t("schedulerVerification") }}
+                                </span>
+                                <a
+                                    v-if="account.playground_verification"
+                                    href="https://aistudio.google.com/verify-account"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    :title="
+                                        t('schedulerVerificationSince', {
+                                            time: formatDateTime(account.playground_verification.detected_at),
+                                        })
+                                    "
+                                    @click.stop
+                                >
+                                    {{ t("schedulerVerifyAccount") }}
+                                </a>
                                 <span
                                     v-if="account.persistent_403"
                                     class="acc-badge badge-persistent-403"
@@ -885,7 +953,16 @@
                                             </span>
                                             <button
                                                 class="btn-text-action"
-                                                :disabled="busy || account.inflight > 0"
+                                                :disabled="
+                                                    busy ||
+                                                    account.inflight > 0 ||
+                                                    slot.status === 'VERIFICATION_REQUIRED'
+                                                "
+                                                :title="
+                                                    slot.status === 'VERIFICATION_REQUIRED'
+                                                        ? t('schedulerResetAccount')
+                                                        : undefined
+                                                "
                                                 @click="reset(account.index, slot.model)"
                                             >
                                                 {{ t("schedulerReset") }}
@@ -950,6 +1027,7 @@ const contextsOpen = ref(false),
     hiddenModels = ref([]),
     hiddenModelsLoading = ref(false);
 
+const selectedAccounts = ref(new Map());
 const accountFilter = ref("all");
 const searchQuery = ref("");
 const contextViewMode = ref("matrix");
@@ -1121,6 +1199,7 @@ function hasAccount429(account) {
 
 function getAccountState(account) {
     if (account.disabled) return "disabled";
+    if (account.playground_verification) return "verification";
     if (hasAccount403(account)) return "403";
     if (hasAccount429(account)) return "429";
     if (!account.healthy) return "unhealthy";
@@ -1129,6 +1208,7 @@ function getAccountState(account) {
 
 function getAccountStateLabel(account) {
     const state = getAccountState(account);
+    if (state === "verification") return props.t("schedulerVerification");
     if (state === "disabled") return props.t("schedulerStatusDisabled");
     if (state === "403") return props.t("schedulerStatusRiskControlled");
     if (state === "429") return props.t("schedulerStatusRateLimited");
@@ -1138,6 +1218,7 @@ function getAccountStateLabel(account) {
 
 function isSlotRestricted(slot) {
     return (
+        slot.status === "VERIFICATION_REQUIRED" ||
         slot.status === "RATE_LIMITED" ||
         slot.status === "RISK_CONTROLLED" ||
         slot.status === "COOLDOWN" ||
@@ -1146,6 +1227,7 @@ function isSlotRestricted(slot) {
 }
 
 function getSlotStatusClass(slot) {
+    if (slot.status === "VERIFICATION_REQUIRED") return "403";
     if (slot.status === "RISK_CONTROLLED" || slot.last_error_kind === "risk_controlled") return "403";
     if (slot.status === "RATE_LIMITED" || slot.status === "COOLDOWN") return "429";
     if (slot.status === "HEALTHY") return "healthy";
@@ -1153,6 +1235,7 @@ function getSlotStatusClass(slot) {
 }
 
 function getSlotStatusLabel(slot) {
+    if (slot.status === "VERIFICATION_REQUIRED") return props.t("schedulerVerification");
     if (slot.status === "RATE_LIMITED" && slot.rate_limit_type === "build_quota_rotation")
         return "Build 配额错误轮换（本地策略）";
     if (slot.status === "RISK_CONTROLLED" || slot.last_error_kind === "risk_controlled")
@@ -1173,6 +1256,7 @@ function getSlotStatusLabel(slot) {
 }
 
 function getErrorTag(slot) {
+    if (slot.status === "VERIFICATION_REQUIRED") return "[403]";
     if (slot.status === "RATE_LIMITED" || slot.last_error?.includes("429")) return "[429]";
     if (slot.status === "RISK_CONTROLLED" || slot.last_error?.includes("403")) return "[403]";
     return "[ERR]";
@@ -1217,6 +1301,9 @@ const summaryCounts = computed(() => {
             rateLimited: overview.rate_limited || 0,
             riskControlled: overview.risk_controlled || 0,
             total: overview.total || 0,
+            verification:
+                overview.verification_required ??
+                accounts.value.filter(account => account.playground_verification).length,
         };
     }
     let rateLimited = 0;
@@ -1234,7 +1321,15 @@ const summaryCounts = computed(() => {
         else if (state === "healthy") healthy++;
     }
 
-    return { disabled, healthy, persistent403, rateLimited, riskControlled, total: accounts.value.length };
+    return {
+        disabled,
+        healthy,
+        persistent403,
+        rateLimited,
+        riskControlled,
+        total: accounts.value.length,
+        verification: accounts.value.filter(account => account.playground_verification).length,
+    };
 });
 
 const filteredAccounts = computed(() => {
@@ -1244,7 +1339,9 @@ const filteredAccounts = computed(() => {
     return accounts.value.filter(acc => {
         // Tab filter
         if (filter !== "all") {
-            if (filter === "persistent-403") {
+            if (filter === "verification") {
+                if (!acc.playground_verification) return false;
+            } else if (filter === "persistent-403") {
                 if (!acc.persistent_403) return false;
             } else {
                 const state = getAccountState(acc);
@@ -1315,6 +1412,11 @@ async function fetchAccounts(force = false) {
             const old = previous.get(account.index);
             return old?.models ? { ...account, models: old.models } : account;
         });
+        selectedAccounts.value = new Map(
+            [...selectedAccounts.value].filter(([id, key]) =>
+                accounts.value.some(account => account.index === id && account.key === key)
+            )
+        );
     } finally {
         if (accountsController === controller) {
             accountsController = null;
@@ -1410,6 +1512,56 @@ onBeforeUnmount(() => {
 
 onMounted(() => fetchHiddenModels().catch(setError));
 
+const allFilteredSelected = computed(
+    () =>
+        filteredAccounts.value.length > 0 &&
+        filteredAccounts.value.every(account => selectedAccounts.value.get(account.index) === account.key)
+);
+
+function selectAccount(account, checked) {
+    const next = new Map(selectedAccounts.value);
+    if (checked) next.set(account.index, account.key);
+    else next.delete(account.index);
+    selectedAccounts.value = next;
+}
+
+function selectFiltered(checked) {
+    const next = new Map(selectedAccounts.value);
+    for (const account of filteredAccounts.value) {
+        if (checked) next.set(account.index, account.key);
+        else next.delete(account.index);
+    }
+    selectedAccounts.value = next;
+}
+
+async function batchAccounts(action) {
+    if (
+        !window.confirm(
+            props.t(action === "enable" ? "schedulerBatchEnableConfirm" : "schedulerBatchDisableConfirm", {
+                count: selectedAccounts.value.size,
+            })
+        )
+    )
+        return;
+    const ids = [...selectedAccounts.value.keys()];
+    const result = await sendReset("/api/scheduler/accounts/batch", {
+        account_ids: ids,
+        account_keys: Object.fromEntries(selectedAccounts.value),
+        action,
+    });
+    if (!result) return;
+    const failed = result.results.filter(item => !item.success);
+    accountActionMessage.value =
+        props.t("schedulerBatchResult", {
+            failed: failed.length,
+            success: result.results.length - failed.length,
+        }) + (failed.length ? " " + failed.map(item => `#${item.account_id}: ${item.error}`).join("; ") : "");
+    selectedAccounts.value = new Map(
+        [...selectedAccounts.value].filter(([id]) => failed.some(item => item.account_id === id))
+    );
+    await fetchAccounts(true);
+}
+
 async function resetAllRateLimits() {
     rateLimitsReset.value = Boolean(await sendReset("/api/scheduler/reset-rate-limits", {}));
 }
@@ -1503,6 +1655,24 @@ async function sendReset(url, body) {
 </script>
 
 <style scoped>
+.accounts-batch-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.border-verification {
+    border-left-color: #a855f7;
+}
+.dot-verification {
+    background: #a855f7;
+}
+.badge-verification {
+    color: #9333ea;
+    background: #f3e8ff;
+}
+
 .scheduler-status {
     margin-bottom: 24px;
     background: var(--bg-card);

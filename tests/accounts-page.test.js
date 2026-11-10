@@ -44,6 +44,7 @@ test(
         });
         const accounts = [account("first@example.com"), account("manual@example.com", "manual_required")];
         accounts[1].lastFailure = { error: "manual_challenge" };
+        accounts[1].verificationRequired = true;
         const queries = [];
         const proxyNodes = [
             { enabled: true, id: "login-node", name: "Login node", type: "socks5" },
@@ -76,9 +77,11 @@ test(
                     row =>
                         row.email.includes(search) &&
                         (!state ||
-                            (state === "not_logged_in"
-                                ? row.sessionState === "missing" && row.hasPassword
-                                : row.recoveryState === state || row.sessionState === state))
+                            (state === "verification_required"
+                                ? row.verificationRequired
+                                : state === "not_logged_in"
+                                  ? row.sessionState === "missing" && row.hasPassword
+                                  : row.recoveryState === state || row.sessionState === state))
                 );
                 result = { accounts: matches, total: matches.length };
                 if (search === "first") await new Promise(resolve => (releaseOld = resolve));
@@ -154,6 +157,15 @@ test(
         await waitRows(2);
 
         const filter = page.locator(".accounts-panel > .account-toolbar .el-select");
+        await filter.click();
+        await page.getByRole("option", { exact: true, name: "Verification required" }).click();
+        await waitRows(1);
+        assert.equal(queries.at(-1).get("state"), "verification_required");
+        assert.match(await rows.innerText(), /manual@example.com/);
+        assert.match(await rows.innerText(), /Verification required \(Playground\)/);
+        await filter.hover();
+        await filter.locator(".el-select__clear").click();
+        await waitRows(2);
         await filter.click();
         await page.getByRole("option", { exact: true, name: "Manual required" }).click();
         await waitRows(1);

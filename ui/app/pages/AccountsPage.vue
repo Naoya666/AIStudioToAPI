@@ -100,6 +100,7 @@
                     <ElOption
                         v-for="value in [
                             'valid',
+                            'verification_required',
                             'not_logged_in',
                             'credentials_missing',
                             'expired',
@@ -258,6 +259,9 @@
                             >{{ l("当前", "Current") }}</ElTag
                         >
                         <ElTag v-if="row.isDuplicate" size="small" type="warning">{{ l("重复", "Duplicate") }}</ElTag>
+                        <ElTag v-if="row.verificationRequired" size="small" type="warning">{{
+                            l("待验证（Playground）", "Verification required (Playground)")
+                        }}</ElTag>
                         <ElTag v-if="row.disabled" size="small" type="danger">{{
                             l("人工禁用", "Manually disabled")
                         }}</ElTag>
@@ -368,6 +372,9 @@
                                 >
                                 <ElTag v-if="row.isDuplicate" size="small" type="warning">{{
                                     l("重复", "Duplicate")
+                                }}</ElTag>
+                                <ElTag v-if="row.verificationRequired" size="small" type="warning">{{
+                                    l("待验证（Playground）", "Verification required (Playground)")
                                 }}</ElTag>
                                 <ElTag v-if="row.disabled" size="small" type="danger">{{
                                     l("人工禁用", "Manually disabled")
@@ -953,6 +960,7 @@ const labels = {
     running: ["登录中", "Running"],
     succeeded: ["成功", "Succeeded"],
     valid: ["有效", "Valid"],
+    verification_required: ["待验证", "Verification required"],
 };
 const stateLabel = value => (labels[value] ? l(...labels[value]) : value);
 const accounts = ref([]),

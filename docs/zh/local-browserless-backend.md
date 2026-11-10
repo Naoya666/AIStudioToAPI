@@ -66,13 +66,13 @@ PG 绑定摘要从最终 wire 的所有内容 part 派生；最后一轮文本�
 
 核对 Mag1cFall 固定版本后确认：`runtime_go.go` 合并所有响应 Set-Cookie，`page_resources.go` 在页面初始化调用 Cloud Console `onboarding/auth_warmup` 并跟随 authcheck；有 10 分钟 ListIncidentsHistory 和 12 小时 WAA challenge 刷新。这个版本没有独立 RotateCookies 调用；WAA 刷新不等于 Cookie 续期。
 
-本地后端保留这些路径，并为存活会话每 10 分钟执行一次同出口 auth_warmup，单次最多 30 秒；Cookie 变化每 30 秒及会话关闭前通过现有 `refreshSession`、会话版本检查和原子账号存储写回（遵循 `ENABLE_AUTH_UPDATE`）。不会覆写新登录替换的凭证。12 小时 WAA 刷新和 Cookie 维护分别运行；不因 403 触发其中任何一个恢复分支。
+本地后端保留这些路径，并为存活会话每 10 分钟执行一次同出口 auth_warmup，单次最多 30 秒；Cookie 变化每 30 秒及会话关闭前通过现有 `refreshSession`、会话版本检查和原子账号存储写回（遵循 `ENABLE_AUTH_UPDATE`）。不会覆写新登录替换的凭证。12 小时 WAA 刷新和 Cookie 维护分别运行；不因 403 触发其中任何一个恢复分支。明确的验证403另行阻断 Playground，见[验证403与批量恢复](./verification-403-and-batch-recovery.md)。
 
 Cookie 滚动的请求及写回有离线验证；**长期运行能否持续获得所需 Google Cookie 尚未真实验收**，尤其不同来源凭证或未来设备绑定变化。不要把合成 Set-Cookie 测试当作实际长期续期证明。
 
 Node 启动服务后最多等 10 秒就绪。异常退出令旧会话失效，最多自动重启两次；连续启动失败三次打开故障断路，重启主服务才能重置预算。调用失败不会无限等待或切去浏览器。正常退出发送 SIGTERM，5 秒后强制清理；父进程异常退出通过 stdin 管道关闭触发 Go 清理。丢失创建响应而没有激活的会话在 30 秒内回收。
 
-生成取消直接关闭 Unix HTTP 请求及 Google context，保留现有总超时和重试预算。403 仍归为 risk_controlled，沿用退避冷却，不重签、不删凭证、不永久禁用。只有明确认证失效的 401 使用原重登流程；本地签名器内部错误归 transport，显式禁止重试及账号惩罚。Build 提交后仅读同一个任务；读取恢复不会再次 CreateApplet/CodeAssistantOffline，也不会重复记账。
+生成取消直接关闭 Unix HTTP 请求及 Google context，保留现有总超时和重试预算。普通或未知403归为 risk_controlled，沿用退避冷却；明确要求账号验证的403归为 verification_required，持久化阻断该账号全部 Playground 模型，等待人工恢复，不影响 Build。两类403均不触发重签或删除凭证。只有明确认证失效的 401 使用原重登流程；本地签名器内部错误归 transport，显式禁止重试及账号惩罚。Build 提交后仅读同一个任务；读取恢复不会再次 CreateApplet/CodeAssistantOffline，也不会重复记账。
 
 ## 验证与真实验收
 

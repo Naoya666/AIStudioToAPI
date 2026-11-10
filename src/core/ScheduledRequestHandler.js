@@ -263,9 +263,15 @@ class ScheduledRequestHandler extends RequestHandler {
                 ["account", "unsupported", "transport"].includes(classifyError(error)))
         )
             return false;
-        return ["account", "rate_limited", "risk_controlled", "unsupported", "temporary", "transport"].includes(
-            classifyError(error)
-        );
+        return [
+            "account",
+            "rate_limited",
+            "verification_required",
+            "risk_controlled",
+            "unsupported",
+            "temporary",
+            "transport",
+        ].includes(classifyError(error));
     }
 
     async _prepareImmediateStatusRetry(error, requestId, tracker, sourceAuthIndex) {

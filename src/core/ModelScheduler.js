@@ -151,6 +151,14 @@ function classifyRateLimit(error, now) {
     return { type: "temporary" };
 }
 
+function isVerificationRequired(error = {}) {
+    return [error.message, error.upstreamError?.message, error.error?.message].some(
+        message =>
+            typeof message === "string" &&
+            /Your account must be verified before it can continue using the Gemini API\./i.test(message)
+    );
+}
+
 function classifyError(error = {}) {
     if (error.kind === "capability") return "capability";
     if (require("../utils/UpstreamBlock").isPromptBlocked(error)) return "prompt_blocked";
@@ -175,7 +183,7 @@ function classifyError(error = {}) {
         /^\s*\[(\d{3})\]/.exec(message)?.[1] || /Google API returned error:\s*(\d{3})/i.exec(message)?.[1]
     );
     const status = Number.isFinite(explicitStatus) ? explicitStatus : messageStatus;
-    if (status === 403) return "risk_controlled";
+    if (status === 403) return isVerificationRequired(error) ? "verification_required" : "risk_controlled";
     if (error.accountUnhealthy) return "account";
     if (/^unsupported$/i.test(message.trim())) return "unsupported";
     if (
@@ -190,7 +198,7 @@ function classifyError(error = {}) {
         explicitStatus === 7 ||
         [error.status, error.upstreamError?.status, error.error?.status].includes("PERMISSION_DENIED")
     )
-        return "risk_controlled";
+        return isVerificationRequired(error) ? "verification_required" : "risk_controlled";
     if (/model.*(?:unsupported|unavailable for account)|(?:unsupported|no access to).*model/i.test(message))
         return "unsupported";
     if (status >= 500 || /websocket|network|connection|queue.*(?:closed|timeout)|upstream|timed out/i.test(message))
@@ -206,7 +214,7 @@ function observedHttpStatus(error = {}, kind) {
     );
     if (Number.isInteger(explicitStatus) && explicitStatus >= 100 && explicitStatus <= 599) return explicitStatus;
     if (Number.isInteger(messageStatus) && messageStatus >= 100 && messageStatus <= 599) return messageStatus;
-    if (kind === "risk_controlled") return 403;
+    if (["risk_controlled", "verification_required"].includes(kind)) return 403;
     if (kind === "rate_limited" && /RESOURCE_EXHAUSTED/.test(message)) return 429;
     return null;
 }
@@ -270,7 +278,16 @@ class ModelScheduler {
         account.disabled_at ??= null;
         account.disabled_reason ??= null;
         account.continuous_403_since ??= null;
+        account.playground_verification ??= null;
         return account;
+    }
+
+    isVerificationRequired(index) {
+        return !!this.account(index).playground_verification;
+    }
+
+    isVerificationBlocked(account, model) {
+        return !!account.playground_verification && model !== "__files__" && !model.startsWith("build/");
     }
 
     getPacificDateKey(now = Date.now()) {
@@ -335,8 +352,13 @@ class ModelScheduler {
     }
 
     accountPoolRestriction(account, models = this.getVisibleModels()) {
-        if (!this.config.modelAllowlist) return null;
-        const allowed = [...models].filter(model => this.isTierAllowed(account.index, model));
+        const usable = [...models].filter(model => this.isTierAllowed(account.index, model));
+        if (usable.length && usable.every(model => this.isVerificationBlocked(account, model)))
+            return "verification_required";
+        if (!this.config.modelAllowlist && !account.playground_verification) return null;
+        const allowed = [...models].filter(
+            model => this.isTierAllowed(account.index, model) && !this.isVerificationBlocked(account, model)
+        );
         if (!allowed.length) return "model_permissions_empty";
         if (allowed.every(model => account.models[model]?.unsupported)) return "models_unsupported";
         if (
@@ -351,7 +373,9 @@ class ModelScheduler {
     }
 
     isAccountQuotaExhausted(account, now = this.now(), models = this.getVisibleModels()) {
-        const allowed = [...models].filter(model => this.isTierAllowed(account.index, model));
+        const allowed = [...models].filter(
+            model => this.isTierAllowed(account.index, model) && !this.isVerificationBlocked(account, model)
+        );
         return (
             allowed.length > 0 &&
             allowed.every(model => {
@@ -423,6 +447,7 @@ class ModelScheduler {
         let available = 0;
         let cooling = 0;
         let unsupported = 0;
+        let verificationBlocked = 0;
         if (this.closed) add("closed");
         if (this.paused) add("paused");
         if (!indices.length) add("no_accounts");
@@ -436,11 +461,13 @@ class ModelScheduler {
             if (!allowed.length) add("model_permissions_empty");
             for (const model of allowed) {
                 const slot = account.models[model];
-                if (slot?.unsupported) unsupported++;
+                if (this.isVerificationBlocked(account, model)) verificationBlocked++;
+                else if (slot?.unsupported) unsupported++;
                 else if (slot?.rate_limited === true && slot.cooldown_until > now) cooling++;
                 else available++;
             }
         }
+        if (verificationBlocked && !available && !cooling) add("verification_required");
         // An unsupported slot is not known to recover on a timer. At least one
         // supported, cooling slot must exist; account/auth/config faults veto idle.
         const waiting = !Object.keys(reasons).length && available === 0 && cooling > 0;
@@ -474,6 +501,7 @@ class ModelScheduler {
             !account.disabled &&
             !this.authSource.isExpired?.(account.index) &&
             !this.hiddenModels.has(model) &&
+            !this.isVerificationBlocked(account, model) &&
             !slot?.unsupported &&
             (!slot?.cooldown_until || slot.cooldown_until <= now)
         );
@@ -1210,6 +1238,12 @@ class ModelScheduler {
         account.last_error = slot.last_error;
         if (kind === "account") account.healthy = false;
         if (kind === "unsupported") slot.unsupported = true;
+        if (kind === "verification_required" && !lease.model.startsWith("build/")) {
+            account.playground_verification = {
+                detected_at: account.playground_verification?.detected_at ?? this.now(),
+                reason: "verification_required",
+            };
+        }
         if (kind === "rate_limited") {
             const now = this.now();
             const policy = buildRotation ? { type: "build_quota_rotation" } : classifyRateLimit(error, now);
@@ -1357,12 +1391,14 @@ class ModelScheduler {
         for (const index of this.authSource.getRotationIndices()) {
             const account = this.account(index);
             if (
+                account.playground_verification ||
                 account.disabled ||
                 !account.healthy ||
                 account.last_error !== null ||
                 account.disabled_at !== null ||
                 account.disabled_reason !== null
             ) {
+                account.playground_verification = null;
                 account.disabled = false;
                 account.disabled_at = null;
                 account.disabled_reason = null;
@@ -1480,12 +1516,14 @@ class ModelScheduler {
         let changed = false;
         if (!model) {
             changed = Boolean(
+                account.playground_verification ||
                 !account.healthy ||
                 account.last_error !== null ||
                 account.disabled ||
                 account.disabled_at !== null ||
                 account.disabled_reason !== null
             );
+            account.playground_verification = null;
             account.healthy = true;
             account.last_error = null;
             account.disabled = false;
@@ -1578,7 +1616,8 @@ class ModelScheduler {
         return [...this.hiddenModels].sort((a, b) => a.localeCompare(b));
     }
 
-    _slotStatus(account, slot, rotationIndices) {
+    _slotStatus(account, slot, rotationIndices, model) {
+        if (model && this.isVerificationBlocked(account, model)) return "VERIFICATION_REQUIRED";
         if (account.disabled) return "ACCOUNT_DISABLED";
         if (!account.healthy || !rotationIndices.includes(account.index)) return "UNHEALTHY";
         if (slot.unsupported) return "UNSUPPORTED";
@@ -1598,7 +1637,7 @@ class ModelScheduler {
         let has429 = false;
         for (const model of Object.keys(account.models || {})) {
             if (this.hiddenModels.has(model)) continue;
-            const status = this._slotStatus(account, this.slot(account, model, now), rotationIndices);
+            const status = this._slotStatus(account, this.slot(account, model, now), rotationIndices, model);
             if (status === "RISK_CONTROLLED") has403 = true;
             else if (status === "RATE_LIMITED" || status === "COOLDOWN") has429 = true;
         }
@@ -1620,21 +1659,25 @@ class ModelScheduler {
             risk_controlled: 0,
             total: 0,
             unhealthy: 0,
+            verification_required: 0,
         };
         const accounts = rotationIndices.map(index => {
             const account = this.account(index);
             const { has403, has429 } = this._accountFlags(account, now, rotationIndices);
             const state = account.disabled
                 ? "disabled"
-                : has403
-                  ? "risk_controlled"
-                  : has429
-                    ? "rate_limited"
-                    : account.healthy
-                      ? "healthy"
-                      : "unhealthy";
+                : account.playground_verification
+                  ? "verification_required"
+                  : has403
+                    ? "risk_controlled"
+                    : has429
+                      ? "rate_limited"
+                      : account.healthy
+                        ? "healthy"
+                        : "unhealthy";
             summary[state]++;
             summary.total++;
+            if (account.playground_verification && state !== "verification_required") summary.verification_required++;
             const persistent403 = this._persistent403Snapshot(account, now);
             if (persistent403.persistent_403) summary.persistent_403++;
             return {
@@ -1648,6 +1691,7 @@ class ModelScheduler {
                 index,
                 inflight: account.inflight,
                 key: account.key,
+                playground_verification: account.playground_verification,
                 tier: resolveTier(accountForIndex(this.authSource, index)),
             };
         });
@@ -2058,7 +2102,7 @@ class ModelScheduler {
                             model,
                             rate_limit_type: slot.rate_limit_type || null,
                             risk_control_failures: slot.risk_control_failures || 0,
-                            status: this._slotStatus(account, slot, rotationIndices),
+                            status: this._slotStatus(account, slot, rotationIndices, model),
                         };
                     });
                 const { has403, has429 } = this._accountFlags(account, now, rotationIndices);
@@ -2074,6 +2118,7 @@ class ModelScheduler {
                     inflight: account.inflight,
                     key: account.key,
                     models,
+                    playground_verification: account.playground_verification,
                 };
             }),
             revision: `accounts:${this.sequence}`,
@@ -2161,7 +2206,7 @@ class ModelScheduler {
         if (!this.config.statePath) return;
         try {
             const data = JSON.parse(fs.readFileSync(this.config.statePath, "utf8"));
-            if (![1, 2, 3, 4, 5, 6, 7].includes(data.version) || !Array.isArray(data.accounts))
+            if (![1, 2, 3, 4, 5, 6, 7, 8].includes(data.version) || !Array.isArray(data.accounts))
                 throw new Error("Unsupported scheduler state");
             if (data.version >= 4) {
                 if (!Array.isArray(data.hiddenModels) || data.hiddenModels.some(model => typeof model !== "string"))
@@ -2205,6 +2250,29 @@ class ModelScheduler {
                     if (!Number.isInteger(slot.daily_failure_count) || slot.daily_failure_count < 0)
                         throw new Error("Invalid daily scheduler failure state");
                     slot.inflight = 0;
+                }
+                account.playground_verification ??= null;
+                if (
+                    account.playground_verification &&
+                    (!Number.isSafeInteger(account.playground_verification.detected_at) ||
+                        account.playground_verification.detected_at < 0 ||
+                        account.playground_verification.reason !== "verification_required")
+                )
+                    throw new Error("Invalid Playground verification state");
+                if (data.version < 8) {
+                    for (const [model, slot] of Object.entries(account.models)) {
+                        if (
+                            !model.startsWith("build/") &&
+                            classifyError({ message: slot.last_error, status: slot.last_http_status ?? undefined }) ===
+                                "verification_required"
+                        ) {
+                            account.playground_verification ??= {
+                                detected_at: this.now(),
+                                reason: "verification_required",
+                            };
+                            slot.last_error_kind = "verification_required";
+                        }
+                    }
                 }
                 this.accounts.set(account.key, account);
             }
@@ -2280,7 +2348,7 @@ class ModelScheduler {
                     accounts: [...this.accounts.values()],
                     fileAffinities: [...this.fileAffinities],
                     hiddenModels: this.hiddenModelsSnapshot(),
-                    version: 7,
+                    version: 8,
                 }),
                 {
                     mode: 0o600,

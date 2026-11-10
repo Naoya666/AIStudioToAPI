@@ -2348,3 +2348,95 @@ for (const stream of [false, true])
                 assert.match(res.body, /\[DONE\]/);
             } else assert.equal(JSON.parse(res.body).choices[0].message.content, "hello");
         });
+
+for (const stream of [false, true]) {
+    test(`verification 403 ${stream ? "streaming" : "buffered"} switches account and retains Playground block`, async t => {
+        const f = setup(index =>
+            index === 0
+                ? [
+                      {
+                          event_type: "error",
+                          message: "Your account must be verified before it can continue using the Gemini API.",
+                          status: 403,
+                      },
+                  ]
+                : success
+        );
+        t.after(() => f.scheduler.close());
+        const res = new Response();
+        await f.handler.processOpenAIRequest(request("gemini-3.8-flash", stream), res);
+        assert.equal(res.statusCode, 200, res.body);
+        assert.match(res.body, /hello/);
+        assert.deepEqual(
+            f.sent.map(entry => entry.index),
+            [0, 1]
+        );
+        assert.equal(f.scheduler.isVerificationRequired(0), true);
+        assert.equal(f.scheduler.account(0).healthy, true);
+    });
+}
+
+test("batch account routes authenticate, validate and report partial recovery without stopping", async () => {
+    const routes = new Map();
+    const app = {};
+    for (const method of ["delete", "get", "post", "put", "use"])
+        app[method] = (route, ...handlers) => routes.set(route, handlers);
+    const s = new ModelScheduler(
+        { ...loadConfig({ MAX_BROWSER_WORKERS: "3" }), statePath: null },
+        {
+            accountNameMap: new Map(),
+            availableIndices: [0, 1, 2],
+            getRotationIndices: () => [0, 1, 2],
+        },
+        logger
+    );
+    try {
+        s.disable(0);
+        s.disable(1);
+        s.account(1).inflight = 1;
+        s.account(0).playground_verification = { detected_at: Date.now(), reason: "verification_required" };
+        new StatusRoutes({
+            authSource: { availableIndices: [0, 1, 2] },
+            config: {},
+            distIndexPath: "",
+            logger,
+            scheduler: s,
+        }).setupRoutes(app, (req, res, next) =>
+            req.authenticated ? next() : res.status(401).json({ error: "Unauthorized" })
+        );
+        const invoke = async (body, authenticated = true) => {
+            const handlers = routes.get("/api/scheduler/accounts/batch");
+            const req = { authenticated, body };
+            const res = new Response();
+            res.json = value => {
+                res.value = value;
+                return res;
+            };
+            await handlers[0](req, res, () => handlers[1](req, res));
+            return res;
+        };
+        assert.equal((await invoke({}, false)).statusCode, 401);
+        for (const body of [
+            {},
+            { account_ids: [], action: "enable" },
+            { account_ids: [0], action: "delete" },
+            { account_ids: ["0"], action: "enable" },
+        ])
+            assert.equal((await invoke(body)).statusCode, 400);
+        const res = await invoke({ account_ids: [0, 1, 2, 99, 0], action: "enable" });
+        assert.deepEqual(
+            res.value.results.map(item => item.success),
+            [true, false, true, false]
+        );
+        assert.equal(s.isVerificationRequired(0), false);
+        assert.equal(s.account(0).disabled, false);
+        assert.equal(s.account(1).disabled, true);
+        assert.match(res.value.results[1].error, /active requests/);
+        const disabled = await invoke({ account_ids: [0, 2], action: "disable" });
+        assert.ok(disabled.value.results.every(item => item.success));
+        assert.equal(s.account(0).disabled, true);
+        assert.equal(s.account(2).disabled, true);
+    } finally {
+        s.close();
+    }
+});
