@@ -2868,7 +2868,9 @@ class BrowserManager {
         if (this._contextPoolReplacements.size || this._poolClosingContexts?.size) return;
         if ([...this.contexts.values()].some(data => data.poolReplacement)) return;
         const protectedIndices = this._modelWarmPlan();
-        if (purpose === "warm" && !protectedIndices.has(authIndex)) return;
+        // Ordinary minimum-ready warming may reclaim a failed idle slot even
+        // when model coverage is already satisfied. It must not churn ready slots.
+        const ordinaryWarm = purpose === "warm" && !protectedIndices.has(authIndex);
         const activeTargets = this._modelWarmTargets().length > 0;
         const idle = [...this.contexts.keys()]
             .filter(
@@ -2879,10 +2881,12 @@ class BrowserManager {
                     !this.initializingContexts.has(index) &&
                     !this.contextCapacityReservations?.has(index) &&
                     (activeTargets || this._isContextIdle(index)) &&
-                    (purpose !== "warm" || !protectedIndices.has(index))
+                    (purpose !== "warm" || !protectedIndices.has(index)) &&
+                    (!ordinaryWarm || (!this.isContextReady(index) && this._isContextIdle(index)))
             )
             .sort(
                 (a, b) =>
+                    Number(this.isContextReady(a)) - Number(this.isContextReady(b)) ||
                     Number(protectedIndices.has(a)) - Number(protectedIndices.has(b)) ||
                     Number(!this._isContextIdle(a)) - Number(!this._isContextIdle(b)) ||
                     this._compareContextEviction(a, b)

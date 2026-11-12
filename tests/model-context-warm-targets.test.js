@@ -403,3 +403,39 @@ test("warm planning shares one model projection and refreshes permissions on the
     assert.ok([...second].every(index => !first.has(index)));
     assert.equal(scheduler._snapshotViewDepth, undefined);
 });
+
+test("minimum-ready warming reclaims a failed slot after model coverage is satisfied", async t => {
+    const { manager, scheduler, ready } = fixture(t, { a: 2 }, 3);
+    scheduler.config.contextPoolMinReady = 3;
+    ready(0, 1, 8);
+    manager.contexts.get(8).state = "UNAVAILABLE";
+    manager.isContextReady = index => {
+        const data = manager.contexts.get(index);
+        return !!data && !data.draining && data.state !== "UNAVAILABLE";
+    };
+    assert.deepEqual([...manager._modelWarmPlan()], [0, 1]);
+    const incoming = manager._poolCandidates()[0];
+    assert.equal(incoming, 2);
+    assert.equal(manager._reserveContextCapacity(incoming, "warm"), null);
+    assert.ok(manager._contextPoolReplacements.has(8));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...manager.contexts.keys()], [0, 1]);
+    const reservation = manager._reserveContextCapacity(incoming, "warm");
+    assert.ok(reservation);
+    manager._releaseContextCapacity(incoming, reservation);
+    ready(incoming);
+    assert.equal([...manager.contexts.keys()].filter(index => manager.isContextReady(index)).length, 3);
+    assert.deepEqual(manager._poolCandidates(), []);
+});
+
+test("ordinary warming preserves a healthy shared slot and waits for failed in-flight work", t => {
+    const { manager, scheduler, ready } = fixture(t, { a: 2 }, 3);
+    ready(0, 1, 2);
+    manager._reserveContextCapacity(3, "warm");
+    assert.equal(manager._contextPoolReplacements.size, 0);
+    manager.isContextReady = index => index !== 2 && manager.contexts.has(index);
+    scheduler.account(2).inflight = 1;
+    manager._reserveContextCapacity(3, "warm");
+    assert.equal(manager._contextPoolReplacements.size, 0);
+    assert.equal(manager.contexts.get(2).poolReplacement, undefined);
+});
