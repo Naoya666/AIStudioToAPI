@@ -290,6 +290,10 @@ class ModelScheduler {
         return !!account.playground_verification && model !== "__files__" && !model.startsWith("build/");
     }
 
+    isQuotaEligible(account, model) {
+        return this.isTierAllowed(account.index, model) && !this.isVerificationBlocked(account, model);
+    }
+
     getPacificDateKey(now = Date.now()) {
         if (this._pacificDateCache?.now === now) return this._pacificDateCache.value;
         const parts = Object.fromEntries(
@@ -1115,7 +1119,8 @@ class ModelScheduler {
             knownRemaining = 0,
             unknownLimits = 0,
             knownRequests = 0,
-            requests = 0;
+            requests = 0,
+            unknownQuotaUsage = 0;
         for (const index of indices) {
             if (!this.isTierAllowed(index, model)) continue;
             const account = this.accounts.get(this.authSource.accountNameMap.get(index) || `auth-${index}`);
@@ -1128,6 +1133,8 @@ class ModelScheduler {
                 .filter(([name]) => name === model)
                 .map(([, slot]) => slot);
             let used = 0;
+            const previousRequests = requests;
+            const previousKnownRequests = knownRequests;
             for (const slot of slots) {
                 const window = slot.token_windows?.[date];
                 requests += Math.max(
@@ -1139,6 +1146,9 @@ class ModelScheduler {
                 used += window.usage.total_tokens || 0;
                 for (const key of FIELDS) totals[key] += window.usage[key] || 0;
             }
+            // Keep observed usage from blocked accounts, but grant them no PG budget.
+            if (!this.isQuotaEligible(account || { index }, model)) continue;
+            unknownQuotaUsage += Math.max(0, requests - previousRequests - (knownRequests - previousKnownRequests));
             if (policy.tokens === null) unknownLimits++;
             else {
                 limit += policy.tokens;
@@ -1147,7 +1157,7 @@ class ModelScheduler {
         }
         const unknownUsage = Math.max(0, requests - knownRequests);
         return {
-            estimated_remaining: unknownLimits || unknownUsage ? null : knownRemaining,
+            estimated_remaining: unknownLimits || unknownQuotaUsage ? null : knownRemaining,
             known_limit: limit,
             known_remaining_upper_bound: knownRemaining,
             known_usage_requests: knownRequests,
@@ -1748,7 +1758,7 @@ class ModelScheduler {
                 const requests =
                     slot?.daily_request_date === this.getPacificDateKey(now) ? slot.daily_request_count : 0;
                 dailyRequests += requests;
-                if (!this.isTierAllowed(account.index, model)) continue;
+                if (!this.isQuotaEligible(account, model)) continue;
                 trackedAccounts++;
                 if (limit === null) {
                     unknownLimits++;
@@ -2007,8 +2017,8 @@ class ModelScheduler {
             active,
             limit: active + spare,
             models: models.map(model => {
-                const accountSlots = indices.map(index => {
-                    const account = accountFor(index);
+                const accountSlots = accounts.map(account => {
+                    const index = account.index;
                     return { account, index, slot: slotFor(account, model) };
                 });
                 const today = accountSlots.reduce((sum, item) => sum + dailyRequests(item.slot), 0);
@@ -2018,14 +2028,14 @@ class ModelScheduler {
                     dispatchableAccounts: dispatchableByModel.get(model).length,
                     estimatedRemaining: accountSlots.some(
                         item =>
-                            this.isTierAllowed(item.index, model) &&
+                            this.isQuotaEligible(item.account, model) &&
                             getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) === null
                     )
                         ? null
                         : accountSlots.reduce(
                               (sum, item) =>
                                   sum +
-                                  (this.isTierAllowed(item.index, model)
+                                  (this.isQuotaEligible(item.account, model)
                                       ? Math.max(
                                             0,
                                             getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) -

@@ -183,7 +183,7 @@ Content-Type: application/json
 ### 7.2 纳入统计的账号和模型
 
 - 账号集合使用 `authSource.getRotationIndices()`：只统计当前有效、未 expired、按邮箱去重后的真实轮换账号。
-- 不因临时 `UNHEALTHY`、`RATE_LIMITED`、`COOLDOWN` 或 `UNSUPPORTED` 状态扣除账号的理论日额度；这些是可恢复调度状态，“剩余额度”仍按已尝试次数估算。
+- 不因临时 `UNHEALTHY`、`RATE_LIMITED`、`COOLDOWN` 或 `UNSUPPORTED` 状态扣除账号的理论日额度；这些是可恢复调度状态，“剩余额度”仍按已尝试次数估算。明确标记为 `playground_verification` 的账号不贡献 Playground 次数和 Token 预算，历史用量仍保留，Build 预算独立计算；详见[验证403与批量恢复](verification-403-and-batch-recovery.md)。
 - 模型集合与调度面板一致：配置在 `MODEL_WORKER_ALLOCATION` 中、正在排队或已经产生过 slot 的模型并集。
 - 尚未配置、从未请求且调度器完全未知的模型不纳入总数，避免仅因 `configs/models.json` 中存在大量可展示模型就虚增额度。
 

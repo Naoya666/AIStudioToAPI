@@ -104,3 +104,81 @@ test("mixed-tier admin/public quota estimates agree, preserve attempts and do no
     );
     assert.equal(scheduler.isResourceEligible(account, "gemini-4-argon"), false);
 });
+
+test("verification removes PG request and token budgets from admin and public projections while retaining usage", async t => {
+    const metadata = ["free", "ultra", "pro"].map((manualTier, authIndex) => ({ authIndex, manualTier }));
+    const auth = {
+        accountLoginService: { state: { accounts: metadata } },
+        accountNameMap: new Map(),
+        getRotationIndices: () => [0, 1, 2],
+    };
+    const model = "gemini-3.8-flash";
+    const build = "build/gemini-3.8-flash";
+    const scheduler = new ModelScheduler(
+        {
+            ...loadConfig({
+                GLOBAL_MAX_CONCURRENCY: "3",
+                MODEL_WORKER_ALLOCATION: JSON.stringify({ [build]: 1, [model]: 1 }),
+            }),
+            statePath: null,
+        },
+        auth,
+        { debug() {}, error() {}, info() {}, warn() {} }
+    );
+    t.after(() => scheduler.close());
+    const buildBefore = scheduler.tokenQuotaSnapshot(build);
+    const lease = await scheduler.acquire(model);
+    assert.equal(lease.account.index, 0);
+    scheduler.startAttempt(lease);
+    scheduler.recordTokenUsage(lease, { total_tokens: 100 });
+    scheduler.failure(lease, {
+        message: "Your account must be verified before it can continue using the Gemini API.",
+        status: 403,
+    });
+    scheduler.release(lease);
+    const blocked = { detected_at: Date.now(), reason: "verification_required" };
+    scheduler.account(1).playground_verification = blocked;
+    // An unknown-usage attempt on a blocked account must not hide the usable pool's budget.
+    scheduler.slot(scheduler.account(1), model).daily_request_count = 1;
+    const row = scheduler.summarySnapshot().quota_by_model.find(item => item.model === model);
+    assert.equal(row.tracked_accounts, 1);
+    assert.equal(row.total_quota, 150);
+    assert.equal(row.estimated_remaining_quota, 150);
+    assert.equal(row.unknown_limit_accounts, 0);
+    assert.equal(row.daily_requests, 2);
+    const tokens = scheduler.tokenQuotaSnapshot(model);
+    assert.equal(tokens.limit, 25000000);
+    assert.equal(tokens.estimated_remaining, 25000000);
+    assert.equal(tokens.observed_tokens.total_tokens, 100);
+    assert.equal(tokens.known_usage_requests, 1);
+    assert.equal(tokens.unknown_usage_requests, 1);
+    assert.deepEqual(scheduler.tokenQuotaSnapshot(build), buildBefore);
+    const publicBefore = JSON.stringify([...scheduler.accounts]);
+    const projected = scheduler.publicSummarySnapshot().models.find(item => item.model === model);
+    assert.equal(projected.estimatedRemaining, 150);
+    assert.equal(projected.todayRequests, 2);
+    assert.deepEqual(projected.tokenQuota, tokens);
+    assert.equal(JSON.stringify([...scheduler.accounts]), publicBefore);
+
+    const PublicDashboardService = require("../src/public/PublicDashboardService");
+    const UsageStatsService = require("../src/core/UsageStatsService");
+    const service = new PublicDashboardService(
+        scheduler,
+        new UsageStatsService(null, { debug() {}, error() {}, info() {}, warn() {} }, null, false),
+        { cacheTtlMs: 0 }
+    );
+    let dashboard = await service.getSnapshot();
+    assert.equal(dashboard.models.find(item => item.model === model).quota.estimated_remaining, 150);
+    scheduler.account(2).playground_verification = blocked;
+    const empty = scheduler.summarySnapshot().quota_by_model.find(item => item.model === model);
+    assert.equal(empty.total_quota, 0);
+    assert.equal(empty.tracked_accounts, 0);
+    assert.equal(empty.estimated_remaining_quota, 0);
+    assert.equal(scheduler.tokenQuotaSnapshot(model).estimated_remaining, 0);
+    dashboard = await service.getSnapshot();
+    assert.equal(dashboard.models.find(item => item.model === model).quota.estimated_remaining, 0);
+    assert.equal(dashboard.models.find(item => item.model === model).token_quota.limit, 0);
+    scheduler.reset(0);
+    assert.equal(scheduler.publicSummarySnapshot().models.find(item => item.model === model).estimatedRemaining, 99);
+    assert.equal(scheduler.tokenQuotaSnapshot(model).estimated_remaining, 10999900);
+});
