@@ -435,3 +435,27 @@ test("a detected block survives queue closure and deadline races without becomin
     });
     assert.equal(frames[0].code, "upstream_prompt_blocked");
 });
+
+test("Carbon and Hydrogen allow tools, real SSE and anti-truncation without model verification gates", async () => {
+    const { resolve: transport } = require("../src/core/ModelTransportPolicy");
+    const catalog = require("../configs/models.json").models;
+    const tools = [{ function: { name: "weather", parameters: { type: "object" } }, type: "function" }];
+    for (const model of ["gemini-4-carbon", "gemini-4-hydrogen"]) {
+        assert.equal(catalog.filter(entry => entry.name === `models/${model}`).length, 1);
+        assert.equal(transport(model, "real").incremental, true);
+        for (const mode of ["strict", "auto_fallback"]) {
+            const body = { messages: [{ content: "Weather?", role: "user" }], model: `anti-${model}-real`, tools };
+            const policy = resolve(body, { pgToolCallingMode: mode });
+            assert.equal(policy.enabled, true);
+            assert.equal(policy.realModel, model);
+            const injected = inject({ ...body, model });
+            assert.equal(injected.body.tools[0].function.name, "weather");
+            const translated = await converter.translateOpenAIToGoogle(injected.body, { privateTransport: true });
+            assert.ok(
+                translated.googleRequest.tools.some(tool =>
+                    tool.functionDeclarations?.some(fn => fn.name === "weather")
+                )
+            );
+        }
+    }
+});

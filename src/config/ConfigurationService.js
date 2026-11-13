@@ -71,7 +71,8 @@ class ConfigurationService {
             this.baselineError = error.message;
         }
         this.saved = this.load(this.document.overrides);
-        if (!Object.hasOwn(this.document.overrides, "MODEL_TIER_ALLOWLIST")) {
+        const hadPersistedModelPermissions = Object.hasOwn(this.document.overrides, "MODEL_TIER_ALLOWLIST");
+        if (!hadPersistedModelPermissions) {
             this.document = {
                 ...this.document,
                 overrides: {
@@ -98,6 +99,31 @@ class ConfigurationService {
                 ...this.document,
                 overrides: { ...this.document.overrides, MODEL_TIER_ALLOWLIST: policy },
                 verifiedBuildPermissions: true,
+                version: this.document.version + 1,
+            };
+            atomicWrite(this.file, this.document);
+            this.saved = this.load(this.document.overrides);
+        }
+        // Apply the operator-provided Playground matrix once; later manual edits survive reloads.
+        if (!this.document.playgroundPermissions20261113) {
+            const { catalogModels, defaultAllows, PLAYGROUND_MODELS } = require("../accounts/ModelAllowlistPolicy");
+            const registered = new Set(catalogModels(this.saved.modelList));
+            const updated = hadPersistedModelPermissions
+                ? PLAYGROUND_MODELS.filter(model => registered.has(model))
+                : [];
+            const policy = clone(this.saved.scheduler.modelAllowlist);
+            for (const [tier, models] of Object.entries(policy.tiers)) {
+                policy.tiers[tier] = [
+                    ...new Set([
+                        ...models.filter(model => !updated.includes(model)),
+                        ...updated.filter(model => defaultAllows(tier, model)),
+                    ]),
+                ].sort();
+            }
+            this.document = {
+                ...this.document,
+                overrides: { ...this.document.overrides, MODEL_TIER_ALLOWLIST: policy },
+                playgroundPermissions20261113: true,
                 version: this.document.version + 1,
             };
             atomicWrite(this.file, this.document);

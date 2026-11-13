@@ -108,7 +108,7 @@ test("non-generation requests never register a bridge call or receive its intern
     assert.equal(sent[0].remaining_budget_ms, undefined);
 });
 
-test("downstream OpenAI and Gemini model catalogues include the accepted Argon model", async t => {
+test("downstream OpenAI and Gemini model catalogues include Argon, Carbon and Hydrogen", async t => {
     const ProxyServerSystem = require("../src/core/ProxyServerSystem");
     const system = Object.create(ProxyServerSystem.prototype);
     system.config = new ConfigLoader(logger).loadConfiguration({ API_KEYS: "catalogue-fixture-key" });
@@ -127,10 +127,14 @@ test("downstream OpenAI and Gemini model catalogues include the accepted Argon m
     const base = `http://127.0.0.1:${server.address().port}`;
     const openAI = await fetch(base + "/v1/models", { headers: { authorization: "Bearer catalogue-fixture-key" } });
     assert.equal(openAI.status, 200);
-    assert.equal((await openAI.json()).data.filter(model => model.id === "gemini-4-argon").length, 1);
+    const openAIModels = (await openAI.json()).data;
     const native = await fetch(base + "/v1beta/models", { headers: { authorization: "Bearer catalogue-fixture-key" } });
     assert.equal(native.status, 200);
-    assert.equal((await native.json()).models.filter(model => model.name === "models/gemini-4-argon").length, 1);
+    const nativeModels = (await native.json()).models;
+    for (const name of ["gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen"]) {
+        assert.equal(openAIModels.filter(model => model.id === name).length, 1);
+        assert.equal(nativeModels.filter(model => model.name === `models/${name}`).length, 1);
+    }
 });
 
 test("direct Playground budget preserves deadlines across attempts without Build markers", t => {

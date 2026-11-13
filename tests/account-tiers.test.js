@@ -37,8 +37,8 @@ test("tier bases are exact per model and never enable other Gemini 4 models", ()
         [null, [100, 10, 0]],
         ["free", [100, 10, 0]],
         ["pro", [100, 50, 50]],
-        ["ultra", [null, null, null]],
-        ["ultra20", [null, null, null]],
+        ["ultra", [null, null, 200]],
+        ["ultra20", [null, null, 200]],
     ]) {
         assert.deepEqual(
             ["models/gemini-2.5-flash", "gemini-3-pro", "gemini-4-argon"].map(model =>
@@ -86,12 +86,12 @@ test("mixed-tier admin/public quota estimates agree, preserve attempts and do no
             publicModels.find(item => item.model === row.model).estimatedRemaining
         );
     const argon = admin.find(item => item.model === "gemini-4-argon");
-    assert.equal(argon.total_quota, null);
-    assert.equal(argon.unknown_limit_accounts, 2);
+    assert.equal(argon.total_quota, 450);
+    assert.equal(argon.unknown_limit_accounts, 0);
     assert.equal(argon.tracked_accounts, 3);
     assert.equal(argon.quota_per_account, null);
-    assert.equal(argon.estimated_remaining_quota, null);
-    assert.equal(argon.known_estimated_remaining_quota, 48);
+    assert.equal(argon.estimated_remaining_quota, 246);
+    assert.equal(argon.known_estimated_remaining_quota, 246);
     assert.equal(admin.find(item => item.model === "gemini-3-pro").total_quota, null);
     assert.equal(publicModels.find(item => item.model === "text-embedding-004").estimatedRemaining, null);
     const account = scheduler.account(4);
@@ -100,7 +100,7 @@ test("mixed-tier admin/public quota estimates agree, preserve attempts and do no
     assert.equal(scheduler.slot(account, "gemini-4-argon").daily_request_count, 300);
     assert.equal(
         scheduler.summarySnapshot().quota_by_model.find(item => item.model === "gemini-4-argon").total_quota,
-        null
+        250
     );
     assert.equal(scheduler.isResourceEligible(account, "gemini-4-argon"), false);
 });
@@ -179,6 +179,6 @@ test("verification removes PG request and token budgets from admin and public pr
     assert.equal(dashboard.models.find(item => item.model === model).quota.estimated_remaining, 0);
     assert.equal(dashboard.models.find(item => item.model === model).token_quota.limit, 0);
     scheduler.reset(0);
-    assert.equal(scheduler.publicSummarySnapshot().models.find(item => item.model === model).estimatedRemaining, 99);
-    assert.equal(scheduler.tokenQuotaSnapshot(model).estimated_remaining, 10999900);
+    assert.equal(scheduler.publicSummarySnapshot().models.find(item => item.model === model).estimatedRemaining, 49);
+    assert.equal(scheduler.tokenQuotaSnapshot(model).estimated_remaining, 4999900);
 });

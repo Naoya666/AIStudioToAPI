@@ -27,7 +27,7 @@ function scheduler(t, { tier = "pro", statePath = null } = {}) {
     t.after(() => s.close());
     return s;
 }
-test("operator model budgets preserve unknown Ultra and Pro Build Flash", () => {
+test("Playground screenshot budgets preserve unknown token limits and Pro Build Flash", () => {
     const flash = [
         "gemini-3.8-flash",
         "gemini-3.6-flash",
@@ -36,21 +36,33 @@ test("operator model budgets preserve unknown Ultra and Pro Build Flash", () => 
         "gemini-3.1-flash-lite",
     ];
     for (const model of flash) {
-        assert.equal(dailyBudgets(model, "free").tokens, 11000000);
+        assert.equal(dailyBudgets(model, "free").tokens, 5000000);
         assert.equal(modelQuota(model, { manualTier: "pro" }), 150);
         assert.equal(dailyBudgets(model, "pro").tokens, 25000000);
     }
     for (const [tier, requests, tokens] of [
-        ["free", 10, 5000000],
+        ["free", 0, null],
         ["pro", 50, 13000000],
     ]) {
         assert.equal(dailyBudgets("gemini-3.1-pro-preview", tier).requests, requests);
         assert.equal(dailyBudgets("gemini-3.1-pro-preview", tier).tokens, tokens);
     }
+    for (const model of flash) assert.equal(modelQuota(model, { manualTier: "free" }), 50);
+    for (const [tier, requests, tokens] of [
+        ["free", 50, 10000000],
+        ["pro", 100, 25000000],
+        ["ultra", null, null],
+        ["ultra20", null, null],
+    ]) {
+        assert.equal(modelQuota("gemini-4-hydrogen", { manualTier: tier }), requests);
+        assert.equal(dailyBudgets("gemini-4-hydrogen", tier).tokens, tokens);
+        assert.equal(modelQuota("gemini-4-carbon", { manualTier: tier }), tier.startsWith("ultra") ? 200 : 0);
+        assert.equal(dailyBudgets("gemini-4-carbon", tier).tokens, null);
+    }
     assert.equal(dailyBudgets("gemini-4-argon", "pro").tokens, 15000000);
     for (const tier of ["ultra", "ultra20"])
         for (const m of [...flash, "gemini-3.1-pro-preview", "gemini-4-argon"]) {
-            assert.equal(modelQuota(m, { manualTier: tier }), null);
+            assert.equal(modelQuota(m, { manualTier: tier }), m === "gemini-3.1-pro-preview" ? 100 : 200);
             assert.equal(dailyBudgets(m, tier).tokens, null);
         }
     assert.equal(dailyBudgets("build/gemini-4-argon", "pro").tokens, 20000000);

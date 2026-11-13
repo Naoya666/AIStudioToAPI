@@ -1,6 +1,18 @@
 {
     "models": [
         {
+            "name": "models/gemini-4-carbon",
+            "displayName": "Gemini 4 Carbon",
+            "description": "Gemini 4 Carbon via Playground, with streaming and tool calling.",
+            "supportedGenerationMethods": ["generateContent"]
+        },
+        {
+            "name": "models/gemini-4-hydrogen",
+            "displayName": "Gemini 4 Hydrogen",
+            "description": "Gemini 4 Hydrogen via Playground, with streaming and tool calling.",
+            "supportedGenerationMethods": ["generateContent"]
+        },
+        {
             "name": "models/gemini-4-argon",
             "displayName": "Gemini 4 Argon",
             "description": "Gemini 4 Argon via MakerSuite GenerateContent (buffered).",

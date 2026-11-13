@@ -19,6 +19,8 @@ const {
 const logger = { debug() {}, error() {}, info() {}, setDisplayLimit() {}, warn() {} };
 const basicModels = [
     ...PAID_MODELS,
+    "gemini-3.6-flash",
+    "gemini-3-flash-preview",
     "gemini-3.5-flash",
     "gemini-3.7-flash",
     "gemini-3.8-flash",
@@ -76,7 +78,7 @@ function schedulerFor(t, fixture, tiers = ["free", "pro", "ultra", "ultra20", nu
 }
 const clone = value => structuredClone(value);
 
-test("initial policy opens every existing model except the three Free restrictions, including untested models", () => {
+test("initial policy opens every existing model with the updated Free restrictions, including untested models", () => {
     const policy = initialPolicy([...basicModels, "untested-model", "__files__", "anti-gemini-3.5-flash"]);
     assert.deepEqual(catalogModels(["models/gemini-3.5-flash", "__files__", "anti-gemini-3.5-flash"]), [
         "gemini-3.5-flash",
@@ -193,7 +195,7 @@ test("invalid persisted policy fails closed and recovery retains the latest expl
 test("tier policy filters selection and unknown models, while hot revocation rejects queued requests without ending active leases", async t => {
     const f = fixture(t);
     const { scheduler } = schedulerFor(t, f, ["free", "pro"]);
-    const paid = await scheduler.acquire("models/anti-gemini-3.6-flash-high-real-search");
+    const paid = await scheduler.acquire("models/anti-gemini-3.1-pro-preview-high-real-search");
     assert.equal(paid.account.index, 1);
     scheduler.release(paid);
     await assert.rejects(scheduler.acquire("not-in-directory"), { code: "UNKNOWN_MODEL", status: 404 });
@@ -210,7 +212,7 @@ test("tier policy filters selection and unknown models, while hot revocation rej
     const denied = clone(f.service.running.scheduler.modelAllowlist);
     denied.tiers.pro = [];
     f.save(denied);
-    await assert.rejects(scheduler.acquire("gemini-3.6-flash"), { code: "MODEL_TIER_DENIED" });
+    await assert.rejects(scheduler.acquire("gemini-3.1-pro-preview"), { code: "MODEL_TIER_DENIED" });
 });
 
 test("legacy and scheduled final sends recheck live permissions before writing or counting an attempt", async t => {
@@ -262,20 +264,20 @@ test("quota totals agree across projections, retain historical usage and exclude
     const admin = scheduler.summarySnapshot();
     const quota = admin.quota_by_model.find(row => row.model === model);
     const publicModel = scheduler.publicSummarySnapshot().models.find(row => row.model === model);
-    assert.equal(quota.total_quota, null);
-    assert.equal(quota.unknown_limit_accounts, 2);
-    assert.equal(quota.known_estimated_remaining_quota, 147);
-    assert.equal(quota.tracked_accounts, 3);
+    assert.equal(quota.total_quota, 650);
+    assert.equal(quota.unknown_limit_accounts, 0);
+    assert.equal(quota.known_estimated_remaining_quota, 635);
+    assert.equal(quota.tracked_accounts, 5);
     assert.equal(quota.daily_requests, 15);
     assert.equal(publicModel.estimatedRemaining, quota.estimated_remaining_quota);
-    assert.equal(publicModel.tierAllowedAccounts, 3);
-    assert.equal(admin.models.find(row => row.model === model).tier_allowed_accounts, 3);
+    assert.equal(publicModel.tierAllowedAccounts, 5);
+    assert.equal(admin.models.find(row => row.model === model).tier_allowed_accounts, 5);
     const policy = clone(f.service.running.scheduler.modelAllowlist);
     policy.tiers.pro = [];
     f.save(policy);
     const next = scheduler.summarySnapshot().quota_by_model.find(row => row.model === model);
-    assert.equal(next.total_quota, null);
-    assert.equal(next.known_estimated_remaining_quota, 0);
+    assert.equal(next.total_quota, 500);
+    assert.equal(next.known_estimated_remaining_quota, 488);
     assert.equal(next.daily_requests, 15);
     assert.equal(
         scheduler.publicSummarySnapshot().models.find(row => row.model === "text-embedding-004").estimatedRemaining,
@@ -389,4 +391,51 @@ test("existing Build permissions migrate once and later operator edits survive r
     edited.tiers.pro = edited.tiers.pro.filter(model => model !== "build/gemini-4-argon");
     f.inDirectory(() => service.save({ changes: { MODEL_TIER_ALLOWLIST: edited }, version: service.document.version }));
     assert.deepEqual(f.create().saved.scheduler.modelAllowlist, edited);
+});
+
+test("Playground permissions match all four tiers and aliases", () => {
+    const models = [
+        "gemini-4-carbon",
+        "gemini-4-hydrogen",
+        "gemini-3.6-flash",
+        "gemini-3-flash-preview",
+        ...PAID_MODELS,
+    ];
+    const policy = initialPolicy(models);
+    for (const tier of [null, ...LEVELS]) {
+        for (const model of models) {
+            const allowed =
+                model === "gemini-4-carbon"
+                    ? ["ultra", "ultra20"].includes(tier)
+                    : !PAID_MODELS.includes(model) || !!(tier && tier !== "free");
+            for (const name of [model, `models/anti-${model}-high-real`]) {
+                assert.equal(canUseModel({ manualTier: tier }, name, policy), allowed);
+                assert.equal(canUseModel({ manualTier: tier }, name), allowed);
+            }
+        }
+    }
+});
+
+test("existing Playground permissions migrate once and preserve subsequent manual edits", t => {
+    const f = fixture(t);
+    f.setModels([...basicModels, "gemini-4-carbon", "gemini-4-hydrogen", "gemini-3.6-flash", "gemini-3-flash-preview"]);
+    const document = JSON.parse(fs.readFileSync(f.file, "utf8"));
+    delete document.playgroundPermissions20261113;
+    for (const tier of LEVELS)
+        document.overrides.MODEL_TIER_ALLOWLIST.tiers[tier] = ["text-embedding-004", "gemini-3.1-pro-preview"];
+    atomicWrite(f.file, document);
+    const service = f.create();
+    const policy = service.saved.scheduler.modelAllowlist;
+    for (const tier of LEVELS) {
+        assert.equal(policy.tiers[tier].includes("gemini-4-carbon"), tier.startsWith("ultra"));
+        assert.equal(policy.tiers[tier].includes("gemini-3.1-pro-preview"), tier !== "free");
+        assert.ok(policy.tiers[tier].includes("gemini-4-hydrogen"));
+        assert.ok(policy.tiers[tier].includes("gemini-3.6-flash"));
+        assert.ok(policy.tiers[tier].includes("gemini-3-flash-preview"));
+        assert.ok(policy.tiers[tier].includes("text-embedding-004"));
+        assert.equal(policy.tiers[tier].includes("gemini-3.7-flash"), false);
+    }
+    policy.tiers.ultra = [];
+    f.inDirectory(() => service.save({ changes: { MODEL_TIER_ALLOWLIST: policy }, version: service.document.version }));
+    assert.deepEqual(f.create().saved.scheduler.modelAllowlist, policy);
 });
