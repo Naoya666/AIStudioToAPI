@@ -6,6 +6,7 @@
  */
 
 const axios = require("axios");
+const { ThoughtSignatureStore, genuine, signatureFrom } = require("./ThoughtSignatureStore");
 const mime = require("mime-types");
 const { assertNotBlocked, isPromptBlocked } = require("../utils/UpstreamBlock");
 
@@ -15,7 +16,7 @@ const { assertNotBlocked, isPromptBlocked } = require("../utils/UpstreamBlock");
  */
 class FormatConverter {
     // Placeholder signature for Gemini 3 functionCall validation
-    static DUMMY_THOUGHT_SIGNATURE = "context_engineering_is_the_way_to_go";
+    static DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
     static GEMINI_BUILT_IN_TOOL_KEYS = [
         "codeExecution",
         "code_execution",
@@ -189,6 +190,7 @@ class FormatConverter {
         this.logger = logger;
         this.serverSystem = serverSystem;
         this.configProvider = configProvider;
+        this.thoughtSignatures = new ThoughtSignatureStore();
     }
 
     getDefaultSafetySettings() {
@@ -225,25 +227,17 @@ class FormatConverter {
             return geminiBody;
         }
 
-        const DUMMY_SIGNATURE = FormatConverter.DUMMY_THOUGHT_SIGNATURE;
-
         for (const content of geminiBody.contents) {
-            if (!content.parts || !Array.isArray(content.parts)) continue;
-
-            // Only add signature to functionCall, not functionResponse
-            let signatureAdded = false;
+            if (!Array.isArray(content.parts)) continue;
             for (const part of content.parts) {
-                // Check for functionCall without thoughtSignature
-                if (part.functionCall && !(part.thoughtSignature || part.thought_signature)) {
-                    if (!signatureAdded) {
-                        part.thoughtSignature = DUMMY_SIGNATURE;
-                        signatureAdded = true;
-                        this.logger.debug(
-                            `[Adapter] Added dummy thoughtSignature for functionCall: ${part.functionCall.name}`
-                        );
-                    }
-                }
-                // Note: functionResponse does NOT need thoughtSignature per official docs
+                if (!part.functionCall) continue;
+                const call = part.functionCall;
+                part.thoughtSignature = this.thoughtSignatures.restore(
+                    call.id,
+                    call.name,
+                    call.args,
+                    signatureFrom(part)
+                );
             }
         }
 
@@ -334,8 +328,7 @@ class FormatConverter {
     }
 
     /**
-     * Sanitize tools in native Gemini requests by removing unsupported JSON Schema fields
-     * like $schema and additionalProperties
+     * Clone native tool schemas without discarding constraints before transport encoding.
      * @param {object} geminiBody - Gemini format request body
      * @returns {object} - Modified request body with sanitized tools
      */
@@ -343,28 +336,6 @@ class FormatConverter {
         if (!geminiBody || !geminiBody.tools || !Array.isArray(geminiBody.tools)) {
             return geminiBody;
         }
-
-        // Helper function to recursively sanitize schema:
-        // 1. Remove unsupported fields ($schema, additionalProperties)
-        // 2. Convert lowercase type to uppercase (object -> OBJECT, string -> STRING, etc.)
-        const sanitizeSchema = obj => {
-            if (!obj || typeof obj !== "object") return obj;
-
-            const result = Array.isArray(obj) ? [] : {};
-
-            for (const key of Object.keys(obj)) {
-                if (key === "type" && typeof obj[key] === "string") {
-                    // Convert lowercase type to uppercase for Gemini
-                    result[key] = obj[key].toUpperCase();
-                } else if (typeof obj[key] === "object" && obj[key] !== null) {
-                    result[key] = sanitizeSchema(obj[key]);
-                } else {
-                    result[key] = obj[key];
-                }
-            }
-
-            return result;
-        };
 
         // Process each tool
         for (const tool of geminiBody.tools) {
@@ -375,7 +346,7 @@ class FormatConverter {
             if (declarations && Array.isArray(declarations)) {
                 for (const funcDecl of declarations) {
                     if (funcDecl.parameters) {
-                        funcDecl.parameters = sanitizeSchema(funcDecl.parameters);
+                        funcDecl.parameters = this._convertSchemaToGemini(funcDecl.parameters);
                     }
                 }
             }
@@ -394,6 +365,9 @@ class FormatConverter {
      * @returns {Object} The converted schema
      */
     _convertSchemaToGemini(obj, isResponseSchema = false, isProperties = false) {
+        // Tool constraints must reach the transport intact; Playground projects
+        // unsupported fields and carries the complete schema in the description.
+        if (!isResponseSchema) return structuredClone(obj);
         if (!obj || typeof obj !== "object") return obj;
 
         const result = Array.isArray(obj) ? [] : {};
@@ -723,8 +697,6 @@ class FormatConverter {
             // Handle assistant messages with tool_calls
             if (message.role === "assistant" && message.tool_calls && Array.isArray(message.tool_calls)) {
                 // Convert OpenAI tool_calls to Gemini functionCall
-                // For Gemini 3: thoughtSignature should only be on the FIRST functionCall part
-                let signatureAttachedToCall = false;
                 for (const toolCall of message.tool_calls) {
                     // Avoid accessing Function.prototype.arguments in strict mode (will throw)
                     if (
@@ -753,15 +725,12 @@ class FormatConverter {
                                 name: toolCall.function.name,
                             },
                         };
-                        // Pass back thoughtSignature only on the FIRST functionCall
-                        // [PLACEHOLDER MODE] - Use dummy signature to skip validation for official Gemini API testing
-                        if (!signatureAttachedToCall) {
-                            functionCallPart.thoughtSignature = FormatConverter.DUMMY_THOUGHT_SIGNATURE;
-                            signatureAttachedToCall = true;
-                            this.logger.debug(
-                                `[Adapter] Using dummy thoughtSignature for first functionCall: ${toolCall.function.name}`
-                            );
-                        }
+                        functionCallPart.thoughtSignature = this.thoughtSignatures.restore(
+                            toolCall.id,
+                            toolCall.function.name,
+                            args,
+                            signatureFrom(toolCall)
+                        );
                         googleParts.push(functionCallPart);
                     }
                 }
@@ -940,10 +909,11 @@ class FormatConverter {
                         declaration.description = funcDef.description;
                     }
 
-                    if (funcDef.parameters) {
+                    if (funcDef.parameters !== undefined) {
                         // Use shared _convertSchemaToGemini
                         declaration.parameters = this._convertSchemaToGemini(funcDef.parameters);
                     }
+                    if (funcDef.strict === true) declaration.strict = true;
                     functionDeclarations.push(declaration);
                 }
             }
@@ -1154,9 +1124,15 @@ class FormatConverter {
         throw Object.assign(new Error("File input requires file_id, file URL or base64 data"), { status: 400 });
     }
 
-    // Gemini native keeps typed execution/grounding fields; text-oriented
-    // compatibility protocols receive readable code, results and source links.
-    _compatibilityParts(candidate) {
+    _rememberToolSignature(id, call, part, output = null, streamState = null) {
+        const signature = signatureFrom(part);
+        this.thoughtSignatures.remember(id, call.name, call.args, signature);
+        if (streamState) streamState.signatureCall = { args: call.args, id, name: call.name };
+        if (output && genuine(signature)) output.extra_content = { google: { thought_signature: signature } };
+    }
+
+    // Preserve signatures alongside readable execution and grounding output.
+    _compatibilityParts(candidate, streamState = null) {
         const parts = (candidate.content?.parts || []).map(part => {
             if (part.executableCode)
                 return {
@@ -1176,8 +1152,26 @@ class FormatConverter {
                         (part.codeExecutionResult.output || part.codeExecutionResult.outcome) +
                         "\n```\n",
                 };
-            return part;
+            return { ...part };
         });
+        let lastCall = null;
+        for (const part of parts) {
+            if (part.functionCall) lastCall = part;
+            else if (
+                !part.text &&
+                genuine(signatureFrom(part)) &&
+                Object.keys(part).every(key =>
+                    ["text", "thought", "thoughtSignature", "thought_signature"].includes(key)
+                )
+            ) {
+                const signature = signatureFrom(part);
+                if (lastCall && !signatureFrom(lastCall)) lastCall.thoughtSignature = signature;
+                else if (!lastCall && streamState?.signatureCall) {
+                    const call = streamState.signatureCall;
+                    this.thoughtSignatures.remember(call.id, call.name, call.args, signature);
+                }
+            }
+        }
         const links = (candidate.groundingMetadata?.groundingChunks || []).flatMap(chunk => {
             const source = chunk.web || chunk.image || chunk.maps;
             return source?.uri && /^https?:\/\//.test(source.uri)
@@ -1249,7 +1243,7 @@ class FormatConverter {
 
         // Iterate over each part in the Gemini chunk and send it as a separate OpenAI chunk
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of this._compatibilityParts(candidate)) {
+            for (const part of this._compatibilityParts(candidate, streamState)) {
                 const delta = {};
                 let hasContent = false;
 
@@ -1285,6 +1279,7 @@ class FormatConverter {
                         type: "function",
                     };
 
+                    this._rememberToolSignature(toolCallId, funcCall, part, toolCallObj, streamState);
                     delta.tool_calls = [toolCallObj];
 
                     // Mark that we have a function call for finish_reason
@@ -1671,7 +1666,7 @@ class FormatConverter {
 
             // Parts -> SSE events
             if (candidate.content && Array.isArray(candidate.content.parts)) {
-                for (const part of this._compatibilityParts(candidate)) {
+                for (const part of this._compatibilityParts(candidate, streamState)) {
                     // The Responses API exposes reasoning summaries via `summary` + `response.reasoning_summary_text.*`.
                     // Map Gemini "thought" parts to reasoning *summary* to match official expectations.
                     if (part?.thought === true) {
@@ -1733,7 +1728,8 @@ class FormatConverter {
                     } else if (part?.functionCall) {
                         const funcCall = part.functionCall;
                         const itemId = `fc_${this._generateRequestId()}`;
-                        const callId = `call_${this._generateRequestId()}`;
+                        const callId = funcCall.id || `call_${this._generateRequestId()}`;
+                        this._rememberToolSignature(callId, funcCall, part, null, streamState);
                         const outputIndex = streamState.nextOutputIndex++;
                         const args = JSON.stringify(funcCall.args || {});
 
@@ -1918,6 +1914,7 @@ class FormatConverter {
                         index: tool_calls.length,
                         type: "function",
                     };
+                    this._rememberToolSignature(toolCallId, funcCall, part, toolCallObj);
                     tool_calls.push(toolCallObj);
                     this.logger.info(`[Adapter] Converted Gemini functionCall to OpenAI tool_calls: ${funcCall.name}`);
                 }
@@ -2047,7 +2044,8 @@ class FormatConverter {
                 } else if (part.functionCall) {
                     // Function call
                     const funcCall = part.functionCall;
-                    const callId = `call_${this._generateRequestId()}`;
+                    const callId = funcCall.id || `call_${this._generateRequestId()}`;
+                    this._rememberToolSignature(callId, funcCall, part);
                     output.push({
                         arguments: JSON.stringify(funcCall.args || {}),
                         call_id: callId,
@@ -2429,23 +2427,26 @@ class FormatConverter {
 
             // Handle assistant messages with tool_use
             if (message.role === "assistant" && Array.isArray(message.content)) {
-                let signatureAttachedToCall = false;
                 for (const block of message.content) {
                     if (block.type === "tool_use") {
                         const functionCallPart = {
                             functionCall: {
                                 args: block.input || {},
+                                ...(block.id ? { id: block.id } : {}),
                                 name: block.name,
                             },
                         };
-                        if (!signatureAttachedToCall) {
-                            functionCallPart.thoughtSignature = FormatConverter.DUMMY_THOUGHT_SIGNATURE;
-                            signatureAttachedToCall = true;
-                        }
+                        functionCallPart.thoughtSignature = this.thoughtSignatures.restore(
+                            block.id,
+                            block.name,
+                            block.input,
+                            signatureFrom(block)
+                        );
                         googleParts.push(functionCallPart);
                     } else if (block.type === "thinking") {
                         // Claude thinking block -> Gemini thought
                         const thoughtPart = { text: block.thinking, thought: true };
+                        if (genuine(block.signature)) thoughtPart.thoughtSignature = block.signature;
                         googleParts.push(thoughtPart);
                     } else if (block.type === "text") {
                         googleParts.push({ text: block.text });
@@ -2668,7 +2669,7 @@ class FormatConverter {
                 if (tool.name) {
                     const declaration = { name: tool.name };
                     if (tool.description) declaration.description = tool.description;
-                    if (tool.input_schema) {
+                    if (tool.input_schema !== undefined) {
                         declaration.parameters = this._convertSchemaToGemini(tool.input_schema);
                     }
                     functionDeclarations.push(declaration);
@@ -2841,7 +2842,7 @@ class FormatConverter {
 
         // Process content parts
         if (candidate.content && Array.isArray(candidate.content.parts)) {
-            for (const part of this._compatibilityParts(candidate)) {
+            for (const part of this._compatibilityParts(candidate, streamState)) {
                 if (part.thought === true && part.text) {
                     // Thinking content
                     if (!streamState.thinkingBlockStarted) {
@@ -2914,7 +2915,8 @@ class FormatConverter {
                     this.logger.info("[Adapter] Successfully parsed image from streaming response chunk.");
                 } else if (part.functionCall) {
                     // Tool use
-                    const toolUseId = `toolu_${this._generateRequestId()}`;
+                    const toolUseId = part.functionCall.id || `toolu_${this._generateRequestId()}`;
+                    this._rememberToolSignature(toolUseId, part.functionCall, part, null, streamState);
                     events.push({
                         content_block: {
                             id: toolUseId,
@@ -3054,8 +3056,10 @@ class FormatConverter {
                     });
                 } else if (part.functionCall) {
                     hasToolUse = true;
+                    const toolUseId = part.functionCall.id || `toolu_${this._generateRequestId()}`;
+                    this._rememberToolSignature(toolUseId, part.functionCall, part);
                     content.push({
-                        id: `toolu_${this._generateRequestId()}`,
+                        id: toolUseId,
                         input: part.functionCall.args || {},
                         name: part.functionCall.name,
                         type: "tool_use",
@@ -3259,9 +3263,15 @@ class FormatConverter {
                         const functionCallPart = {
                             functionCall: {
                                 args: safeParseJSON(rawArgs, "unparsed_arguments"),
+                                ...(item.call_id ? { id: item.call_id } : {}),
                                 name: item.name,
                             },
-                            thoughtSignature: FormatConverter.DUMMY_THOUGHT_SIGNATURE,
+                            thoughtSignature: this.thoughtSignatures.restore(
+                                item.call_id,
+                                item.name,
+                                rawArgs,
+                                signatureFrom(item)
+                            ),
                         };
                         googleContents.push({
                             parts: [functionCallPart],
@@ -3471,9 +3481,10 @@ class FormatConverter {
                         declaration.description = funcDef.description;
                     }
 
-                    if (funcDef.parameters) {
+                    if (funcDef.parameters !== undefined) {
                         declaration.parameters = this._convertSchemaToGemini(funcDef.parameters);
                     }
+                    if (funcDef.strict === true) declaration.strict = true;
                     functionDeclarations.push(declaration);
                 }
             }

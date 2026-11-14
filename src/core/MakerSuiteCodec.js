@@ -5,6 +5,8 @@
  * Positions below are observed protocol fields, not a public Google API contract.
  */
 const { encodeSchema } = require("./PlaygroundSchema");
+const { encodeToolSchema } = require("./ToolSchema");
+const { signatureFrom } = require("./ThoughtSignatureStore");
 const { promptBlocked } = require("../utils/UpstreamBlock");
 const BLOCK = { 1: "SAFETY", 2: "OTHER", 3: "BLOCKLIST", 4: "PROHIBITED_CONTENT", 5: "IMAGE_SAFETY" };
 const PROB = { 0: "HARM_PROBABILITY_UNSPECIFIED", 1: "NEGLIGIBLE", 2: "LOW", 3: "MEDIUM", 4: "HIGH" };
@@ -58,7 +60,6 @@ function decStruct(st) {
     if (!Array.isArray(st) || !Array.isArray(st[0])) return fail("Invalid MakerSuite Struct", 502);
     return Object.fromEntries(st[0].map(([k, v]) => [k, decVal(v)]));
 }
-const encSchema = encodeSchema;
 function encTools(tools = []) {
     const decls = [],
         builtins = [];
@@ -98,11 +99,15 @@ function encTools(tools = []) {
             builtins.push([null, null, null, [range, types.imageSearch ? [types.webSearch ? [] : null, []] : [[]]]]);
         }
         for (const d of t.functionDeclarations || t.function_declarations || []) {
-            fields(d, ["name", "description", "parameters", "parametersJsonSchema"], "functionDeclaration");
+            fields(
+                d,
+                ["name", "description", "parameters", "parametersJsonSchema", "parameters_json_schema", "strict"],
+                "functionDeclaration"
+            );
             if (!d.name) fail("Function declaration requires a name");
-            const x = [d.name, d.description || null];
-            const ps = d.parameters || d.parametersJsonSchema;
-            if (ps) x[2] = encSchema(ps);
+            const ps = d.parameters ?? d.parametersJsonSchema ?? d.parameters_json_schema;
+            const encoded = encodeToolSchema(ps, d.description || "", d.strict === true);
+            const x = [d.name, encoded.description || null, encoded.parameters];
             decls.push(x);
         }
     }
@@ -178,9 +183,8 @@ function toPart(p) {
         a[11] = [fr.name, encStruct(fr.response || {}), fr.id || null];
     } else if (!(p.thoughtSignature || p.thought_signature)) return fail("Unsupported or empty MakerSuite part");
     if (p.thought != null) a[12] = !!p.thought;
-    const signature = p.thoughtSignature || p.thought_signature;
-    if (fc && (!signature || signature === "context_engineering_is_the_way_to_go"))
-        a[14] = "skip_thought_signature_validator";
+    const signature = signatureFrom(p);
+    if (fc && !signature) a[14] = "skip_thought_signature_validator";
     else if (signature) a[14] = signature;
     return fill(a);
 }

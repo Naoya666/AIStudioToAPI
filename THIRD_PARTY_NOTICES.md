@@ -108,3 +108,12 @@ The engine build also collects LICENSE/COPYING/NOTICE files from the exact locke
 Go module graph and native Zig/musl/libc++ components into
 `local-engine/bin/third-party-licenses`; the Docker image retains these at
 `/app/local-engine/third-party-licenses`.
+
+Tool schema compatibility and thought-signature recovery (2026-11-14):
+
+- Mag1cFall/AIStudio2API, revision ef6fbbce7eda4e00d27493e0df7915dbf2d8c896,
+  https://github.com/Mag1cFall/AIStudio2API . Adapted tool-schema projection and
+  process-local signature recovery from internal/aistudio/{tools,schema}.go and
+  internal/api/thoughtsig.go in src/core/ToolSchema.js and
+  src/core/ThoughtSignatureStore.js. MIT license reproduced above. The JavaScript
+  adapters also cover Responses and Anthropic histories and delayed stream signatures.

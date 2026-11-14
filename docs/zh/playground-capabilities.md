@@ -7,6 +7,8 @@
 - WAA proof 串行执行，fetch 仍可并行。执行中的 proof 被取消或超时且尚未结算时，停用该文档，并通过现有连接恢复流程导航、重新初始化。不会直接释放输入框锁后启动新 proof。取消尚在排队的 proof 不影响正常请求。
 - JSON 与 SSE 错误保留上游消息、details 与 HTTP 状态；Gemini 状态映射包含 RESOURCE_EXHAUSTED、PERMISSION_DENIED、UNAUTHENTICATED 等。HTTP 200 内嵌 RPC 错误和正文后的尾部错误仍作为失败处理。正文输出后禁止重放。
 - 支持 googleSearch、urlContext、codeExecution，包含执行代码、执行结果、搜索 grounding 的解码。Gemini 原生保留结构化字段；OpenAI、Responses 和 Anthropic 将执行结果与来源投影为可读文本。混合内置工具与函数声明支持服务端工具步骤。
+- 函数工具 Schema 支持本地引用、联合／可空类型、布尔 Schema、非字符串 enum／const 等兼容转换。Playground 载体保留可表达的参数层级与类型，无法直接表达的约束会将完整原始 Schema 附在函数描述中供模型遵循；这部分不保证上游严格验证。递归和外部引用不会发起远程加载，保留在完整 Schema 中。
+- Chat、Responses 和 Anthropic 工具调用会按调用 ID、函数名及规范化参数恢复真实思考签名，客户端明确回传的真实签名优先。签名最多缓存 4096 条，仅在当前进程中保留，重启后清空；没有可用签名时使用兼容占位标记。Chat 响应同时通过 `extra_content.google.thought_signature` 返回已收到的真实签名。
 - 支持 responseSchema / responseJsonSchema 的 Playground Schema 编码、局部引用、可空类型和可表达的组合／数值／长度等约束。无法表达的约束明确返回 400，不使用提示词冒充严格约束。强制或指定函数调用仍降级 AUTO；NONE 通过不发送工具实现。
 
 ## 文件
