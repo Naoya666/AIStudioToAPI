@@ -7,12 +7,13 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 const { createServer } = require("vite");
 const { ConfigurationService } = require("../src/config/ConfigurationService");
+const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath();
 
 // Synthetic data only: screenshots must never contain live account credentials.
 test(
     "admin routes, editor guards, log following and responsive navigation",
     {
-        skip: !fs.existsSync(chromium.executablePath()),
+        skip: !fs.existsSync(executablePath),
         timeout: 90000,
     },
     async t => {
@@ -31,7 +32,7 @@ test(
         });
         await server.listen();
         t.after(() => server.close());
-        const browser = await chromium.launch({ args: ["--no-sandbox"] });
+        const browser = await chromium.launch({ args: ["--no-sandbox"], executablePath });
         t.after(() => browser.close());
         const page = await browser.newPage({ viewport: { height: 1000, width: 1440 } });
         page.setDefaultTimeout(6000);
@@ -65,6 +66,15 @@ test(
                 data = { status: { accountDetails: [], currentAuthIndex: -1, schedulingMode: "legacy" } };
                 if (failCore) status = 503;
             } else if (url.pathname === "/api/configuration") data = service.snapshot();
+            else if (url.pathname === "/api/model-catalog")
+                data = {
+                    antiDefault: service.running.antiTruncationDefault,
+                    antiEnabled: service.running.antiTruncationEnabled,
+                    estimates: {},
+                    permissions: service.running.scheduler.modelAllowlist,
+                    rows: service.running.modelList.map(row => ({ ...row, enabled: row.enabled !== false })),
+                    version: service.document.version,
+                };
             else if (url.pathname.endsWith("/login-queue"))
                 data = { attemptTimeout: 180000, autoRecovery: true, concurrency: 1, configurationVersion: 1 };
             else if (url.pathname.endsWith("/benefit-checks")) data = { tasks: [] };
@@ -133,6 +143,7 @@ test(
             ["/usage", "Usage Statistics"],
             ["/logs", "Real-time Logs"],
             ["/settings", "Settings"],
+            ["/models", "Models"],
         ];
         for (const [url] of routes) {
             await page.goto(base + url);
@@ -143,11 +154,13 @@ test(
             assert.equal(await page.getByRole("heading", { level: 1 }).count(), 1);
         }
         await navigate("Overview");
-        await navigate("Settings");
-        await page.waitForURL("**/settings");
-        // Independently staged model visibility must participate in the same draft guard.
-        await page.locator(".model-settings-collapse > summary").click();
-        const visibility = page.getByRole("checkbox", { name: / 是否启用$/ }).first();
+        await navigate("Models");
+        await page.waitForURL("**/models");
+        // Model enablement now lives on the model page and must retain its draft guard.
+        const visibility = page
+            .locator(".models-page")
+            .getByRole("checkbox", { name: / 启用$/ })
+            .first();
         await visibility.uncheck();
         const hasUnloadGuard = () =>
             page.evaluate(() => {
@@ -159,15 +172,15 @@ test(
         await navigate("Overview");
         await answerDraft("Continue editing");
         assert.equal(await visibility.isChecked(), false);
-        await page.getByRole("button", { name: "放弃启用状态修改" }).click();
+        await page.getByRole("button", { name: "放弃草稿" }).click();
         assert.equal(await hasUnloadGuard(), false);
         await visibility.uncheck();
         await navigate("Overview");
         await answerDraft("Discard and leave");
         await page.waitForURL(base + "/");
-        await navigate("Settings");
-        await page.locator(".model-settings-collapse > summary").click();
+        await navigate("Models");
         assert.equal(await visibility.isChecked(), true);
+        await navigate("Settings");
         const thinking = page.locator("#config-FORCE_THINKING");
         await thinking.locator("..").click();
         await navigate("Overview");
@@ -337,7 +350,7 @@ test("new admin entry paths serve the SPA through the existing authentication mi
 test(
     "service failures stay in the workspace; expired sessions retain native login submission",
     {
-        skip: !fs.existsSync(chromium.executablePath()),
+        skip: !fs.existsSync(executablePath),
         timeout: 30000,
     },
     async t => {
@@ -348,7 +361,7 @@ test(
         });
         await server.listen();
         t.after(() => server.close());
-        const browser = await chromium.launch({ args: ["--no-sandbox"] });
+        const browser = await chromium.launch({ args: ["--no-sandbox"], executablePath });
         t.after(() => browser.close());
         const base = `http://127.0.0.1:${server.httpServer.address().port}`;
         for (const [status, passwordMode] of [
@@ -400,7 +413,7 @@ test(
 test(
     "bundled Chinese survives stale or unavailable locale files; settings and disclosures share the admin layout",
     {
-        skip: !fs.existsSync(chromium.executablePath()),
+        skip: !fs.existsSync(executablePath),
         timeout: 45000,
     },
     async t => {
@@ -410,6 +423,8 @@ test(
             { logger: { debug() {}, error() {}, info() {}, warn() {} }, ready: true },
             { env: {}, file: path.join(directory, "config.json") }
         );
+        // Keep a real settings disclosure available after model controls moved to /models.
+        service.save({ changes: { PUBLIC_DASHBOARD_ENABLED: true }, version: service.document.version });
         const server = await createServer({
             configFile: path.resolve(__dirname, "../vite.config.js"),
             logLevel: "error",
@@ -417,7 +432,7 @@ test(
         });
         await server.listen();
         t.after(() => server.close());
-        const browser = await chromium.launch({ args: ["--no-sandbox"] });
+        const browser = await chromium.launch({ args: ["--no-sandbox"], executablePath });
         t.after(() => browser.close());
         for (const available of [true, false]) {
             const page = await browser.newPage({ viewport: { height: 1000, width: 1440 } });
@@ -453,7 +468,7 @@ test(
             assert.equal(await firstLink.evaluate(el => getComputedStyle(el).textDecorationLine), "none");
             await secondLink.click();
             assert.equal(new URL(page.url()).hash, "#configuration-group-1");
-            const details = panel.locator(".model-settings-collapse");
+            const details = panel.locator("details").filter({ has: page.getByText("查看待重启变更", { exact: true }) });
             const summary = details.locator("summary");
             await summary.scrollIntoViewIfNeeded();
             assert.equal(await summary.evaluate(el => getComputedStyle(el).listStyleType), "none");
