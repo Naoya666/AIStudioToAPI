@@ -8,23 +8,6 @@ const FormatConverter = require("./FormatConverter");
 const { upstreamError } = require("../utils/UpstreamError");
 const { promptBlocked } = require("../utils/UpstreamBlock");
 const MAX_BYTES = 10 * 1024 * 1024;
-const TEXT_MODELS = Object.freeze([
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash-lite",
-    "gemini-3-flash-preview",
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
-    "gemini-4-argon",
-    "gemini-4-carbon",
-    "gemini-4-hydrogen",
-]);
 const error = (code, message, status = 400) => Object.assign(new Error(message), { code, status });
 
 function identity(value) {
@@ -43,6 +26,7 @@ function identity(value) {
 
 function resolve(body, config, protocol = "openai", modelName = body.model || "gemini-2.5-flash-lite") {
     const id = identity(modelName);
+    const capabilities = require("./ModelCatalog").features(config.modelList, modelName);
     if (body.anti_truncation !== undefined && typeof body.anti_truncation !== "boolean")
         throw error("invalid_anti_truncation", "anti_truncation must be a boolean");
     const source = body.anti_truncation !== undefined ? "request" : id.prefixed ? "prefix" : "default";
@@ -54,31 +38,33 @@ function resolve(body, config, protocol = "openai", modelName = body.model || "g
     };
     if (!enabled) return { ...id, enabled: false, source };
     if (config.antiTruncationEnabled === false) return skip("anti_truncation_disabled");
-    if (require("./codeAssistant/ModelIdentity").isBuild(modelName)) {
-        if (protocol !== "openai") return skip("anti_truncation_unsupported_protocol");
+    if (!capabilities.antiTruncation) return skip("anti_truncation_unsupported_model");
+    if (require("./codeAssistant/ModelIdentity").isBuild(modelName))
         require("./codeAssistant/ModelIdentity").parse(modelName);
-        return { ...id, enabled: true, source };
-    }
     if (protocol !== "openai") return skip("anti_truncation_unsupported_protocol");
     const autoTools = (config.pgToolCallingMode || "auto_fallback") === "auto_fallback";
     const choice = autoTools ? undefined : (body.tool_choice ?? body.function_call);
-    if (choice && typeof choice === "object" && (choice.function?.name || choice.name))
-        return { ...id, enabled: false, reason: "forced_real_tool", source };
-    // Input content uses the normal converter, including non-text parts. New
-    // models and hosted-tool combinations still need capability verification.
-    if (!TEXT_MODELS.includes(id.realModel)) return skip("anti_truncation_unsupported_model");
     if (
-        id.forceCodeExecution ||
-        id.forceWebSearch ||
-        config.forceCodeExecution ||
-        config.forceWebSearch ||
-        config.forceUrlContext ||
-        body.response_format ||
-        body.audio ||
-        body.modalities?.some(mode => mode !== "text") ||
-        (!autoTools && Array.isArray(body.tools) && body.tools.some(tool => tool?.type !== "function")) ||
-        (!autoTools && body.functions) ||
-        (choice !== undefined && !["auto", "none", "required"].includes(choice))
+        !capabilities.antiCombinations &&
+        choice &&
+        typeof choice === "object" &&
+        (choice.function?.name || choice.name)
+    )
+        return { ...id, enabled: false, reason: "forced_real_tool", source };
+    // Model and combination admission is entirely administrator controlled.
+    if (
+        !capabilities.antiCombinations &&
+        (id.forceCodeExecution ||
+            id.forceWebSearch ||
+            config.forceCodeExecution ||
+            config.forceWebSearch ||
+            config.forceUrlContext ||
+            body.response_format ||
+            body.audio ||
+            body.modalities?.some(mode => mode !== "text") ||
+            (!autoTools && Array.isArray(body.tools) && body.tools.some(tool => tool?.type !== "function")) ||
+            (!autoTools && body.functions) ||
+            (choice !== undefined && !["auto", "none", "required"].includes(choice)))
     )
         return skip("anti_truncation_unsupported_combination");
     return { ...id, enabled: true, source };
@@ -398,5 +384,4 @@ module.exports = {
     MAX_BYTES,
     parseResponse,
     resolve,
-    TEXT_MODELS,
 };

@@ -11,7 +11,13 @@ function parse(name) {
     const stream = FormatConverter.parseModelStreamingModeSuffix(tools.cleanModelName);
     const thinking = FormatConverter.parseModelThinkingLevel(stream.cleanModelName);
     const match = /^(build|build-st)\/(.+)$/.exec(thinking.cleanModelName);
-    if (!match || !BASES.includes(match[2]) || (thinking.thinkingLevel && !LEVELS[thinking.thinkingLevel]))
+    if (
+        !match ||
+        match[2].startsWith("anti-") ||
+        /-(?:real|fake|early)$/i.test(match[2]) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(match[2]) ||
+        (thinking.thinkingLevel && !LEVELS[thinking.thinkingLevel])
+    )
         throw failure("Build 模型或思考档位不支持");
     if (tools.forceCodeExecution || tools.forceWebSearch) throw failure("Build 不支持 Playground 内置工具后缀");
     return {
@@ -25,9 +31,9 @@ function parse(name) {
         upstream: match[2],
     };
 }
-function models({ anti = true } = {}) {
+function models({ anti = true, bases = BASES } = {}) {
     const names = ["build/", "build-st/"].flatMap(p =>
-        BASES.flatMap(b => [p + b, ...Object.keys(LEVELS).map(l => p + b + "-" + l.toLowerCase())])
+        bases.flatMap(b => [p + b, ...Object.keys(LEVELS).map(l => p + b + "-" + l.toLowerCase())])
     );
     return anti ? [...names, ...names.map(name => "anti-" + name)] : names;
 }

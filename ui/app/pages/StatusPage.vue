@@ -559,6 +559,8 @@
             />
         </div>
 
+        <ModelsPage v-if="activeTab === 'models'" class="view-container" />
+
         <!-- SETTINGS VIEW -->
         <div v-if="activeTab === 'settings'" class="view-container settings-view">
             <PageHeader :title="t('settings')" :description="t('adminSettingsDescription')" />
@@ -616,6 +618,7 @@ import EnvVarTooltip from "../components/EnvVarTooltip.vue";
 import RuntimeStatus from "../components/RuntimeStatus.vue";
 import SchedulerStatus from "../components/SchedulerStatus.vue";
 import ProxyPoolPanel from "../components/proxy/ProxyPoolPanel.vue";
+import ModelsPage from "./ModelsPage.vue";
 import AccountsPage from "./AccountsPage.vue";
 import UnifiedConfiguration from "../components/UnifiedConfiguration.vue";
 
@@ -633,6 +636,7 @@ const tabPaths = {
     accounts: "/accounts",
     home: "/",
     logs: "/logs",
+    models: "/models",
     "proxy-pool": "/proxy-pool",
     settings: "/settings",
     stats: "/usage",

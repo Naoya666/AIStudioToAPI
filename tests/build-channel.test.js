@@ -85,9 +85,9 @@ test("model identity keeps requested aliases and separates channels while ST sha
                 assert.equal(id.anti, true);
                 assert.equal(normalizeModelName(name), id.canonical);
             }
+    assert.equal(Identity.parse("build/new-model").upstream, "new-model");
     assert.notEqual(normalizeModelName("gemini-3.8-flash-high-real"), "build/gemini-3.8-flash");
     for (const name of [
-        "build/gemini-2.5-flash",
         "build/gemini-3.8-flash-minimal",
         "build/anti-gemini-3.8-flash",
         "build/gemini-3.8-flash-real-high",

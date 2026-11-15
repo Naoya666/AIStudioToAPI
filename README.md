@@ -156,7 +156,7 @@ curl http://localhost:7860/v1/chat/completions \
 
 账号可设置 Free、Pro、Ultra 5x 或 Ultra 20x 层级，也可跟随当前会话的成功权益检测。手动层级影响本地准入和额度估算，实际调用仍受 Google 权限与限流约束。
 
-模型权限在控制台层级白名单中管理；新增模型后应检查是否已授权。用量和额度展示属于本地统计或估算，不是实时上游余额。调度每日冷却重置固定使用 `America/Los_Angeles` 时区，不随 `TZ` 改变。
+模型目录、功能边界、层级权限、预估额度和抗截断策略统一在控制台 `/models` 管理。新增模型默认开放现有通用功能，保存后热生效；账号层级权限独立授权。操作说明见 [模型管理](docs/zh/model-management.md)。用量和额度展示属于本地统计或估算，不是实时上游余额。调度每日冷却重置固定使用 `America/Los_Angeles` 时区，不随 `TZ` 改变。
 
 详见 [模型调度](docs/zh/model-aware-scheduling.md)、[层级与权益](docs/zh/account-tiers-and-argon-eligibility-design.md)、[模型白名单](docs/zh/account-tier-model-allowlist-design.md) 和 [Token 统计口径](docs/zh/token-statistics.md)。
 

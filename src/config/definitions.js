@@ -1,6 +1,17 @@
 const { MAX_GENERATION_TIMEOUT_MS } = require("./TransportConfig");
 
 module.exports = [
+    {
+        application: "hot",
+        description: "模型目录、管理员功能边界和分层额度；新增模型默认开放通用功能。",
+        group: "模型管理",
+        hidden: true,
+        label: "模型目录",
+        mode: "all",
+        name: "MODEL_CATALOG",
+        path: "modelList",
+        type: "catalog",
+    },
     ...[
         {
             description: "仅 Camoufox 请求浏览器生效。维护时拒绝新 API 请求，等待在途请求结束；登录队列继续运行。",

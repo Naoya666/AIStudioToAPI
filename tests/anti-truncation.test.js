@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { Attempt, decode, identity, inject, resolve, MAX_BYTES, TEXT_MODELS } = require("../src/core/AntiTruncation");
+const { Attempt, decode, identity, inject, resolve, MAX_BYTES } = require("../src/core/AntiTruncation");
 const FormatConverter = require("../src/core/FormatConverter");
 const logger = { debug() {}, error() {}, info() {}, warn() {} };
 const converter = new FormatConverter(logger, { config: {} });
@@ -39,23 +39,19 @@ test("policy precedence, canonical identity, disabled switch and protocol admiss
     assert.equal(identity("anti-Gemini-2.5-Flash-real").realModel, "Gemini-2.5-Flash");
 });
 
-test("capability matrix excludes non-text output, hosted tools and unknown models", () => {
-    for (const body of [
-        { model: "anti-gemini-2.5-flash-preview-tts" },
-        { model: `anti-${model}-search` },
-        { model: `anti-${model}`, tools: [{ type: "google_search" }] },
-        { modalities: ["audio"], model: `anti-${model}` },
-        { audio: { format: "wav", voice: "alloy" }, model: `anti-${model}` },
-        { model: `anti-${model}`, response_format: { type: "json_object" } },
-    ])
-        assert.throws(() => resolve(body, { pgToolCallingMode: "strict" }), { status: 400 });
-    assert.equal(
-        resolve(
-            { model: `anti-${model}`, tool_choice: { function: { name: "weather" }, type: "function" } },
-            { pgToolCallingMode: "strict" }
-        ).reason,
-        "forced_real_tool"
-    );
+test("new models and combinations are open by default; administrator overrides restrict admission", () => {
+    const name = "new-model";
+    const body = {
+        model: `anti-${name}`,
+        response_format: { type: "json_object" },
+        tools: [{ type: "google_search" }],
+    };
+    assert.equal(resolve(body, {}).enabled, true);
+    const config = { modelList: [{ features: { antiCombinations: false }, name }] };
+    assert.throws(() => resolve(body, config), { status: 400 });
+    config.modelList[0].features = { antiTruncation: false };
+    assert.throws(() => resolve(body, config), { code: "anti_truncation_unsupported_model" });
+    assert.equal(resolve({ model: name }, { ...config, antiTruncationDefault: "prefer" }).enabled, false);
 });
 
 test("non-text input does not disable explicit anti or default prefer", () => {
@@ -219,8 +215,8 @@ test("transport assembler handles every JSON/Unicode/escape boundary, mixed usag
     });
 });
 
-test("catalog text allowlist supports modifier parsing and Gemini injection in isolated conversion", async () => {
-    for (const name of TEXT_MODELS) {
+test("dynamic catalog supports modifier parsing and Gemini injection in isolated conversion", async () => {
+    for (const name of ["gemini-2.5-flash", "gemini-4-carbon", "new-model-without-code-entry"]) {
         const policy = resolve({ model: `anti-${name}-minimal-real` }, {});
         assert.equal(policy.enabled, true);
         assert.equal(policy.realModel, name);

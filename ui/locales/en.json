@@ -245,6 +245,7 @@
     "logRetention": "Log retention",
     "maxRetries": "Error Retries",
     "maxRetriesPerRequest": "Maximum retries",
+    "modelManagement": "Models",
     "modelUsage": "Model Usage",
     "modelUsageBreakdown": "Model Usage Breakdown",
     "networkError": "Network connection failed. Please check your network settings.",

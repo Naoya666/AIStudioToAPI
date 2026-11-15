@@ -245,6 +245,7 @@
     "logRetention": "日志保留",
     "maxRetries": "错误重试次数",
     "maxRetriesPerRequest": "最多重试次数",
+    "modelManagement": "模型管理",
     "modelUsage": "模型使用",
     "modelUsageBreakdown": "模型使用分布",
     "networkError": "网络连接失败，请检查您的网络设置。",

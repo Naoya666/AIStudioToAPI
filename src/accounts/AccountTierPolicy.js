@@ -23,11 +23,13 @@ function resolveTier(account = {}) {
         stale: !!observation && !current,
     };
 }
-function modelQuota(model, account = {}) {
+function modelQuota(model, account = {}, catalog) {
     const normalized = String(model || "")
         .replace(/^models\//, "")
         .toLowerCase();
     const { effectiveTier, argonEligible } = resolveTier(account);
+    const custom = catalog && require("../core/ModelCatalog").entry(catalog, model)?.quotas?.[effectiveTier || "free"];
+    if (custom && Object.hasOwn(custom, "requests")) return custom.requests;
     const budgets = require("./QuotaPolicy").dailyBudgets(normalized, effectiveTier || "free");
     if (budgets.source !== "legacy_request_estimate") return budgets.requests;
     if (/^(?:build|build-st)\//.test(normalized)) return null;

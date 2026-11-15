@@ -31,6 +31,7 @@ defineEmits(["navigate", "language", "logout"]);
 const items = [
     { label: "adminOverview", tab: "home" },
     { label: "accountManagement", tab: "accounts" },
+    { label: "modelManagement", tab: "models" },
     { label: "adminProxyPool", tab: "proxy-pool" },
     { label: "usageStats", tab: "stats" },
     { label: "realtimeLogs", tab: "logs" },

@@ -43,6 +43,66 @@ class ConfigurationRoutes {
                 quota: { remaining: null, reset: null },
             })
         );
+        route("get", "/api/model-catalog", (req, res) => {
+            const catalog = require("../core/ModelCatalog");
+            const identity = require("../core/codeAssistant/ModelIdentity");
+            const hidden = this.system.scheduler?.hiddenModels || new Set();
+            const rows = service.running.modelList
+                .filter(row => {
+                    const id = row.name.replace(/^models\//, "");
+                    return !identity.isBuild(id) || identity.parse(id).canonical === id;
+                })
+                .map(row => ({
+                    ...row,
+                    enabled: row.enabled !== false && !hidden.has(row.name.replace(/^models\//, "")),
+                }));
+            res.json({
+                antiDefault: service.running.antiTruncationDefault,
+                antiEnabled: service.running.antiTruncationEnabled,
+                estimates: Object.fromEntries(
+                    rows.map(row => [
+                        row.name,
+                        Object.fromEntries(
+                            catalog.TIERS.map(tier => {
+                                const budget = require("../accounts/QuotaPolicy").dailyBudgets(
+                                    row.name.replace(/^models\//, ""),
+                                    tier,
+                                    {
+                                        freeBuildEstimate: service.running.scheduler.buildFreeDailyTokenEstimate,
+                                    }
+                                );
+                                return [
+                                    tier,
+                                    {
+                                        ...budget,
+                                        requests: require("../accounts/AccountTierPolicy").modelQuota(
+                                            row.name.replace(/^models\//, ""),
+                                            { manualTier: tier }
+                                        ),
+                                    },
+                                ];
+                            })
+                        ),
+                    ])
+                ),
+                features: catalog.FEATURES,
+                permissions: service.running.scheduler.modelAllowlist,
+                rows,
+                version: service.document.version,
+            });
+        });
+        route("patch", "/api/model-catalog", (req, res) => {
+            const result = service.save({
+                changes: {
+                    ANTI_TRUNCATION_DEFAULT: req.body?.antiDefault,
+                    ANTI_TRUNCATION_ENABLED: req.body?.antiEnabled,
+                    MODEL_CATALOG: req.body?.rows,
+                    MODEL_TIER_ALLOWLIST: req.body?.permissions,
+                },
+                version: req.body?.version,
+            });
+            res.json({ applied: result.applied, version: result.version });
+        });
         route("get", "/api/configuration", (req, res) => res.json(service.snapshot()));
         route("post", "/api/configuration/browser-restart/retry", (req, res) => {
             this.system.browserRestartSchedule.retry();

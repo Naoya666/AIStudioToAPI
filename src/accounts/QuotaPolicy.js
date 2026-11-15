@@ -6,7 +6,14 @@ const FLASH = new Set([
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
 ]);
-function dailyBudgets(model, tier = "free", { freeBuildEstimate = 0 } = {}) {
+function dailyBudgets(model, tier = "free", { freeBuildEstimate = 0, catalog } = {}) {
+    const override = catalog && require("../core/ModelCatalog").entry(catalog, model)?.quotas?.[tier];
+    if (override)
+        return {
+            ...dailyBudgets(model, tier, { freeBuildEstimate }),
+            ...override,
+            source: override.source || "administrator",
+        };
     const build = model.startsWith("build/");
     const base = {
         requests: null,

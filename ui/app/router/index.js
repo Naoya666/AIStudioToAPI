@@ -12,7 +12,7 @@ import AuthPage from '../pages/AuthPage.vue';
 import NotFound from '../pages/NotFound.vue';
 
 const routes = [
-    ...['usage', 'logs', 'settings'].map(name => ({ component: StatusPage, name, path: `/${name}` })),
+    ...['usage', 'logs', 'settings', 'models'].map(name => ({ component: StatusPage, name, path: `/${name}` })),
     { component: StatusPage, name: 'proxy-pool', path: '/proxy-pool' },
     {
         component: StatusPage,

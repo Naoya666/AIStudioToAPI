@@ -1,5 +1,6 @@
 <template>
     <section class="configuration-panel">
+        <p>模型目录、权限矩阵、预估额度和抗截断策略已移至 <RouterLink to="/models">模型管理</RouterLink>。</p>
         <div class="configuration-actions">
             <ElButton type="primary" :disabled="busy || conflict || !dirtyNames.length" @click="save">保存</ElButton>
             <ElButton :disabled="busy || !snapshot" @click="restart">重启</ElButton>
@@ -324,6 +325,7 @@ const dirtyNames = computed(
 const groups = computed(() => {
     const result = new Map();
     for (const d of snapshot.value?.definitions || []) {
+        if (["MODEL_TIER_ALLOWLIST", "ANTI_TRUNCATION_ENABLED", "ANTI_TRUNCATION_DEFAULT"].includes(d.name)) continue;
         const mode = draft.ACCOUNT_ROTATION_STRATEGY === "legacy" ? "legacy" : "model";
         if (d.mode !== "all" && d.mode !== mode) continue;
         if (d.name === "STREAM_KEEPALIVE_INTERVAL_MS" && !draft.STREAM_EARLY_HEADERS) continue;

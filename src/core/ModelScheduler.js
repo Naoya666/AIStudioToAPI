@@ -73,8 +73,8 @@ function calculateNextPacificResetAt(now, configuredTime, skipDate = null, stric
 
 const { normalizeModelName } = require("./ModelName");
 
-function getModelDailyQuota(model, account = {}) {
-    return modelQuota(model, account);
+function getModelDailyQuota(model, account = {}, catalog) {
+    return modelQuota(model, account, catalog);
 }
 
 function isValidDateKey(value) {
@@ -253,6 +253,13 @@ class ModelScheduler {
             upstream_error: 0,
         };
         this.load();
+        // Explicit managed visibility wins over an older scheduler-state write after a crash.
+        for (const row of config.modelCatalog || []) {
+            if (typeof row.enabled !== "boolean") continue;
+            const id = normalizeModelName(row.name.replace(/^models\//, ""));
+            if (row.enabled) this.hiddenModels.delete(id);
+            else this.hiddenModels.add(id);
+        }
         this._scheduleCooldownWake();
         if (this.config.dailyResetEnabled !== false) this._scheduleDailyReset();
     }
@@ -349,7 +356,12 @@ class ModelScheduler {
     getVisibleModels() {
         if (this._roundVisibleModels) return this._roundVisibleModels;
         const models = new Set(
-            [...this._snapshotModels()].filter(model => !model.startsWith("__") && !this.hiddenModels.has(model))
+            [...this._snapshotModels()].filter(
+                model =>
+                    !model.startsWith("__") &&
+                    !this.hiddenModels.has(model) &&
+                    require("./ModelCatalog").entry(this.config.modelCatalog, model)?.enabled !== false
+            )
         );
         if (this._draining || this._snapshotViewDepth) this._roundVisibleModels = models;
         return models;
@@ -514,6 +526,11 @@ class ModelScheduler {
     isTierAllowed(index, model) {
         if (
             model !== "__files__" &&
+            require("./ModelCatalog").entry(this.config.modelCatalog, model)?.enabled === false
+        )
+            return false;
+        if (
+            model !== "__files__" &&
             this.config.registeredModels &&
             !this.config.registeredModels.includes(normalizeModelName(model))
         )
@@ -552,7 +569,11 @@ class ModelScheduler {
             !this.config.registeredModels.includes(normalized)
         )
             throw Object.assign(schedulerError(`Unknown model ${normalized}`, 404), { code: "UNKNOWN_MODEL" });
-        if (this.hiddenModels.has(normalized))
+        if (
+            this.hiddenModels.has(normalized) ||
+            (normalized !== "__files__" &&
+                require("./ModelCatalog").entry(this.config.modelCatalog, normalized)?.enabled === false)
+        )
             throw Object.assign(schedulerError(`Model ${normalized} is disabled`, 403), { code: "MODEL_DISABLED" });
         return normalized;
     }
@@ -1127,7 +1148,7 @@ class ModelScheduler {
             const policy = dailyBudgets(
                 model,
                 resolveTier(accountForIndex(this.authSource, index)).effectiveTier || "free",
-                { freeBuildEstimate: this.config.buildFreeDailyTokenEstimate || 0 }
+                { catalog: this.config.modelCatalog, freeBuildEstimate: this.config.buildFreeDailyTokenEstimate || 0 }
             );
             const slots = Object.entries(account?.models || {})
                 .filter(([name]) => name === model)
@@ -1741,8 +1762,19 @@ class ModelScheduler {
         for (const index of indices) this.account(index);
         const models = this._visibleSnapshotModels();
         const quotaModels = [...models]
-            .map(model => ({ limit: getModelDailyQuota(model), model }))
-            .filter(entry => entry.limit !== null)
+            .map(model => ({ limit: getModelDailyQuota(model, {}, this.config.modelCatalog), model }))
+            .filter(
+                entry =>
+                    entry.limit !== null ||
+                    indices.some(
+                        index =>
+                            getModelDailyQuota(
+                                entry.model,
+                                accountForIndex(this.authSource, index),
+                                this.config.modelCatalog
+                            ) !== null
+                    )
+            )
             .sort((a, b) => a.model.localeCompare(b.model));
         const quotaAccounts = indices.map(index => this.account(index));
         const quotaByModel = quotaModels.map(({ model }) => {
@@ -1753,7 +1785,11 @@ class ModelScheduler {
             const limits = new Set();
             let unknownLimits = 0;
             for (const account of quotaAccounts) {
-                const limit = getModelDailyQuota(model, accountForIndex(this.authSource, account.index));
+                const limit = getModelDailyQuota(
+                    model,
+                    accountForIndex(this.authSource, account.index),
+                    this.config.modelCatalog
+                );
                 const slot = account.models[model];
                 const requests =
                     slot?.daily_request_date === this.getPacificDateKey(now) ? slot.daily_request_count : 0;
@@ -2029,7 +2065,11 @@ class ModelScheduler {
                     estimatedRemaining: accountSlots.some(
                         item =>
                             this.isQuotaEligible(item.account, model) &&
-                            getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) === null
+                            getModelDailyQuota(
+                                model,
+                                accountForIndex(this.authSource, item.index),
+                                this.config.modelCatalog
+                            ) === null
                     )
                         ? null
                         : accountSlots.reduce(
@@ -2038,8 +2078,11 @@ class ModelScheduler {
                                   (this.isQuotaEligible(item.account, model)
                                       ? Math.max(
                                             0,
-                                            getModelDailyQuota(model, accountForIndex(this.authSource, item.index)) -
-                                                dailyRequests(item.slot)
+                                            getModelDailyQuota(
+                                                model,
+                                                accountForIndex(this.authSource, item.index),
+                                                this.config.modelCatalog
+                                            ) - dailyRequests(item.slot)
                                         )
                                       : 0),
                               0
@@ -2086,7 +2129,12 @@ class ModelScheduler {
             accounts: requested.map(index => {
                 const account = this.account(index);
                 const models = Object.keys(account.models)
-                    .filter(model => !model.startsWith("__") && !this.hiddenModels.has(model))
+                    .filter(
+                        model =>
+                            !model.startsWith("__") &&
+                            !this.hiddenModels.has(model) &&
+                            require("./ModelCatalog").entry(this.config.modelCatalog, model)?.enabled !== false
+                    )
                     .sort()
                     .map(model => {
                         const slot = this.slot(account, model, now);

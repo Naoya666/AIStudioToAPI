@@ -22,6 +22,7 @@ const paths = {
     logout: "M8 3H3v14h5m4-11 4 4-4 4m-5-4h10",
     logs: "M12 2H4v16h12V6l-4-4v4h4M7 10h6m-6 4h6",
     menu: "M3 5h14M3 10h14M3 15h14",
+    models: "M3 3h14v14H3ZM3 8h14M8 3v14M3 12h14",
     "proxy-pool":
         "M6 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm12 0a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm-6 12a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM6 4h8M5 6l4 8m6-8-4 8",
     settings: "M3 5h14M3 10h14M3 15h14M7 3v4m6 1v4m-6 1v4",

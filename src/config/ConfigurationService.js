@@ -138,6 +138,9 @@ class ConfigurationService {
         if (this.document.overrides.ACCOUNT_AUTO_RELOGIN_ENABLED === false) this.running.login.autoRecovery = false;
         // Recovery must not replace the explicit saved permissions with an older generated default.
         this.running.scheduler.modelAllowlist = clone(this.saved.scheduler.modelAllowlist);
+        this.running.modelList = clone(this.saved.modelList);
+        this.running.scheduler.registeredModels = [...this.saved.scheduler.registeredModels];
+        this.running.scheduler.modelCatalog = this.running.modelList;
         const errorPath = path.join(path.dirname(this.file), "restart-status.json");
         this.restartError = fs.existsSync(errorPath) ? JSON.parse(fs.readFileSync(errorPath, "utf8")).error : null;
         system.config = this.running;
@@ -223,6 +226,7 @@ class ConfigurationService {
                 throw fail(error.message);
             }
         }
+        if (d.type === "catalog") require("../core/ModelCatalog").validate(value);
         if (d.type === "models") {
             if (!value || typeof value !== "object" || Array.isArray(value)) throw fail(`${name}: 必须为模型映射`);
             for (const [model, limit] of Object.entries(value)) {
@@ -347,7 +351,11 @@ class ConfigurationService {
     }
     apply(config, force = false) {
         const { system } = this;
-        const policyChanged = force || !equal(this.running.scheduler.modelAllowlist, config.scheduler.modelAllowlist);
+        const catalogChanged = !equal(this.running.modelList, config.modelList);
+        const policyChanged =
+            force ||
+            !equal(this.running.scheduler.modelAllowlist, config.scheduler.modelAllowlist) ||
+            !equal(this.running.modelList, config.modelList);
         const debugChanged = force || this.running.debugMode !== config.debugMode;
         const dailyChanged =
             force ||
@@ -357,6 +365,18 @@ class ConfigurationService {
             if (d.application === "hot") write(this.running, d.path, read(config, d.path));
         }
 
+        this.running.scheduler.registeredModels = require("../accounts/ModelAllowlistPolicy").catalogModels(
+            this.running.modelList
+        );
+        this.running.scheduler.modelCatalog = this.running.modelList;
+        if (system.scheduler && catalogChanged) {
+            for (const row of this.running.modelList) {
+                const id = require("../core/ModelName").normalizeModelName(row.name.replace(/^models\//, ""));
+                if (row.enabled === false) system.scheduler.hiddenModels?.add(id);
+                else if (row.enabled === true) system.scheduler.hiddenModels?.delete(id);
+            }
+            system.scheduler.saveSoon?.();
+        }
         if (system.scheduler && policyChanged) system.scheduler.permissionsChanged();
         this.running.apiKeySource = config.apiKeySource;
         if (system.accountLoginService?.state) {
@@ -396,7 +416,11 @@ class ConfigurationService {
             if (name === "MODEL_TIER_ALLOWLIST") {
                 const { parsePolicy } = require("../accounts/ModelAllowlistPolicy");
                 value = parsePolicy(value);
-                const registered = new Set(this.running.scheduler.registeredModels);
+                const registered = new Set(
+                    require("../accounts/ModelAllowlistPolicy").catalogModels(
+                        changes.MODEL_CATALOG || this.saved.modelList
+                    )
+                );
                 const previous = this.saved.scheduler.modelAllowlist;
                 for (const [tier, models] of Object.entries(value.tiers)) {
                     for (const model of models) {
@@ -411,6 +435,13 @@ class ConfigurationService {
             if (!definitions.some(d => d.name === name)) throw fail(`不允许重置：${name}`);
             if (name === "MODEL_TIER_ALLOWLIST") throw fail("模型白名单不支持重置，请在权限矩阵中显式修改");
             delete overrides[name];
+        }
+        if (changes.MODEL_CATALOG) {
+            const names = new Set(require("../accounts/ModelAllowlistPolicy").catalogModels(changes.MODEL_CATALOG));
+            const policy = clone(overrides.MODEL_TIER_ALLOWLIST);
+            for (const tier of Object.keys(policy.tiers))
+                policy.tiers[tier] = policy.tiers[tier].filter(id => names.has(id));
+            overrides.MODEL_TIER_ALLOWLIST = policy;
         }
         let target;
         try {
@@ -454,6 +485,7 @@ class ConfigurationService {
         } catch (error) {
             throw fail(error.message);
         }
+        const previousHidden = this.system.scheduler?.hiddenModels && new Set(this.system.scheduler.hiddenModels);
         const previous = clone(this.document),
             previousRunning = clone(this.running);
         const document = { ...previous, overrides, version: previous.version + 1 };
@@ -464,6 +496,7 @@ class ConfigurationService {
             let rollbackError;
             try {
                 this.apply(previousRunning);
+                if (previousHidden) this.system.scheduler.hiddenModels = previousHidden;
                 atomicWrite(this.file, previous);
             } catch (cause) {
                 rollbackError = cause;

@@ -308,7 +308,12 @@ class ConfigLoader {
             config.modelList = [{ name: "models/gemini-2.5-flash-lite" }];
         }
 
-        if (config.buildEnabled)
+        // Older seed files can contain repeated IDs. Keep their last declaration.
+        config.modelList = [...new Map(config.modelList.map(row => [row.name, row])).values()];
+        if (env.MODEL_CATALOG !== undefined)
+            config.modelList = require("../core/ModelCatalog").validate(JSON.parse(env.MODEL_CATALOG));
+
+        if (config.buildEnabled && env.MODEL_CATALOG === undefined)
             config.modelList.push(
                 ...require("../core/codeAssistant/ModelIdentity")
                     .models({ anti: config.antiTruncationEnabled })
@@ -320,6 +325,7 @@ class ConfigLoader {
                 ? initialPolicy(config.modelList)
                 : parsePolicy(env.MODEL_TIER_ALLOWLIST);
         config.scheduler.registeredModels = catalogModels(config.modelList);
+        config.scheduler.modelCatalog = config.modelList;
         this._printConfiguration(config);
         return config;
     }

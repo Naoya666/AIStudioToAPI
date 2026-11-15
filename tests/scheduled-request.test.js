@@ -1172,8 +1172,16 @@ test("anti admission failures occur before early start or forwarding", async t =
         ["anti-", {}, {}],
         ["anti-anti-gemini-2.5-flash", {}, {}],
         ["anti-gemini-2.5-flash", {}, { antiTruncationEnabled: false }],
-        ["anti-gemini-2.5-flash-search", {}, {}],
-        ["anti-gemini-2.5-flash-preview-tts", {}, {}],
+        [
+            "anti-gemini-2.5-flash-search",
+            {},
+            { modelList: [{ features: { antiCombinations: false }, name: "models/gemini-2.5-flash" }] },
+        ],
+        [
+            "anti-gemini-2.5-flash-preview-tts",
+            {},
+            { modelList: [{ features: { antiTruncation: false }, name: "models/gemini-2.5-flash-preview-tts" }] },
+        ],
         ["gemini-2.5-flash", { anti_truncation: "true" }, {}],
     ]) {
         const fixture = setup(antiReply, { streamingMode: "early", ...config });
@@ -1186,6 +1194,19 @@ test("anti admission failures occur before early start or forwarding", async t =
         assert.equal(Boolean(res.__streamStartSent), false);
         assert.equal(fixture.sent.length, 0);
     }
+});
+
+test("a newly registered model forwards anti without a code allowlist", async t => {
+    const fixture = setup(antiReply, {
+        modelList: [{ name: "models/new-model" }],
+        scheduler: { registeredModels: ["new-model"] },
+    });
+    t.after(() => fixture.scheduler.close());
+    const res = new Response();
+    await fixture.handler.processOpenAIRequest(request("anti-new-model", false), res);
+    assert.equal(res.statusCode, 200);
+    assert.ok(fixture.sent.length > 0);
+    assert.ok(res.body.includes("最终😀回答"));
 });
 
 test("anti early account retry creates a new transport and preserves one stream identity", async t => {

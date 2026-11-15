@@ -579,20 +579,45 @@ class ProxyServerSystem extends EventEmitter {
                 });
             next();
         });
+        // Administrator model boundaries are checked before protocol conversion.
+        app.use((req, res, next) => {
+            const model = req.body?.model || req.path?.match(/models\/(.+):/)?.[1];
+            if (!model) return next();
+            const protocol = req.path.includes("/responses")
+                ? "responses"
+                : req.path.includes("/messages")
+                  ? "claude"
+                  : req.path.includes("/chat/completions") || req.path.includes("/embeddings")
+                    ? "openai"
+                    : "gemini";
+            try {
+                require("./ModelCatalog").assertRequest(this.config, model, protocol, {
+                    ...req.body,
+                    stream: req.body?.stream === true || req.path.includes(":streamGenerateContent"),
+                });
+                next();
+            } catch (error) {
+                res.status(error.status || 400).json({
+                    error: { message: error.message, type: "model_policy_denied" },
+                });
+            }
+        });
         // Resource compatibility routes run after API authentication and admission.
         app.use(tracked((req, res, next) => this.playgroundResources?.handle(req, res, next) || next()));
 
         // API routes
         app.get(["/v1/models"], (req, res) => {
             // OpenAI format
-            const models = this.config.modelList.map(model => ({
-                context_window: model.inputTokenLimit,
-                created: Math.floor(Date.now() / 1000),
-                id: model.name.replace("models/", ""),
-                max_tokens: model.outputTokenLimit,
-                object: "model",
-                owned_by: "google",
-            }));
+            const models = require("./ModelCatalog")
+                .advertisedModels(this.config.modelList, this.config.antiTruncationEnabled)
+                .map(model => ({
+                    context_window: model.inputTokenLimit,
+                    created: Math.floor(Date.now() / 1000),
+                    id: model.name.replace("models/", ""),
+                    max_tokens: model.outputTokenLimit,
+                    object: "model",
+                    owned_by: "google",
+                }));
 
             res.status(200).json({
                 data: models,
@@ -602,9 +627,13 @@ class ProxyServerSystem extends EventEmitter {
 
         app.get(["/v1beta/models"], (req, res) => {
             res.status(200).json({
-                models: this.config.modelList.filter(
-                    m => !require("./codeAssistant/ModelIdentity").isBuild(m.name.replace(/^models\//, ""))
-                ),
+                models: this.config.modelList
+                    .filter(m => !require("./codeAssistant/ModelIdentity").isBuild(m.name.replace(/^models\//, "")))
+                    .map(model =>
+                        Object.fromEntries(
+                            Object.entries(model).filter(([key]) => !["features", "quotas", "enabled"].includes(key))
+                        )
+                    ),
             });
         });
 

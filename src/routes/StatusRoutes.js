@@ -19,6 +19,23 @@ const UsageStatsService = require("../core/UsageStatsService");
  * Manages system status, account management, and settings routes
  */
 class StatusRoutes {
+    _setModelVisibility(model, enabled) {
+        const { scheduler, configurationService: service } = this.serverSystem;
+        if (!service?.document.overrides.MODEL_CATALOG)
+            return enabled ? scheduler.showModel(model) : scheduler.hideModel(model);
+        const { normalizeModelName } = require("../core/ModelName");
+        const id = normalizeModelName(model);
+        const rows = JSON.parse(JSON.stringify(service.running.modelList));
+        const targets = rows.filter(row => normalizeModelName(row.name.replace(/^models\//, "")) === id);
+        if (!targets.length) throw Object.assign(new Error(`Unknown model ${id}`), { status: 404 });
+        const changed =
+            targets.some(row => (row.enabled !== false) !== enabled) || scheduler.isModelHidden(id) === enabled;
+        for (const row of targets) row.enabled = enabled;
+        if (changed) service.save({ changes: { MODEL_CATALOG: rows }, version: service.document.version });
+        // The legacy scheduler may have a hidden flag even when metadata already says enabled.
+        if (enabled) scheduler.showModel(id);
+        return { changed, hidden: !enabled, model: id };
+    }
     constructor(serverSystem) {
         this.serverSystem = serverSystem;
         this.logger = serverSystem.logger;
@@ -139,7 +156,7 @@ class StatusRoutes {
             const scheduler = this.serverSystem.scheduler;
             if (!scheduler) return res.status(409).json({ error: "Scheduler is in legacy mode" });
             try {
-                const result = scheduler.hideModel(req.body?.model);
+                const result = this._setModelVisibility(req.body?.model, false);
                 this.logger.info(`[Scheduler] Admin hid model from dashboard: ${result.model}`);
                 res.json({ success: true, ...result });
             } catch (error) {
@@ -150,7 +167,7 @@ class StatusRoutes {
             const scheduler = this.serverSystem.scheduler;
             if (!scheduler) return res.status(409).json({ error: "Scheduler is in legacy mode" });
             try {
-                const result = scheduler.showModel(req.body?.model);
+                const result = this._setModelVisibility(req.body?.model, true);
                 this.logger.info(`[Scheduler] Admin restored model to dashboard: ${result.model}`);
                 res.json({ success: true, ...result });
             } catch (error) {
