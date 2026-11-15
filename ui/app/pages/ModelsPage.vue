@@ -12,6 +12,8 @@
                 <ElButton :disabled="busy || !dirty" @click="discard">放弃草稿</ElButton>
                 <ElButton :disabled="busy || dirty" @click="load">刷新</ElButton>
                 <ElButton :disabled="busy" @click="addModel">添加模型</ElButton>
+                <ElButton :disabled="busy" @click="probe">主动探测上游模型</ElButton>
+                <ElButton v-if="discovery" :disabled="busy" @click="discoveryOpen = true">查看探测结果</ElButton>
                 <span
                     >{{ rows.length }} 个模型 · {{ changedCount }} 个模型已修改{{
                         globalChanged ? " · 全局策略已修改" : ""
@@ -133,12 +135,100 @@
             </div>
             <ElPagination
                 v-model:current-page="page"
-                :page-size="pageSize"
+                v-model:page-size="pageSize"
+                :page-sizes="[15, 30, 50, 100]"
                 :total="filtered.length"
-                layout="total, prev, pager, next"
+                layout="total, sizes, prev, pager, next, jumper"
             />
         </template>
         <ElButton v-else :loading="busy" @click="load">重新加载模型目录</ElButton>
+        <ElDrawer v-model="discoveryOpen" title="上游模型探测与本地对照" size="min(960px, 96vw)">
+            <template v-if="discovery">
+                <p>
+                    探测时间：{{ new Date(discovery.fetchedAt).toLocaleString() }} · 账号 #{{ discovery.accountIndex }}
+                </p>
+                <p>
+                    新增 {{ candidates.length }} 个 · 元数据变化
+                    {{ discoveryRows.filter(item => item.status === "changed").length }} 个 · 本地独有
+                    {{ localOnly.length }} 个。
+                </p>
+                <p>仅选中的新模型会加入草稿；已有模型的策略、权限及元数据保留。上游未返回的本地模型不会移除。</p>
+                <div class="toolbar">
+                    <ElButton
+                        :disabled="busy || !candidates.length"
+                        @click="discoverySelection = candidates.map(item => item.row.name)"
+                        >全选新模型</ElButton
+                    >
+                    <ElButton :disabled="busy || !discoverySelection.length" @click="discoverySelection = []"
+                        >清空选择</ElButton
+                    >
+                    <ElButton type="primary" :disabled="busy || !discoverySelection.length" @click="importDiscovered"
+                        >将选中模型加入草稿</ElButton
+                    >
+                    <ElSelect v-model="discoveryFilter" aria-label="探测结果筛选">
+                        <ElOption value="all" label="全部探测结果" /><ElOption value="new" label="仅新模型" />
+                        <ElOption value="changed" label="仅元数据变化" />
+                    </ElSelect>
+                </div>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>选择</th>
+                                <th>模型</th>
+                                <th>对照结果</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="item in discoveryPaged" :key="item.row.name">
+                                <td>
+                                    <input
+                                        v-if="item.status === 'new'"
+                                        v-model="discoverySelection"
+                                        type="checkbox"
+                                        :value="item.row.name"
+                                        :aria-label="`选择 ${id(item.row)}`"
+                                        :disabled="busy"
+                                    />
+                                </td>
+                                <td>
+                                    {{ id(item.row) }}<small>{{ item.row.displayName }}</small
+                                    ><small>{{ item.row.description }}</small
+                                    ><small
+                                        >输入 {{ item.row.inputTokenLimit ?? "未知" }} / 输出
+                                        {{ item.row.outputTokenLimit ?? "未知" }} Token</small
+                                    >
+                                </td>
+                                <td>
+                                    {{ { new: "新模型", changed: "元数据变化", existing: "已存在" }[item.status] }}
+                                    <details v-if="item.changedFields.length">
+                                        <summary>查看字段差异</summary>
+                                        <small v-for="field in item.changedFields" :key="field">
+                                            {{ field }}：本地 {{ JSON.stringify(item.local[field] ?? null) }} → 上游
+                                            {{ JSON.stringify(item.row[field] ?? null) }}
+                                        </small>
+                                    </details>
+                                </td>
+                            </tr>
+                            <tr v-if="!discoveryPaged.length">
+                                <td colspan="3">没有匹配的探测结果</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <ElPagination
+                    v-model:current-page="discoveryPage"
+                    :page-size="15"
+                    :total="discoveryFiltered.length"
+                    layout="total, prev, pager, next"
+                />
+                <details v-if="localOnly.length">
+                    <summary>本地独有模型（保留）</summary>
+                    <p v-for="row in localOnly" :key="row.name">{{ id(row) }}</p>
+                </details>
+                <p>加入后请配置账号层级权限，并点击页面上的“保存全部修改”。</p>
+            </template>
+        </ElDrawer>
         <ElDrawer v-model="drawer" :title="selected ? id(selected) : '模型详情'" size="min(760px, 96vw)">
             <template v-if="selected">
                 <ElTabs v-model="tab">
@@ -325,7 +415,7 @@ const busy = ref(false),
 const search = ref(""),
     filter = ref("all"),
     page = ref(1),
-    pageSize = 15;
+    pageSize = ref(15);
 const drawer = ref(false),
     selected = ref(null),
     tab = ref("metadata");
@@ -399,20 +489,20 @@ const filtered = computed(() =>
         );
     })
 );
-const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize));
-watch([search, filter], () => {
+const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
+watch([search, filter, pageSize], () => {
     page.value = 1;
 });
 watch(
     () => filtered.value.length,
     length => {
-        page.value = Math.min(page.value, Math.max(1, Math.ceil(length / pageSize)));
+        page.value = Math.min(page.value, Math.max(1, Math.ceil(length / pageSize.value)));
     }
 );
 useDraftGuard(() => !!dirty.value);
-async function api(method = "GET", body) {
-    const response = await fetch("/api/model-catalog", {
-        headers: { "Content-Type": "application/json" },
+async function api(method = "GET", body, path = "") {
+    const response = await fetch(`/api/model-catalog${path}`, {
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method,
         ...(body ? { body: JSON.stringify(body) } : {}),
     });
@@ -425,6 +515,75 @@ async function api(method = "GET", body) {
                 : result.error || "请求失败"
         );
     return result;
+}
+const discovery = ref(null),
+    discoveryOpen = ref(false),
+    discoverySelection = ref([]),
+    discoveryPage = ref(1),
+    discoveryFilter = ref("all");
+const metadataFields = [
+    "displayName",
+    "description",
+    "version",
+    "inputTokenLimit",
+    "outputTokenLimit",
+    "supportedGenerationMethods",
+];
+const discoveryRows = computed(() =>
+    (discovery.value?.rows || []).map(({ row }) => {
+        const local = rows.value.find(item => id(item) === id(row));
+        const changedFields = local
+            ? metadataFields.filter(key => JSON.stringify(local[key] ?? null) !== JSON.stringify(row[key] ?? null))
+            : [];
+        return { changedFields, local, row, status: !local ? "new" : changedFields.length ? "changed" : "existing" };
+    })
+);
+const candidates = computed(() => discoveryRows.value.filter(item => item.status === "new"));
+const localOnly = computed(() =>
+    rows.value.filter(row => discovery.value && !discovery.value.rows.some(item => id(item.row) === id(row)))
+);
+const discoveryFiltered = computed(() =>
+    discoveryRows.value.filter(item => discoveryFilter.value === "all" || item.status === discoveryFilter.value)
+);
+const discoveryPaged = computed(() =>
+    discoveryFiltered.value.slice((discoveryPage.value - 1) * 15, discoveryPage.value * 15)
+);
+watch(discoveryFilter, () => {
+    discoveryPage.value = 1;
+});
+watch(
+    () => discoveryFiltered.value.length,
+    length => {
+        discoveryPage.value = Math.min(discoveryPage.value, Math.max(1, Math.ceil(length / 15)));
+    }
+);
+async function probe() {
+    busy.value = true;
+    error.value = "";
+    message.value = "正在向上游拉取最新模型目录…";
+    try {
+        discovery.value = await api("POST", {}, "/discover");
+        discoverySelection.value = [];
+        discoveryFilter.value = "all";
+        discoveryPage.value = 1;
+        discoveryOpen.value = true;
+        message.value = "探测完成，请选择需要加入的新模型。";
+    } catch (cause) {
+        error.value = cause.message;
+        message.value = "";
+    } finally {
+        busy.value = false;
+    }
+}
+function importDiscovered() {
+    const added = candidates.value.filter(item => discoverySelection.value.includes(item.row.name));
+    for (const { row } of added) rows.value.push({ ...clone(row), enabled: true, features: {} });
+    discoverySelection.value = [];
+    discoveryOpen.value = false;
+    search.value = "";
+    filter.value = "pending";
+    page.value = 1;
+    message.value = `已将 ${added.length} 个新模型加入草稿，请配置权限后保存。`;
 }
 async function load() {
     busy.value = true;
@@ -551,8 +710,13 @@ onMounted(load);
 </script>
 <style scoped>
 .models-page {
+    min-width: 0;
     display: grid;
     gap: 18px;
+}
+.models-page :deep(.el-pagination) {
+    flex-wrap: wrap;
+    gap: 8px;
 }
 .toolbar,
 .global-policy {

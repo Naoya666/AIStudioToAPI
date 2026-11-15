@@ -326,7 +326,7 @@ class StatusRoutes {
             res.status(status === "unhealthy" ? 503 : 200).json(healthStatus);
         });
 
-        app.get(["/", "/usage", "/logs", "/settings"], isAuthenticated, (req, res) => {
+        app.get(["/", "/usage", "/logs", "/settings", "/models"], isAuthenticated, (req, res) => {
             res.status(200).sendFile(this.distIndexPath);
         });
 

@@ -46,7 +46,7 @@ test(
         await page.route("**/api/**", async route => {
             const request = route.request(),
                 url = new URL(request.url());
-            if (url.pathname === "/api/model-catalog") {
+            if (url.pathname.startsWith("/api/model-catalog")) {
                 const response = await fetch(`http://127.0.0.1:${backend.address().port}${url.pathname}`, {
                     headers: { "content-type": "application/json" },
                     method: request.method(),
@@ -104,6 +104,40 @@ test(
             service.running.modelList.find(row => row.name === "models/new-model").features.antiTruncation,
             undefined
         );
+        const { compareModels } = require("../src/core/ModelDiscovery");
+        const discovered = Array.from({ length: 20 }, (_, i) => ({
+            displayName: `Discovered ${i}`,
+            name: `models/discovered-${i}`,
+        }));
+        system.browserManager = {
+            contexts: new Map([[0, {}]]),
+            getBenefit: () => ({
+                _evaluate: async () => ({
+                    status: 200,
+                    text: JSON.stringify([discovered.map(row => [row.name, null, null, row.displayName])]),
+                }),
+            }),
+        };
+        assert.equal(compareModels(discovered, service.running.modelList).rows.length, 20);
+        await panel.getByRole("button", { name: "主动探测上游模型" }).click();
+        const discoveryDrawer = page.getByRole("dialog", { name: "上游模型探测与本地对照" });
+        await discoveryDrawer.getByText("新增 20 个", { exact: false }).waitFor();
+        assert.equal(await discoveryDrawer.locator("tbody tr").count(), 15);
+        await discoveryDrawer.getByLabel("选择 discovered-0", { exact: true }).check();
+        await discoveryDrawer.getByRole("button", { name: /next page|下一页/i }).click();
+        assert.equal(await discoveryDrawer.locator("tbody tr").count(), 5);
+        await discoveryDrawer.getByLabel("选择 discovered-19", { exact: true }).check();
+        await discoveryDrawer.getByRole("button", { name: "将选中模型加入草稿" }).click();
+        assert.equal(
+            service.running.modelList.some(row => row.name === "models/discovered-0"),
+            false
+        );
+        await panel.getByRole("textbox", { name: "搜索模型" }).fill("discovered-");
+        assert.equal(await panel.locator(".table-scroll").first().locator("tbody tr").count(), 2);
+        assert.equal(await panel.getByLabel("discovered-0 Free 权限", { exact: true }).isChecked(), false);
+        await panel.getByRole("button", { name: "查看探测结果" }).click();
+        await discoveryDrawer.getByText("新增 18 个", { exact: false }).waitFor();
+        await discoveryDrawer.getByRole("button", { name: /close|关闭/i }).click();
         await page.screenshot({ fullPage: true, path: "/tmp/model-management-page.png" });
         assert.deepEqual(errors, []);
     }

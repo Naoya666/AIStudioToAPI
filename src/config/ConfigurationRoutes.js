@@ -91,6 +91,16 @@ class ConfigurationRoutes {
                 version: service.document.version,
             });
         });
+        route("post", "/api/model-catalog/discover", async (req, res) => {
+            if (this.discoveryPending)
+                throw Object.assign(new Error("模型探测正在进行中，请稍后重试"), { status: 409 });
+            this.discoveryPending = true;
+            try {
+                res.json(await require("../core/ModelDiscovery").discover(this.system));
+            } finally {
+                this.discoveryPending = false;
+            }
+        });
         route("patch", "/api/model-catalog", (req, res) => {
             const result = service.save({
                 changes: {

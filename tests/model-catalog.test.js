@@ -240,3 +240,113 @@ test("model management HTTP endpoints require authentication and reject stale or
     assert.equal((await patch(snapshot)).status, 400);
     assert.equal(service.running.modelList.at(-1).features, undefined);
 });
+
+test("upstream discovery decodes metadata and Build capability without copying admin policy", () => {
+    const { parseModels, compareModels } = require("../src/core/ModelDiscovery");
+    const wire = ["models/upstream-model", null, "v1", "Upstream", "Description", 100000, 8192, ["generateContent"]];
+    wire[64] = [1, 48];
+    const upstream = parseModels(JSON.stringify([[wire]]));
+    assert.deepEqual(
+        upstream.map(row => row.name),
+        ["models/upstream-model", "models/build/upstream-model"]
+    );
+    assert.equal(upstream[0].inputTokenLimit, 100000);
+    assert.equal(parseModels('[[["models/sparse",,"v1","Name, with comma"]]]')[0].displayName, "Name, with comma");
+    const local = [
+        { ...upstream[0], displayName: "Local", enabled: false, features: { tools: false } },
+        { name: "models/local-only" },
+    ];
+    const before = JSON.stringify(local);
+    const diff = compareModels(upstream, local);
+    assert.deepEqual(
+        diff.rows.map(row => row.status),
+        ["changed", "new"]
+    );
+    assert.deepEqual(diff.rows[0].changedFields, ["displayName"]);
+    assert.equal(diff.localOnly[0].name, "models/local-only");
+    assert.equal(JSON.stringify(local), before);
+    assert.equal(compareModels(upstream, upstream).rows[0].status, "existing");
+    for (const invalid of [
+        "[]",
+        "{}",
+        "not-json",
+        JSON.stringify([[wire, wire]]),
+        JSON.stringify([[["models/"]]]),
+        JSON.stringify([[["models/bad", null, null, 123]]]),
+    ]) {
+        assert.throws(() => parseModels(invalid), { status: 502 });
+    }
+});
+
+test("discovery endpoint requires admin auth, deduplicates probes and never saves implicitly", async t => {
+    const vm = require("node:vm");
+    const { system, service, file } = fixture(t);
+    const before = JSON.stringify(service.running.modelList);
+    const version = service.document.version;
+    const savedBefore = fs.readFileSync(file, "utf8");
+    let finish;
+    let calls = 0;
+    let status = 200;
+    let responseText = JSON.stringify([[["models/discovered-model", null, "v1", "Discovered"]]]);
+    const auth = { authorization: "private-session", "x-goog-api-key": "private-key" };
+    const state = {
+        auth,
+        nativeFetch: async (url, options) => {
+            calls++;
+            assert.match(url, /MakerSuiteService\/ListModels$/);
+            assert.deepEqual({ ...options.headers }, { ...auth, "content-type": "application/json+protobuf" });
+            assert.equal(options.body, "[]");
+            if (finish !== false)
+                await new Promise(resolve => {
+                    finish = resolve;
+                });
+            return { status, text: async () => responseText };
+        },
+    };
+    system.browserManager = {
+        contexts: new Map([[7, {}]]),
+        getBenefit: () => ({
+            _evaluate: fn =>
+                vm.runInNewContext(`(${fn.toString()})()`, {
+                    AbortController,
+                    clearTimeout,
+                    setTimeout,
+                    window: { __buildBenefit: state },
+                }),
+        }),
+    };
+    const app = express();
+    app.use(express.json());
+    new ConfigurationRoutes(system).setupRoutes(app, (req, res, next) =>
+        req.headers["x-test-session"] === "valid" ? next() : res.sendStatus(401)
+    );
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise(resolve => server.once("listening", resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const url = `http://127.0.0.1:${server.address().port}/api/model-catalog/discover`;
+    const probe = headers => fetch(url, { headers, method: "POST" });
+    assert.equal((await probe({})).status, 401);
+    assert.equal(calls, 0);
+    const first = probe({ "x-test-session": "valid" });
+    while (typeof finish !== "function") await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await probe({ "x-test-session": "valid" })).status, 409);
+    finish();
+    finish = false;
+    const response = await first;
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    const result = await response.json();
+    assert.equal(result.accountIndex, 7);
+    assert.equal(result.rows[0].status, "new");
+    assert.ok(!JSON.stringify(result).includes("private-"));
+    assert.equal(JSON.stringify(service.running.modelList), before);
+    assert.equal(service.document.version, version);
+    assert.equal(fs.readFileSync(file, "utf8"), savedBefore);
+    status = 401;
+    assert.equal((await probe({ "x-test-session": "valid" })).status, 502);
+    status = 200;
+    responseText = "[]";
+    assert.equal((await probe({ "x-test-session": "valid" })).status, 502);
+    system.browserManager.contexts.clear();
+    assert.equal((await probe({ "x-test-session": "valid" })).status, 503);
+});

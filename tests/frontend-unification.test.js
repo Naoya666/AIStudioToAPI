@@ -336,7 +336,7 @@ test("new admin entry paths serve the SPA through the existing authentication mi
     const server = app.listen(0, "127.0.0.1");
     await new Promise(resolve => server.once("listening", resolve));
     t.after(() => new Promise(resolve => server.close(resolve)));
-    for (const route of ["/usage", "/logs", "/settings"]) {
+    for (const route of ["/usage", "/logs", "/settings", "/models", "/models/"]) {
         const url = `http://127.0.0.1:${server.address().port}${route}`;
         const denied = await fetch(url);
         assert.equal(denied.status, 401);
