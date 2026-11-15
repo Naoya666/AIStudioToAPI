@@ -103,6 +103,7 @@
                             :id="`config-${d.name}`"
                             v-model="draft[d.name]"
                             :disabled="busy"
+                            :before-change="() => confirmBooleanChange(d.name, !draft[d.name])"
                         />
                         <ElSelect
                             v-else-if="d.type === 'enum'"
@@ -514,8 +515,28 @@ async function refreshWithDraft() {
         if (cause instanceof Error) error.value = cause.message;
     }
 }
-function resetField(d) {
-    draft[d.name] = d.name === "API_KEYS" ? secretDefaultDraft.value : toDraft(d, snapshot.value.defaults[d.name]);
+async function confirmBooleanChange(name, value) {
+    if (name !== "BUILD_ENABLED" || !value) return true;
+    try {
+        await ElMessageBox.confirm(
+            "近期社区反馈，使用 Build 通道可能导致 Google 账号的 AI Studio 使用权限被禁用。请充分了解并自行承担相关风险，确认后再启用。",
+            "启用 Build 通道风险确认",
+            {
+                cancelButtonText: "取消",
+                closeOnClickModal: false,
+                confirmButtonText: "我已知晓风险，继续启用",
+                type: "warning",
+            }
+        );
+        return true;
+    } catch {
+        return false;
+    }
+}
+async function resetField(d) {
+    const value = d.name === "API_KEYS" ? secretDefaultDraft.value : toDraft(d, snapshot.value.defaults[d.name]);
+    if (!equal(draft[d.name], value) && !(await confirmBooleanChange(d.name, value))) return;
+    draft[d.name] = value;
     if (!resets.value.includes(d.name)) resets.value.push(d.name);
 }
 function encode(d) {
